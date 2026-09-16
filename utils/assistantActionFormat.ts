@@ -22,9 +22,12 @@ export const normalizeAssistantEmojiFormatting = (raw: string): string => {
     const closing: Record<string, string> = { '[[': ']]', '[': ']', '【': '】', '［［': '］］', '［': '］' };
     // Quoted examples are explanatory text. Do not repair deliberately separated spellings.
     return (raw || '').split(/(```[\s\S]*?```|`[^`\r\n]*`)/g).map((part, index) => index % 2 ? part : part.replace(
-        /(?<![\[【［])(\[\[|\[|【|［［|［)\s*(?:SEND_EMOJI|(?:[^\[\]【】［］\r\n:：]{1,40}?\s*)?发送了表情包|表情包|表情)\s*[:：]\s*([^\[\]【】［］\r\n]+?)\s*(\]\]|\]|】|］］|］)(?![\]】］])/gim,
-        (all, open: string, name: string, close: string) => closing[open] === close
-            ? '[[SEND_EMOJI: ' + name.trim() + ']]' : all,
+        /(\[\[|\[|【|［［|［)\s*(?:SEND_EMOJI|(?:[^\[\]【】［］\r\n:：]{1,40}?\s*)?发送了表情包|表情包|表情)\s*[:：]\s*([^\[\]【】［］\r\n]+?)\s*(\]\]|\]|】|］］|］)(?![\]】］])/gim,
+        (all, open: string, name: string, close: string, offset: number, source: string) => {
+            // iOS Safari <16.4 不支持后行断言。检查原文前一字符，不消耗相邻表情的边界。
+            if (offset > 0 && /[\[【［]/.test(source[offset - 1])) return all;
+            return closing[open] === close ? '[[SEND_EMOJI: ' + name.trim() + ']]' : all;
+        },
     )).join('');
 };
 
