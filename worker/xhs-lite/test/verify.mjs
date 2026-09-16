@@ -1,100 +1,140 @@
-/**
- * Verifies the XHS signing EMBEDDED in worker/index.js (the deployed worker,
- * https://sullymeow.ccwu.cc) is byte-identical to the Python xhshow reference
- * (test/vectors.json), using the same deterministic RNG.
- *
- *   PYTHONPATH=/tmp/xhshow/src python3 oracle.py > vectors.json
- *   node verify.mjs
- */
-import { readFileSync } from 'fs';
-import { __xhsLiteTest } from '../../index.js';
-
-const { RNG, signXs, signXyw, signXsCommon, generateB1, xRapParam, _internals } = __xhsLiteTest;
-
-// deterministic: mirror oracle.py (random.randint(a,b) -> a)
-RNG.randint = (a) => a;
-
-const A1 = '198abcdef0123456789deadbeef0011223344556677';
-const FIXED_TS = 1764896636.081;
-
-const fp = {};
-for (let i = 1; i < 90; i++) fp['x' + i] = '0';
-Object.assign(fp, {
-  x33: '0', x34: '1', x35: '2', x36: '3', x37: 'a|b|c', x38: 'd|e',
-  x39: 0, x42: '3.4.4', x43: 'deadbeefcafebabe', x44: '1764896636081',
-  x45: '__SEC__', x46: 'false', x48: '', x49: '{list:[],type:}',
-  x50: '', x51: '', x52: '', x82: '_0x17a2|_0x1954',
-});
-
-const got = {
-  xs_get_feed: signXs('GET', '/api/sns/web/v1/feed', A1, { payload: { num: '30', image_formats: 'jpg,webp,avif' }, timestampSec: FIXED_TS }),
-  xs_get_noparams: signXs('GET', '/api/sns/web/v2/user/me', A1, { payload: null, timestampSec: FIXED_TS }),
-  xs_post_homefeed: signXs('POST', '/api/sns/web/v1/homefeed', A1, { payload: { cursor_score: '', num: 20, refresh_type: 1, note_index: 0, category: 'homefeed_recommend' }, timestampSec: FIXED_TS }),
-  xs_post_comment: signXs('POST', '/api/sns/web/v1/comment/post', A1, { payload: { note_id: 'abc123', content: '你好世界 hello', at_users: [] }, timestampSec: FIXED_TS }),
-  encode_ascii: _internals.encodeCustomStr('hello world 123'),
-  encode_unicode: _internals.encodeCustomStr('{"x5":"你好","x8":"a/b+c="}'),
-  crc32_hello: _internals.crc32JsInt('hello world'),
-  crc32_unicode: _internals.crc32JsInt('你好abc'),
-  b1_fixed_fp: generateB1(fp),
-  xscommon_fixed: signXsCommon({ a1: A1, web_session: '040069xyz' }, fp),
-};
-
-const xywCommentParams = {
-  note_id: 'abc123',
-  cursor: '',
-  top_comment_id: '',
-  image_formats: 'jpg,webp,avif',
-  xsec_token: 'token',
-};
-const expectedXywComments = 'XYW_eyJzaWduU3ZuIjoiNTYiLCJzaWduVHlwZSI6IngyIiwiYXBwSWQiOiJ4aHMtcGMtd2ViIiwic2lnblZlcnNpb24iOiIxIiwicGF5bG9hZCI6IjBmZmJhMjA4MDg1YmY1NTVjYTZmNjAzNjYxZGI1NzBmM2QwY2NmYzY1ZTYyYzJiYzEyNWNlMmYyODMzYzU4Y2ViMjRhY2NmMWVmOGEzNTE4NTMxOWU1OTdhZGQ0ZTExYTIyODdlMjk0NTlmNTU3MzRkYzk4MWVkMmNkMDY3MGY4MTliN2NlZWFkMjM3MGVmYzU2NWVkYzIwZjI5YmJmMWM1Mzg3YzI3M2Y3ZDE3NWMyOGVhMWIyZWU5OTMyNzA1M2RjMjliNTRhNzA2YjFlNzYyMGRiMmUxNDJjY2Q5NmMwNjdmZmFjYzhmOTE4ZjEzNGQ0ZWVjOGU2ZTM2MTY0YjJjYzkxMTU0MzdkZDIxMTRhODEzMjQ2OTQwZTI5ZGI4MzBlN2Y5YjI0YTNhOWNkMDlmNDk1MWY5OGYxZjUxZTliYzJhYjA0NDEyZTMzMzVhYWEyNjdmMDI3ZTY4ZGRjYTFmMzRkZGVhYjUyNjZjNjA0YjEwYTZiYmM5ZWYyMjI0ZTM5M2U0NmU5NDdjMGQ1YTllOTliNzhhZjk3YTg5MzM0In0=';
-got.xyw_get_comments = await signXyw(
-  'GET',
-  '/api/sns/web/v2/comment/page',
-  'a'.repeat(52),
-  { payload: xywCommentParams, timestampSec: FIXED_TS },
-);
-got.xrap_block_pair = Array.from(
-  _internals.xrapEncryptBlock(Uint8Array.from(Buffer.from('68ea78695e744b016d7a53a43a246167', 'hex'))),
-  byte => byte.toString(16).padStart(2, '0'),
-).join('');
-got.xxh32_empty = _internals.xrapXxh32(new Uint8Array()).toString(16).padStart(8, '0');
-got.xxh32_hello = _internals.xrapXxh32(new TextEncoder().encode('hello')).toString(16).padStart(8, '0');
-got.xrap_homefeed = await xRapParam(
-  '//edith.xiaohongshu.com/api/sns/web/v1/homefeed',
-  '{"a":1}',
-  {
-    aesKey: 'wapilabkmyv4wl46',
-    randomString: 'mdzz94',
-    innerKey: 'h9w3tl5em3w4t67c',
-    timestampMs: 0x0000019EB07ACDB2,
-    gzipMtime: 0x6A291532,
-    bodyEncryptTime: 69,
-    bodyRand32: 0xF95AD1C7,
-    mask: 0x65,
+export default {
+  manifest: {
+    id: "xhs-real-card",
+    name: "小红书真实卡片",
+    apiVersion: 1,
+    version: "9.2.0",
+    author: "SullyOS",
+    description: "支持连续多卡片展示与点击跳转，完全契合 MCP 协议",
+    permissions: ["chat.read"],
+    settings: [
+      { key: "mcpUrl", label: "Vercel MCP 地址 (如 https://float04.vercel.app/api/xhs-mcp)", type: "text", default: "" }
+    ]
   },
-);
-const xrapPacket = Buffer.from(got.xrap_homefeed, 'base64');
-got.xrap_packet_shape = (
-  xrapPacket.subarray(0, 4).toString('hex') === '07240106' &&
-  xrapPacket.readUInt32BE(4) === 1 &&
-  xrapPacket.readUInt32BE(8) === 20 &&
-  xrapPacket.subarray(36, 42).toString('ascii') === 'mdzz94'
-);
-delete got.xrap_homefeed;
 
-const vectors = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url)));
-vectors.push({ name: 'xyw_get_comments', value: expectedXywComments });
-vectors.push({ name: 'xrap_block_pair', value: 'd827df1c42d55ec61c0aec7d534fd817' });
-vectors.push({ name: 'xxh32_empty', value: '02cc5d05' });
-vectors.push({ name: 'xxh32_hello', value: 'fb0077f9' });
-vectors.push({ name: 'xrap_packet_shape', value: true });
-let pass = 0, fail = 0;
-for (const { name, value } of vectors) {
-  const mine = got[name];
-  if (mine === undefined) { console.log(`?? ${name}: no JS counterpart`); continue; }
-  const ok = String(mine) === String(value);
-  if (ok) { pass++; console.log(`OK  ${name}`); }
-  else { fail++; console.log(`XX  ${name}`); console.log(`    py: ${value}`); console.log(`    js: ${mine}`); }
-}
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+  setup(ctx) {
+    const XHS_REGEX_GLOBAL = /(https?:\/\/(?:www\.)?(?:xiaohongshu\.com\/(?:explore|discovery\/item)\/[a-zA-Z0-9]+(?:\?[^\s"'<>]+)?|xhslink\.(?:cn|com)\/[a-zA-Z0-9_/?&=]+))/gi;
+
+    function fmtNum(n) {
+      if (!n && n !== 0) return "0";
+      if (n >= 10000) return (n / 10000).toFixed(1) + "w";
+      if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+      return String(n);
+    }
+
+    function buildSingleCard(data) {
+      const mcpBase = (ctx.system.settings.get("mcpUrl") || "").trim().replace(/\/+$/, '');
+      const coverUrl = data.coverUrl ? `${mcpBase}?img=${encodeURIComponent(data.coverUrl)}` : "";
+      const title = data.title || "小红书笔记";
+      const author = data.author || "小红书用户";
+
+      if (data.loading) {
+        return `<div class="card-item" data-link="${data.link || ''}" style="background:#fff;border-radius:10px;padding:14px;border:1px solid #e0e0e0;margin-bottom:8px;font-family:-apple-system,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:center;height:70px;color:#999;font-size:13px;">📖 正在获取真实笔记数据...</div>`;
+      }
+      if (data.error) {
+        return `<div class="card-item" data-link="${data.link || ''}" style="background:#fff;border-radius:10px;padding:14px;border:1px solid #e0e0e0;margin-bottom:8px;font-family:-apple-system,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:center;height:70px;color:#c0271f;font-size:13px;">❌ ${data.error}</div>`;
+      }
+
+      return `<div class="card-item" data-link="${data.link || ''}" style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e0e0e0;margin-bottom:8px;font-family:-apple-system,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,0.06);cursor:pointer;-webkit-tap-highlight-color:transparent;">
+        <div style="display:flex;padding:12px 14px;gap:12px;align-items:center;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:14px;font-weight:600;color:#333;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${title}</div>
+            <div style="font-size:12px;color:#999;margin-top:4px;">@${author}</div>
+            <div style="font-size:11px;color:#bbb;margin-top:2px;">${fmtNum(data.likedCount)}赞 · ${fmtNum(data.commentCount)}评论 · ${fmtNum(data.collectedCount)}收藏</div>
+          </div>
+          <div style="width:48px;height:48px;border-radius:6px;background:#f5f5f5;flex-shrink:0;overflow:hidden;">
+            ${coverUrl ? `<img src="${coverUrl}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"/>` : ''}
+          </div>
+        </div>
+        <div style="border-top:1px solid #f0f0f0;padding:6px 14px;display:flex;align-items:center;gap:6px;">
+          <div style="width:14px;height:14px;background:#ff2442;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:bold;">红</div>
+          <span style="font-size:11px;color:#999;">小红书</span>
+        </div>
+      </div>`;
+    }
+
+    function renderAllCards(el, cards) {
+      el.innerHTML = cards.map(c => buildSingleCard(c)).join('');
+      el.style.cssText = "padding:0;margin:0;";
+      el.querySelectorAll('.card-item').forEach(item => {
+        item.onclick = (e) => {
+          e.stopPropagation();
+          const targetUrl = item.getAttribute('data-link');
+          if (targetUrl) window.open(targetUrl, '_blank');
+        };
+      });
+    }
+
+    ctx.ui.messageKind("xhs-real-card", (el, msg) => {
+      let node = el.parentElement;
+      for (let i = 0; i < 8 && node; i++) {
+        if ((node.className || "").indexOf("chat-bubble-role-user") !== -1 || (node.className || "").indexOf("chat-bubble-role-assistant") !== -1) {
+          node.classList.add("chat-bubble-media");
+          node.style.padding = "0";
+          break;
+        }
+        node = node.parentElement;
+      }
+      el.setAttribute("data-message-id", msg.id);
+      const cards = Array.isArray(msg.mediaData?.cards) ? msg.mediaData.cards : [msg.mediaData || {}];
+      renderAllCards(el, cards);
+    });
+
+    // 引导大模型可以根据语境连续分享 1~3 篇
+    ctx.prompts.set(
+      "【小红书工具指引】\n" +
+      "当用户寻找小红书内容时，调用 `xhs_search` 搜索。\n" +
+      "搜索完成后，在回复中你可以挑出 1~3 篇最贴切的笔记长链接贴出（每条链接单独占一行）。聊天窗口会自动为每一条链接渲染对应的图文卡片。"
+    );
+
+    // 捕获回复中出现的所有链接，构造成卡片列表
+    ctx.hooks.transform("message.beforePersist", (payload) => {
+      const msg = payload.message;
+      if (!msg || !msg.content) return payload;
+      if (msg.role !== "user" && msg.role !== "assistant") return payload;
+
+      const matches = msg.content.match(XHS_REGEX_GLOBAL);
+      if (matches && matches.length > 0) {
+        msg.mediaType = "plugin:xhs-real-card";
+        msg.mediaData = {
+          cards: matches.map(url => ({ loading: true, link: url }))
+        };
+      }
+      return payload;
+    });
+
+    // 逐个拉取真实笔记信息，流式展示
+    ctx.hooks.on("message.persisted", async ({ message }) => {
+      if (message.mediaType !== "plugin:xhs-real-card" || !message.mediaData?.cards) return;
+
+      const msgId = message.id;
+      const mcpBase = (ctx.system.settings.get("mcpUrl") || "").trim().replace(/\/+$/, '');
+      if (!mcpBase) return;
+
+      const currentCards = [...message.mediaData.cards];
+
+      for (let i = 0; i < currentCards.length; i++) {
+        const targetUrl = currentCards[i].link;
+        try {
+          const res = await ctx.system.fetch(`${mcpBase}?resolve_share=${encodeURIComponent(targetUrl)}`);
+          const json = await res.json();
+          if (json.ok && json.note) {
+            currentCards[i] = { loading: false, link: targetUrl, noteId: json.noteId, ...json.note };
+          } else {
+            currentCards[i] = { loading: false, link: targetUrl, error: json.error || "解析失败" };
+          }
+        } catch (e) {
+          currentCards[i] = { loading: false, link: targetUrl, error: "加载超时" };
+        }
+
+        // 每获取一篇刷新一次 DOM
+        const cardEl = document.querySelector(`[data-message-id="${msgId}"]`);
+        if (cardEl) renderAllCards(cardEl, currentCards);
+      }
+
+      ctx.data.messages.update(msgId, { mediaData: { cards: currentCards } });
+    });
+
+    ctx.system.log("[小红书卡片] v9.2.0 多卡片支持版已加载");
+  }
+};
