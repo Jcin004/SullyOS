@@ -1,16 +1,18 @@
 import React, {useEffect, useId, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import './ChatDecorationAnnouncement.css';
+import { useFirstUseGuideStep } from '../../utils/firstUseGuide';
 const acknowledged = new Set<string>();
 const prefix = 'sully-chat-decoration-announcement-v1:';
 export default function ChatDecorationAnnouncement({surface}:{surface:'appearance'|'chat'}) {
+ const guideActive=useFirstUseGuideStep()!==null;
  const key=prefix+surface;
  const legacyKey=surface==='chat'?prefix+'decoration':key;
  const [visible,setVisible]=useState(()=>{try{return !acknowledged.has(key)&&localStorage.getItem(key)!=='seen'&&localStorage.getItem(legacyKey)!=='seen';}catch{return !acknowledged.has(key);}});
  const dialog=useRef<HTMLDialogElement>(null);const title=useId();
- useEffect(()=>{if(visible&&!dialog.current?.open)dialog.current?.showModal();},[visible]);
+ useEffect(()=>{if(visible&&!guideActive&&!dialog.current?.open)dialog.current?.showModal();},[visible,guideActive]);
  const dismiss=()=>{acknowledged.add(key);try{localStorage.setItem(key,'seen');}catch{/* Read-only storage: remember for this session. */}dialog.current?.close();setVisible(false);};
- if(!visible)return null;
+ if(!visible||guideActive)return null;
  return createPortal(<dialog ref={dialog} className="chat-decoration-announcement" aria-labelledby={title} onCancel={event=>{event.preventDefault();dismiss();}}>
   <small>CHATAPP · 装扮更新</small>
   <h2 id={title}>喜欢的样子，在一处调好。</h2>

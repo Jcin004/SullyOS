@@ -775,7 +775,7 @@ describe('onBeforeFire 注入通用 MCP', () => {
 // scheduled() 在 !vapid.email 时会 console.error 后直接 return——整个 tick 一条任务都不处理。
 // 而「推送凭据」面板复制出来的 env 里 VAPID_EMAIL 是注释掉的可选项，照着部署必然缺它，
 // 表现是「到点了什么都不发、前端没有任何报错」。email 只是 VAPID JWT 的 sub（联系方式），
-// 不影响签名有效性，缺省给一个合法 mailto 即可——instant-push worker 一直就是这么做的。
+// 不影响签名有效性，缺省给一个合法 mailto 即可。
 describe('VAPID 配置', () => {
   const baseEnv = {
     AMSG_MASTER_KEY: 'k'.repeat(64),
@@ -3403,7 +3403,9 @@ describe('/debug — 只读诊断', () => {
     expect(data.schema).toBeNull();
   });
 
-  it('任务到点很久还挂着 pending → cron 那侧有问题', async () => {
+  // 这个假库只答得上计数，逐条细账那条查询会失败——下面两条测的正是那时的退路：
+  // 只看最老那条晚了多久。逐条判定（重试中不算卡住之类）在 tickReport.test.ts 里用真 SQLite 测。
+  it('细账读不了时退回老判据：任务到点很久还挂着 pending → cron 那侧有问题', async () => {
     const data = await debug(fakeDb({
       tables: ALL_TABLES,
       pending: [{ next_send_at: minutesAgo(47) }],
@@ -3412,7 +3414,7 @@ describe('/debug — 只读诊断', () => {
     expect(data.storage.oldestOverdueMinutes).toBeGreaterThanOrEqual(47);
   });
 
-  it('刚到点一两分钟不算挂——cron 一分钟一跳，得留重试余量', async () => {
+  it('细账读不了时退回老判据：刚到点一两分钟不算挂——cron 一分钟一跳，得留重试余量', async () => {
     const data = await debug(fakeDb({
       tables: ALL_TABLES,
       pending: [{ next_send_at: minutesAgo(1) }],

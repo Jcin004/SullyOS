@@ -1,4 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
+import {FileOrImageImport} from '../share/FileOrImageImport';
 import {DB} from '../../utils/db';
 import {shareOrDownloadFile} from '../../utils/shareExport';
 import {safeShareFileName} from '../../utils/pngShare';
@@ -7,7 +8,7 @@ import type {ChatTheme} from '../../types';
 const STORE='chat_decoration_presets_v1';
 interface Props{onBusyChange:(busy:boolean)=>void;target:string;scope:'character'|'global';currentBubble:ChatTheme;exportCurrent:(name:string)=>Promise<DecorationPreset>;onApply:(preset:DecorationPreset,parts:DecorationPart[])=>Promise<void>}
 export default function ChatDecorationPresets({target,scope,currentBubble,exportCurrent,onApply,onBusyChange}:Props){
- const [name,setName]=useState('我的聊天装扮');const [saved,setSaved]=useState<DecorationPreset[]>([]);const [pending,setPending]=useState<DecorationImport|null>(null);const [parts,setParts]=useState<DecorationPart[]>([]);const [imageUse,setImageUse]=useState<'background'|'user'|'ai'>('background');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [notice,setNotice]=useState('');const fileRef=useRef<HTMLInputElement>(null);const saveReady=useRef(false);
+ const [name,setName]=useState('我的聊天装扮');const [saved,setSaved]=useState<DecorationPreset[]>([]);const [pending,setPending]=useState<DecorationImport|null>(null);const [parts,setParts]=useState<DecorationPart[]>([]);const [imageUse,setImageUse]=useState<'background'|'user'|'ai'>('background');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [notice,setNotice]=useState('');const saveReady=useRef(false);
  useEffect(()=>{let alive=true;DB.getAsset(STORE).then(raw=>{if(!alive)return;const list=raw?JSON.parse(raw):[];setSaved(Array.isArray(list)?list.map(validateDecoration):[]);saveReady.current=true;}).catch(()=>{if(alive)setError('预设列表读取失败，请重新打开后再保存。');});return()=>{alive=false;};},[]);
  const run=async(work:()=>Promise<void>)=>{setBusy(true);onBusyChange(true);setError('');setNotice('');try{await work();}catch(e){setError(e instanceof Error?e.message:'操作失败，请重试');}finally{setBusy(false);onBusyChange(false);}};
  const stage=(item:DecorationImport)=>{setPending(item);setError('');setNotice('');if(item.kind==='preset')setParts(Object.keys(item.preset.parts) as DecorationPart[]);else setImageUse('background');};
@@ -23,8 +24,7 @@ export default function ChatDecorationPresets({target,scope,currentBubble,export
  });
  return <div className="chat-decoration-presets">
   <h3>预设</h3><p className="chat-decoration-note">把布局、气泡、背景、声音和进阶样式存成一套，随时换上或导出分享。CSS、TXT 和图片也能从这里导入，再选择用途。</p><p className="chat-decoration-note">确认后才会应用到 <b>{target}</b>，没有勾选的部分保持原样。</p>
-  <button className="chat-decoration-import" disabled={busy} onClick={()=>fileRef.current?.click()}>导入文件 <small>整套装扮、CSS / TXT、气泡、提示音或图片</small></button>
-  <input ref={fileRef} hidden type="file" aria-label="统一导入装扮" accept=".json,.txt,.css,.png,.jpg,.jpeg,.webp,.gif,.avif,.bmp" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void run(async()=>stage(await readDecorationFile(file)));}}/>
+  <FileOrImageImport className="chat-decoration-import" disabled={busy} imageAccept="image/*" onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void run(async()=>stage(await readDecorationFile(file)));}}/>
   {error&&<p role="alert" className="chat-decoration-error">{error}</p>}{notice&&<p role="status" className="chat-decoration-note">{notice}</p>}
   {pending&&<section className="chat-decoration-import-review">
    <h3>{pending.kind==='image'?'这张图片用在哪里？':pending.preset.name}</h3>

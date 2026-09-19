@@ -1,3 +1,5 @@
+import { startsNewMessageGroup } from '../utils/chatMessageGrouping';
+import EmojiExportDialog from '../components/chat/EmojiExportDialog';
 import React, { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useOS } from '../context/OSContext';
@@ -69,7 +71,6 @@ import { voiceLanguageAnalyticsValue, voiceLanguagePromptLabel } from '../utils/
 import { fetchBlobForShare, shareOrDownloadBlob } from '../utils/shareExport';
 import { CollaborationStore } from '../features/collaboration/store';
 import { resolveTtsProvider } from '../utils/ttsProvider';
-import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio } from '../utils/whiteboxSound';
 import { normalizeTranslationLangLabel, isTranslationLangPreset } from '../utils/translationLang';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
@@ -126,13 +127,6 @@ const HISTORY_WINDOW_BATCH_SIZE = 30;
 
 /** 即时对话那一轮回复「推送陆续到齐」的宽限时间，也就是自动合成的补扫窗口有多长（见下面的 auto-TTS effect）。 */
 const INSTANT_VOICE_SCAN_WINDOW_MS = 30_000;
-type InstantToolUiStatus = {
-    charId: string;
-    phase: 'running' | 'continuing' | 'done' | 'failed';
-    text: string;
-    sessionId?: string;
-    updatedAt?: number;
-};
 
 const Chat: React.FC = () => {
     const { activeApp, characters, activeCharacterId, setActiveCharacterId, addCharacter, updateCharacter, updateUserProfile, apiConfig, apiPresets, availableModels, addApiPreset, closeApp, openApp, customThemes, addCustomTheme, removeCustomTheme, addWorldbook, updateTheme, saveAppearancePreset, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, syncEmotionApiToAllCharacters, theme: baseOsTheme, proactiveComposingChars, openDateWithChar } = useOS();
@@ -148,13 +142,9 @@ const Chat: React.FC = () => {
         } catch { return 0; }
     }, []);
     const [messages, setMessages] = useState<Message[]>([]);
-    // Instant Push 路径："准备中"三个点 = 消息正在拼接+发送; 消失 = SSE POST 已排进
-    // 浏览器网络栈. 页面关闭时会主动 abort SSE, 让 worker 尽量走 Web Push fallback。
-    const [instantSendingActive, setInstantSendingActive] = useState(false);
     // 即时对话：这一轮已经交给云端、还没等到回复。它跟 isTyping 不一样——生成不在这台
     // 设备上跑，所以要扛得住关页面重开（记录落在 localStorage，见 amsgInstantChat）。
     const [instantChatPending, setInstantChatPending] = useState(false);
-    const [instantToolStatus, setInstantToolStatus] = useState<InstantToolUiStatus | null>(null);
     const [totalMsgCount, setTotalMsgCount] = useState(0);
     const [visibleCount, setVisibleCount] = useState(30);
     const [windowedFocusMsgId, setWindowedFocusMsgId] = useState<number | null>(null);
@@ -177,6 +167,7 @@ const Chat: React.FC = () => {
     const [categories, setCategories] = useState<EmojiCategory[]>([]);
     const [activeCategory, setActiveCategory] = useState<string>('default');
     const [newCategoryName, setNewCategoryName] = useState('');
+    const [emojiExport, setEmojiExport] = useState<{ emojis: Emoji[]; title: string } | null>(null);
     const [newEmojiName, setNewEmojiName] = useState(''); // 表情包重命名输入框
 
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -211,7 +202,7 @@ const Chat: React.FC = () => {
     // Reply Logic
     const [replyTarget, setReplyTarget] = useState<Message | null>(null);
 
-    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'schedule' | 'chrome-css' | 'chrome-sound' | 'memory-vectorize-confirm' | 'memory-vectorize-result'>('none');
+    const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'emoji-options' | 'rename-emoji' | 'rename-category' | 'schedule' | 'chrome-css' | 'chrome-sound' | 'memory-vectorize-confirm' | 'memory-vectorize-result'>('none');
     // 「聊天装扮」悬浮态：不走全屏 modal——圆气泡挂在聊天上，点开小面板边看真聊天边调。
     const [decorationTab, setDecorationTab] = useState<DecorationTab>('layout');
     // 切换角色时收掉装扮气泡：定制是 per-character 的，避免误改到下一个角色
@@ -1076,14 +1067,6 @@ const Chat: React.FC = () => {
                 historyJumpUnlockTimerRef.current = null;
             }
             setFlashMsgId(null);
-            try {
-                const rawToolStatus = localStorage.getItem(`instant_tool_status_${activeCharacterId}`);
-                const parsed = rawToolStatus ? JSON.parse(rawToolStatus) as InstantToolUiStatus : null;
-                const fresh = parsed?.updatedAt && Date.now() - parsed.updatedAt < 2 * 60_000;
-                setInstantToolStatus(fresh && parsed.phase !== 'done' ? parsed : null);
-            } catch {
-                setInstantToolStatus(null);
-            }
         }
     }, [activeCharacterId, reloadMessages]);
 
@@ -1096,44 +1079,6 @@ const Chat: React.FC = () => {
         }
         setShowEntry(true);
     }, [activeCharacterId, osTheme.chatCharacterSwitchAnimationEnabled]);
-
-    useEffect(() => {
-        let clearTimer: ReturnType<typeof setTimeout> | null = null;
-        const handler = (e: Event) => {
-            const detail = (e as CustomEvent<InstantToolUiStatus>).detail;
-            if (!detail?.charId || detail.charId !== activeCharIdRef.current) return;
-
-            setInstantToolStatus(detail);
-            if (clearTimer) {
-                clearTimeout(clearTimer);
-                clearTimer = null;
-            }
-            if (detail.phase === 'done' || detail.phase === 'failed') {
-                clearTimer = setTimeout(() => {
-                    setInstantToolStatus((prev) => (
-                        prev?.sessionId && detail.sessionId && prev.sessionId !== detail.sessionId ? prev : null
-                    ));
-                    clearTimer = null;
-                }, detail.phase === 'failed' ? 8000 : 5000);
-            }
-        };
-        const receivedHandler = (e: Event) => {
-            const detail = (e as CustomEvent<{ charId?: string }>).detail;
-            if (detail?.charId && detail.charId !== activeCharIdRef.current) return;
-            try {
-                const charId = detail?.charId || activeCharIdRef.current;
-                if (charId) localStorage.removeItem(`instant_tool_status_${charId}`);
-            } catch { /* ignore */ }
-            setInstantToolStatus(null);
-        };
-        window.addEventListener('instant-tool-status', handler);
-        window.addEventListener('active-msg-received', receivedHandler);
-        return () => {
-            window.removeEventListener('instant-tool-status', handler);
-            window.removeEventListener('active-msg-received', receivedHandler);
-            if (clearTimer) clearTimeout(clearTimer);
-        };
-    }, []);
 
     useEffect(() => {
         const onScheduleChange = (event: Event) => {
@@ -1235,7 +1180,7 @@ const Chat: React.FC = () => {
 
     // buff 同步已上移到 OSContext 的 App 级 'emotion-updated' 监听 (无条件按事件 charId 更新内存,
     // 不再受"当前是否开着该角色聊天页"限制). 之前这里有个 `charId === activeCharacterId` 守卫的
-    // handler, 导致 instant 模式下用户不在该角色页时 buff 回不到前端 (只落 DB), 故移除, 同时
+    // handler, 导致云端回复时用户不在该角色页的话 buff 回不到前端 (只落 DB), 故移除, 同时
     // 避免和 OSContext 双写.
 
     const handleInputChange = (val: string) => {
@@ -1612,22 +1557,6 @@ const Chat: React.FC = () => {
         // 自动回复模式下允许连续挑表情，用户主动收起加号等面板后才计时。
         if (!inputPreferences.autoReply) setShowPanel('none');
 
-        // Instant Push 模式：发完文本自动触发 AI（响应在 worker 端跑、后台 push 回写聊天页）。
-        // 本地模式仍维持手动触发以保留现有 UX。triggerAI 内部会从 DB 拉完整历史，
-        // 闭包里的 messages 还没包含刚写入的 user msg 也没关系。
-        // 仅文本消息触发；image / xhs_card 等卡片消息不触发，与本地手动行为对齐。
-        // autoTriggerOnSend gate：instant ready 也只在用户显式开启"发送后自动触发"时才自动回复，
-        // 否则保留手动 ⚡（避免"启用 instant = 自动回复"的反直觉强绑定）。
-        const instantCfg = loadInstantConfig();
-        // 新的「发完后自动生成」接管等待；不要再从旧开关立即触发一遍。
-        if (!inputPreferences.autoReply && type === 'text' && isInstantConfigReady(instantCfg) && instantCfg.autoTriggerOnSend) {
-            // 上一轮还在跑时直接跳过：triggerAI 内部会因 isTyping=true 静默 reject，
-            // 提前 guard 避免点亮"准备中"指示灯后没人来清，UI 灯被卡住。
-            if (isTyping) return;
-            // 标记"准备中"三个点：拼接+发送期间显示，SSE POST 入队 (onInstantPosted) 后清除。
-            setInstantSendingActive(true);
-            triggerAI(messages, undefined, () => setInstantSendingActive(false));
-        }
         return true;
     };
 
@@ -1679,18 +1608,11 @@ const Chat: React.FC = () => {
         await reloadMessages(visibleCountRef.current);
     }, [char, reloadMessages, addToast, characters, userProfile, groups, realtimeConfig]);
 
-    // 顶栏 ⚡ 手动触发。instant 模式下给"上一条 assistant 之后的所有 user 消息"打上"准备中"
-    // 三个点（从写入 DB 到 SSE POST 入队之间），由 onInstantPosted 清除 ——
-    // 与 autoTriggerOnSend 自动路径的指示器行为一致。本地模式无此指示器，直接 triggerAI。
+    // 顶栏 ⚡ 手动触发（也是「发完后自动生成」到点时调的那一下）。
     const handleManualTrigger = () => {
         autoReply.cancel();
-        // 同上：上一轮还在跑时 triggerAI 会静默 reject，提前挡掉避免指示灯卡死。
         if (isTyping) return;
-        if (!isInstantConfigReady()) { triggerAI(messages); return; }
-        // instantSendingActive 驱动 header "发送中…" 徽章 (拼接+发送窗口). 消息上的三个小圆点
-        // 另走纯前端判定 (isTyping && 最后一条消息), 见渲染处.
-        setInstantSendingActive(true);
-        triggerAI(messages, undefined, () => setInstantSendingActive(false));
+        triggerAI(messages);
     };
 
     const handleReroll = async () => {
@@ -1720,7 +1642,7 @@ const Chat: React.FC = () => {
         trackEvent('重新生成回复');
 
         // 重 roll：不注入上一轮残留的情绪 buff 与意识流（innerState），两边独立重新生成。
-        triggerAI(newHistory, undefined, undefined, { skipEmotionInjection: true });
+        triggerAI(newHistory, undefined, { skipEmotionInjection: true });
     };
 
     const handleImageSelect = async (file: File) => {
@@ -2265,6 +2187,25 @@ const Chat: React.FC = () => {
         setModalType('none');
         setEmojiImportText('');
         addToast('表情包导入成功', 'success');
+    };
+
+    const handleRenameCategory = async () => {
+        if (!selectedCategory || selectedCategory.isSystem || selectedCategory.id === 'default') return;
+        const name = newCategoryName.trim();
+        if (!name) { addToast('分类名称不能为空', 'error'); return; }
+        try {
+            await DB.saveEmojiCategory({ ...selectedCategory, name });
+            await loadEmojiData();
+            markEmojiLibraryChanged();
+            setModalType('none'); setSelectedCategory(null); setNewCategoryName('');
+            addToast('分类已重命名', 'success');
+        } catch { addToast('分类重命名失败', 'error'); }
+    };
+    const handleDownloadCategory = () => {
+        if (!selectedCategory) return;
+        const items = emojis.filter(e => selectedCategory.id === 'default' ? !e.categoryId || e.categoryId === 'default' : e.categoryId === selectedCategory.id);
+        setEmojiExport({ emojis: items, title: selectedCategory.name });
+        setModalType('none');
     };
 
     const handleDeleteCategory = async () => {
@@ -3760,7 +3701,8 @@ const Chat: React.FC = () => {
              )}
 
              {showHistoryCleanup && <ChatHistoryCleanupModal key={char.id} character={char} onClose={() => setShowHistoryCleanup(false)} onDeleted={handleHistoryCleanupDone} />}
-             <ChatModals
+             {emojiExport && <EmojiExportDialog {...emojiExport} onClose={() => setEmojiExport(null)} />}
+            <ChatModals
                 modalType={modalType} setModalType={setModalType}
                 transferAmt={transferAmt} setTransferAmt={setTransferAmt}
                 transferNote={transferNote} setTransferNote={setTransferNote}
@@ -3797,7 +3739,7 @@ const Chat: React.FC = () => {
                 onConfirmEditMessage={confirmEditMessage} onDeleteMessage={handleDeleteMessage} onCopyMessage={handleCopyMessage}
                 messageFavorited={!!(selectedMessage && contentFavoriteIds.has(contentFavoriteIdForMessage(selectedMessage)))}
                 onToggleMessageFavorite={selectedMessage ? () => handleToggleContentFavorite(selectedMessage) : undefined}
-                onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory}
+                onDeleteEmoji={handleDeleteEmoji} onDeleteCategory={handleDeleteCategory} onRenameCategory={handleRenameCategory} onDownloadCategory={handleDownloadCategory}
                 allCharacters={characters} onSaveCategoryVisibility={handleSaveCategoryVisibility}
                 translationEnabled={translationEnabled}
                 onToggleTranslation={() => { const next = !translationEnabled; setTranslationEnabled(next); localStorage.setItem(`chat_translate_enabled_${activeCharacterId}`, JSON.stringify(next)); if (next) { trackEvent('开启聊天翻译', { targetLang: isTranslationLangPreset(translateTargetLang) ? translateTargetLang : 'custom' }); } if (!next) { setShowingTargetIds(new Set()); } }}
@@ -3893,7 +3835,6 @@ const Chat: React.FC = () => {
                 isTyping={isTyping}
                 isSummarizing={isSummarizing}
                 isEmotionEvaluating={emotionStatus === 'evaluating'}
-                isInstantSending={instantSendingActive}
                 isMemoryPalaceProcessing={!!memoryPalaceStatus}
                 memoryPalaceStatusText={memoryPalaceStatus}
                 lastTokenUsage={lastTokenUsage}
@@ -4076,15 +4017,8 @@ const Chat: React.FC = () => {
                 {renderedMessages.map((m, i) => {
                     const prevMessage = i > 0 ? renderedMessages[i - 1] : null;
                     const nextMessage = i < renderedMessages.length - 1 ? renderedMessages[i + 1] : null;
-                    const messageGroupGapMs = 30 * 60 * 1000;
-                    const breaksWithPrevious =
-                        !prevMessage ||
-                        prevMessage.role !== m.role ||
-                        Math.abs(m.timestamp - prevMessage.timestamp) > messageGroupGapMs;
-                    const breaksWithNext =
-                        !nextMessage ||
-                        nextMessage.role !== m.role ||
-                        Math.abs(nextMessage.timestamp - m.timestamp) > messageGroupGapMs;
+                    const breaksWithPrevious = startsNewMessageGroup(prevMessage, m);
+                    const breaksWithNext = !nextMessage || startsNewMessageGroup(m, nextMessage);
                     const suppressEntranceAnimation = streamPreviewHandoverIdsRef.current.has(m.id);
                     // 这一轮在云端跑过哪些工具（即时对话才有，worker 挂在最后一条推送上）。
                     // 一条推送拆出的每条气泡都继承了同一份（metadata 是整份往下铺的，见
@@ -4143,8 +4077,6 @@ const Chat: React.FC = () => {
                             messageSpacing={osTheme.chatMessageSpacing}
                             showTimestamp={osTheme.chatShowTimestamp}
                             suppressEntranceAnimation={suppressEntranceAnimation}
-                            isPending={false}
-                            pendingIndicator={osTheme.chatPendingIndicator !== false}
                             onMcdSendCart={handleMcdSendCart}
                             onMcdCandidate={handleMcdCandidate}
                             onResolveTransfer={handleResolveTransfer}
@@ -4174,44 +4106,6 @@ const Chat: React.FC = () => {
                         ) : (
                             <span className="text-[11px] text-slate-400">已到当前最新消息</span>
                         )}
-                    </div>
-                )}
-
-                {/* 纯前端「发送准备中」三个点: 不走 MessageItem (那条逐条路径实测渲染不出来), 直接挂在
-                    消息列表末尾、靠右(用户侧). 跟 header「发送中」同源 instantSendingActive 一起亮灭.
-                    原版精致观感 = 小号 (w-1) + 轻脉冲. 但原版用的 Tailwind 自定义类 animate-dot-pulse
-                    CDN 没生成 (一换就消失), 原版色 slate-400/70 又太淡看不见. 解法: 自己写 inline @keyframes
-                    (不依赖 CDN) 还原脉冲, 用实色 slate-400 (峰值满不透明) 保证看得见, 尺寸回到原版 w-1. */}
-                {instantSendingActive && !selectionMode && (
-                    <div className="flex justify-end px-3 -mt-1 -mb-4">
-                        <style>{`@keyframes chatPendingDot{0%,80%,100%{opacity:.35;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}`}</style>
-                        <span className="inline-flex items-center gap-[3px] mr-12 select-none pointer-events-none" role="status" aria-label="发送准备中">
-                            <span className="w-1 h-1 rounded-full bg-slate-400" style={{ animation: 'chatPendingDot 1.2s ease-in-out infinite' }} />
-                            <span className="w-1 h-1 rounded-full bg-slate-400" style={{ animation: 'chatPendingDot 1.2s ease-in-out infinite', animationDelay: '0.2s' }} />
-                            <span className="w-1 h-1 rounded-full bg-slate-400" style={{ animation: 'chatPendingDot 1.2s ease-in-out infinite', animationDelay: '0.4s' }} />
-                        </span>
-                    </div>
-                )}
-
-                {instantToolStatus && !selectionMode && (
-                    <div className="flex items-end gap-3 px-3 mb-4 animate-fade-in">
-                        <TokenImg value={char.avatar} className={chatPendingAvatarClass} />
-                        <div className={`max-w-[78%] px-4 py-3 rounded-2xl shadow-sm border ${
-                            instantToolStatus.phase === 'failed'
-                                ? 'bg-rose-50 border-rose-100 text-rose-700'
-                                : 'bg-white/95 border-white/70 text-slate-600'
-                        }`}>
-                            <div className="flex items-center gap-2 text-xs font-semibold leading-relaxed">
-                                {instantToolStatus.phase === 'failed' ? (
-                                    <span className="w-2 h-2 rounded-full bg-rose-400 shrink-0" />
-                                ) : instantToolStatus.phase === 'done' ? (
-                                    <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-                                ) : (
-                                    <svg className="animate-spin h-3 w-3 shrink-0 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                )}
-                                <span>{instantToolStatus.text}</span>
-                            </div>
-                        </div>
                     </div>
                 )}
 

@@ -7077,7 +7077,7 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
 }
 
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-09-14";
+var AMSG_BUNDLE_VERSION = "2026-09-18";
 
 // utils/amsgTaskKinds.ts
 var AMSG_TASK_KIND_KEY = "amsgKind";
@@ -12351,7 +12351,7 @@ var extractScheduleChangeDirectives = (text) => {
   };
 };
 
-// worker/instant-push/src/classifier.ts
+// worker/amsg/src/classifier.ts
 var DATA_TAGS = [
   // [[RECALL: 2024-05]] / [[RECALL: 2024年5]]
   {
@@ -12901,6 +12901,303 @@ function buildScheduleChangeResult(args) {
     directives: args.directives.map((d) => ({ startTime: d.startTime, activity: d.activity }))
   };
 }
+
+// utils/amsgTickReport.ts
+var TICK_STALL_MS = 5 * 6e4;
+var LATE_START_MS = 3 * 6e4;
+var SAME_WRITE_TOLERANCE_MS = 5e3;
+var TICK_FAILURE_SERIES_GAP_MS = 3 * 6e4;
+var classifyOverdueTasks = (tasks, nowMs) => {
+  const verdicts = tasks.map((task) => {
+    const state = task.leaseUntilMs !== null && task.leaseUntilMs > nowMs ? "sending" : task.retryAfterMs !== null && task.retryAfterMs > nowMs ? "retry-wait" : "ready";
+    const readySinceMs = Math.max(task.nextSendAtMs, task.retryAfterMs ?? -Infinity);
+    const lastSettledMs = Math.max(
+      task.nextSendAtMs,
+      (task.createdAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS,
+      (task.currentErrorAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS
+    );
+    const lastStartedAtMs = task.updatedAtMs !== null && task.updatedAtMs > lastSettledMs ? task.updatedAtMs : null;
+    const unfinishedAttempt = state === "ready" && lastStartedAtMs !== null;
+    const lateStart = state === "sending" && lastStartedAtMs !== null && lastStartedAtMs - readySinceMs > LATE_START_MS;
+    const waitedTooLong = state === "ready" && nowMs - readySinceMs >= TICK_STALL_MS;
+    return {
+      state,
+      readySinceMs,
+      lastStartedAtMs,
+      unfinishedAttempt,
+      lateStart,
+      queuedBehind: false,
+      stuck: unfinishedAttempt || waitedTooLong
+    };
+  });
+  return verdicts.map(({ readySinceMs: _readySinceMs, ...verdict }, index) => {
+    if (verdict.state !== "ready" || verdict.unfinishedAttempt) return verdict;
+    const key = tasks[index].serializeKey;
+    if (!key) return verdict;
+    const blocked = verdicts.some((other, otherIndex) => otherIndex !== index && other.state === "sending" && tasks[otherIndex].serializeKey === key);
+    return blocked ? { ...verdict, queuedBehind: true, stuck: false } : verdict;
+  });
+};
+var judgeOverdueTasks = (tasks) => {
+  if (tasks.some((task) => task.verdict.stuck)) return "stalled";
+  if (tasks.some((task) => task.hasCurrentError || task.verdict.lateStart)) return "failing";
+  return "healthy";
+};
+
+// worker/amsg/src/tickReport.ts
+var MAX_OVERDUE_TASKS = 50;
+var MAX_RECENT_FAILURES = 10;
+var RECENT_FAILURE_WINDOW_MS = 24 * 60 * 6e4;
+var TASK_COLUMNS = `uuid, user_id, encrypted_payload, message_type, status, next_send_at,
+       retry_count, retry_after, lease_until, created_at, updated_at, last_error`;
+var parseMs = (value) => {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+};
+var toIso = (ms) => ms === null ? null : new Date(ms).toISOString();
+var parseLastError = (raw) => {
+  if (!raw) return null;
+  let value = null;
+  try {
+    const parsed = JSON.parse(raw);
+    value = parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return { at: null, occurrence: null, reason: raw, errorCode: null, pushStatus: null };
+  }
+  if (!value) return null;
+  const pick = (key) => typeof value?.[key] === "string" && value[key] ? value[key] : null;
+  const pushStatus = Number(value.pushStatus);
+  return {
+    at: pick("at"),
+    occurrence: pick("occurrence"),
+    reason: pick("reason") || "",
+    errorCode: pick("errorCode"),
+    pushStatus: Number.isFinite(pushStatus) && pushStatus > 0 ? pushStatus : null
+  };
+};
+var isCurrentOccurrence = (error, nextSendAtMs) => {
+  const occurrenceMs = parseMs(error.occurrence);
+  if (occurrenceMs !== null) return occurrenceMs === nextSendAtMs;
+  const atMs = parseMs(error.at);
+  return atMs !== null && atMs >= nextSendAtMs;
+};
+var createIdentityReader = (masterKey, serializeKeyOf) => {
+  const userKeys = /* @__PURE__ */ new Map();
+  return async (row) => {
+    const unknown = { charId: null, contactName: null, kind: null, serializeKey: null };
+    if (!masterKey || !row.user_id || !row.encrypted_payload) return unknown;
+    try {
+      let userKey = userKeys.get(row.user_id);
+      if (!userKey) {
+        userKey = deriveUserEncryptionKey(row.user_id, masterKey);
+        userKeys.set(row.user_id, userKey);
+      }
+      const payload = JSON.parse(await decryptFromStorage(row.encrypted_payload, await userKey));
+      const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : null;
+      return {
+        charId: typeof metadata?.charId === "string" ? metadata.charId : null,
+        contactName: typeof payload.contactName === "string" && payload.contactName ? payload.contactName : null,
+        kind: readTaskKind(metadata),
+        serializeKey: serializeKeyOf({ metadata })
+      };
+    } catch {
+      return unknown;
+    }
+  };
+};
+var readOverdueTasks = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const rows = (await db.prepare(
+    `SELECT ${TASK_COLUMNS}
+         FROM scheduled_messages
+        WHERE status = 'pending' AND next_send_at <= ?
+        ORDER BY next_send_at ASC
+        LIMIT ?`
+  ).bind(new Date(nowMs).toISOString(), MAX_OVERDUE_TASKS + 1).all()).results || [];
+  const truncated = rows.length > MAX_OVERDUE_TASKS;
+  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
+  const prepared = (await Promise.all(rows.slice(0, MAX_OVERDUE_TASKS).map(async (row) => {
+    const nextSendAtMs = parseMs(row.next_send_at);
+    if (!row.uuid || nextSendAtMs === null) return null;
+    const lastError = parseLastError(row.last_error);
+    const currentError = lastError && isCurrentOccurrence(lastError, nextSendAtMs) ? lastError : null;
+    const identity = await readIdentity(row);
+    const facts = {
+      nextSendAtMs,
+      createdAtMs: parseMs(row.created_at),
+      updatedAtMs: parseMs(row.updated_at),
+      retryAfterMs: parseMs(row.retry_after),
+      leaseUntilMs: parseMs(row.lease_until),
+      currentErrorAtMs: currentError ? parseMs(currentError.at) : null,
+      serializeKey: identity.serializeKey
+    };
+    return { row: { ...row, uuid: row.uuid }, nextSendAtMs, currentError, identity, facts };
+  }))).filter((item) => item !== null);
+  const verdicts = classifyOverdueTasks(prepared.map((item) => item.facts), nowMs);
+  const tasks = prepared.map(({ row, nextSendAtMs, currentError, identity, facts }, index) => {
+    const verdict = verdicts[index];
+    return {
+      uuid: row.uuid,
+      charId: identity.charId,
+      contactName: identity.contactName,
+      kind: identity.kind,
+      messageType: row.message_type,
+      nextSendAt: new Date(nextSendAtMs).toISOString(),
+      state: verdict.state,
+      stuck: verdict.stuck,
+      retryCount: Number(row.retry_count) || 0,
+      retryAfter: toIso(facts.retryAfterMs),
+      lastStartedAt: toIso(verdict.lastStartedAtMs),
+      unfinishedAttempt: verdict.unfinishedAttempt,
+      lateStart: verdict.lateStart,
+      queuedBehind: verdict.queuedBehind,
+      lastError: currentError
+    };
+  });
+  return {
+    tasks,
+    truncated,
+    verdict: judgeOverdueTasks(tasks.map((task, index) => ({
+      verdict: verdicts[index],
+      hasCurrentError: task.lastError !== null
+    })))
+  };
+};
+var readRecentFailures = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const sinceMs = nowMs - RECENT_FAILURE_WINDOW_MS;
+  const rows = (await db.prepare(
+    `SELECT ${TASK_COLUMNS}
+         FROM scheduled_messages
+        WHERE last_error IS NOT NULL
+          AND updated_at >= ?
+          AND message_type != 'instant'
+          AND (status = 'failed' OR (status = 'pending' AND next_send_at > ?))
+        ORDER BY updated_at DESC
+        LIMIT ?`
+  ).bind(new Date(sinceMs).toISOString(), new Date(nowMs).toISOString(), MAX_RECENT_FAILURES).all()).results || [];
+  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
+  const failures = await Promise.all(rows.map(async (row) => {
+    const error = parseLastError(row.last_error);
+    const atMs = parseMs(error?.at);
+    if (!row.uuid || !error || atMs === null || atMs < sinceMs) return null;
+    const identity = await readIdentity(row);
+    return {
+      uuid: row.uuid,
+      charId: identity.charId,
+      contactName: identity.contactName,
+      kind: identity.kind,
+      messageType: row.message_type,
+      outcome: row.status === "failed" ? "failed" : "skipped",
+      error
+    };
+  }));
+  return failures.filter((item) => item !== null);
+};
+var DIAGNOSTICS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS worker_diagnostics (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+)`;
+var TICK_FAILURE_KEY = "tick_failure";
+var TASK_WRITE_FAILURE_STATUSES = /* @__PURE__ */ new Set([
+  "claim_failed",
+  "retry_update_failed",
+  "stale_update_failed",
+  "post_send_cleanup_failed"
+]);
+var pickTickFailure = (outcome) => {
+  const value = outcome;
+  if (!value || typeof value !== "object") return null;
+  if (value.ok === false) {
+    const cause2 = value.cause;
+    return {
+      stage: typeof cause2?.stage === "string" && cause2.stage ? cause2.stage : "tick",
+      name: typeof cause2?.name === "string" && cause2.name ? cause2.name : "Error",
+      message: typeof cause2?.message === "string" ? cause2.message : "",
+      code: typeof cause2?.code === "string" && cause2.code ? cause2.code : null
+    };
+  }
+  const failedTasks = value.summary?.details?.failedTasks;
+  if (!Array.isArray(failedTasks)) return null;
+  const hit = failedTasks.find((entry) => TASK_WRITE_FAILURE_STATUSES.has(entry?.status));
+  if (!hit) return null;
+  const reason = typeof hit.reason === "string" ? hit.reason : "";
+  const updateError = typeof hit.updateError === "string" ? hit.updateError : "";
+  const rawMessage = updateError ? `${updateError}\uFF08\u672C\u6765\u8981\u8BB0\u4E0B\u7684\u5931\u8D25\u539F\u56E0\uFF1A${reason || "\u65E0"}\uFF09` : reason;
+  const cause = summarizeErrorCause({ name: "TaskWriteFailed", message: rawMessage }, "tick");
+  return { stage: hit.status, name: cause.name, message: cause.message ?? "", code: null };
+};
+var recordTickOutcome = async (db, outcome, nowMs = Date.now()) => {
+  const failure = pickTickFailure(outcome);
+  if (!failure || typeof db?.prepare !== "function") return;
+  try {
+    await db.prepare(DIAGNOSTICS_TABLE_SQL).run();
+    const existing = await db.prepare("SELECT value FROM worker_diagnostics WHERE key = ?").bind(TICK_FAILURE_KEY).first();
+    const previous = parseStoredTickFailure(existing?.value);
+    const sameSeries = previous && previous.stage === failure.stage && previous.name === failure.name && nowMs - Date.parse(previous.lastAt) <= TICK_FAILURE_SERIES_GAP_MS;
+    const nowIso = new Date(nowMs).toISOString();
+    const record = {
+      ...failure,
+      firstAt: sameSeries ? previous.firstAt : nowIso,
+      lastAt: nowIso,
+      count: sameSeries ? previous.count + 1 : 1
+    };
+    await db.prepare(
+      `INSERT INTO worker_diagnostics (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).bind(TICK_FAILURE_KEY, JSON.stringify(record), nowMs).run();
+  } catch (error) {
+    console.warn("[amsg:tick-report] \u8FD9\u4E00\u8DF3\u7684\u62A5\u9519\u6CA1\u8BB0\u8FDB\u5E93", error);
+  }
+};
+var parseStoredTickFailure = (raw) => {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value.stage !== "string" || typeof value.firstAt !== "string" || typeof value.lastAt !== "string") {
+      return null;
+    }
+    return {
+      stage: value.stage,
+      name: typeof value.name === "string" ? value.name : "Error",
+      message: typeof value.message === "string" ? value.message : "",
+      code: typeof value.code === "string" ? value.code : null,
+      firstAt: value.firstAt,
+      lastAt: value.lastAt,
+      count: Number(value.count) || 1
+    };
+  } catch {
+    return null;
+  }
+};
+var readTickFailure = async (db, nowMs = Date.now()) => {
+  try {
+    const row = await db.prepare("SELECT value FROM worker_diagnostics WHERE key = ?").bind(TICK_FAILURE_KEY).first();
+    const record = parseStoredTickFailure(row?.value);
+    if (!record) return null;
+    return { ...record, ongoing: nowMs - Date.parse(record.lastAt) <= TICK_FAILURE_SERIES_GAP_MS };
+  } catch {
+    return null;
+  }
+};
+var buildTickReport = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const scoped = { ...options, nowMs };
+  const [overdue, recentFailures, tickFailure] = await Promise.all([
+    readOverdueTasks(db, scoped),
+    readRecentFailures(db, scoped),
+    readTickFailure(db, nowMs)
+  ]);
+  return {
+    now: new Date(nowMs).toISOString(),
+    tasks: overdue.tasks,
+    recentFailures,
+    tickFailure,
+    truncated: overdue.truncated
+  };
+};
 
 // worker/amsg/src/nativeFcm.ts
 var accessTokenCache = null;
@@ -14217,13 +14514,14 @@ var buildWorkerConfig = (env) => {
     // 门牌整理最长占住这个角色 120 秒，而它恰恰是在一轮对话刚结束时起跑的：用户下一句话
     // 的即时对话任务排在它后面，人就干等着「正在输入…」。同种后台任务之间仍按角色串行
     // ——同一角色两份整理并发落地，就是拿两份旧快照互相盖。
-    serializeBy: (task) => {
-      const charId = typeof task.metadata?.charId === "string" ? task.metadata.charId : null;
-      if (!charId) return null;
-      const kind = readTaskKind(task.metadata);
-      return kind ? `${charId}#${kind}` : charId;
-    }
+    serializeBy: amsgSerializeKey
   };
+};
+var amsgSerializeKey = (task) => {
+  const charId = typeof task.metadata?.charId === "string" ? task.metadata.charId : null;
+  if (!charId) return null;
+  const kind = readTaskKind(task.metadata);
+  return kind ? `${charId}#${kind}` : charId;
 };
 var REQUIRED_ENV = [
   {
@@ -14288,7 +14586,6 @@ var jsonWithCors = (status, body) => new Response(JSON.stringify(body), {
   status,
   headers: { "Content-Type": "application/json; charset=utf-8", ...CORS_HEADERS }
 });
-var TICK_STALL_MINUTES = 5;
 var classifySchemaProbeError = (error) => {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const name = error instanceof Error ? error.name : "";
@@ -14350,6 +14647,13 @@ var inspectStorage = async (env, probe) => {
            FROM scheduled_messages WHERE status = 'pending'`
     ).bind(nowIso, nowIso).first();
     const pushRow = present.has("push_subscriptions") ? await db.prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS updatedAt FROM push_subscriptions").first() : null;
+    const overdue = stats?.overdue ? await readOverdueTasks(db, {
+      masterKey: env.AMSG_MASTER_KEY?.trim() || void 0,
+      serializeKeyOf: amsgSerializeKey
+    }).catch((error) => {
+      console.warn("[amsg:debug] \u8FC7\u671F\u4EFB\u52A1\u7684\u7EC6\u8D26\u8BFB\u4E0D\u4E86\uFF0C\u5B9A\u65F6\u4EFB\u52A1\u4E00\u9879\u9000\u56DE\u53EA\u770B\u665A\u4E86\u591A\u4E45", error);
+      return null;
+    }) : null;
     return {
       reachable: true,
       schemaReady,
@@ -14363,7 +14667,11 @@ var inspectStorage = async (env, probe) => {
       pushDelivery: await inspectPushDelivery(db, pushRow?.updatedAt ?? null),
       pendingTasks: stats?.pending ?? 0,
       overdueTasks: stats?.overdue ?? 0,
-      oldestOverdueMinutes: stats?.oldest ? Math.floor((Date.now() - Date.parse(stats.oldest)) / 6e4) : null
+      oldestOverdueMinutes: stats?.oldest ? Math.floor((Date.now() - Date.parse(stats.oldest)) / 6e4) : null,
+      // 过期任务里真卡住的、在失败重试的各几条，以及合起来的结论。null = 这次没判出来。
+      stuckTasks: overdue ? overdue.tasks.filter((task) => task.stuck).length : null,
+      retryingTasks: overdue ? overdue.tasks.filter((task) => task.lastError !== null).length : null,
+      overdueVerdict: overdue?.verdict ?? null
     };
   } catch (error) {
     return { reachable: false, error: error?.name || "QueryFailed" };
@@ -14372,8 +14680,9 @@ var inspectStorage = async (env, probe) => {
 var judgeTick = (storage) => {
   if (!storage.reachable || !("pendingTasks" in storage)) return "unknown";
   if (!storage.pendingTasks) return "idle";
+  if (storage.overdueVerdict) return storage.overdueVerdict;
   const overdueMinutes = storage.oldestOverdueMinutes;
-  if (overdueMinutes === null || overdueMinutes < TICK_STALL_MINUTES) return "healthy";
+  if (overdueMinutes === null || overdueMinutes * 6e4 < TICK_STALL_MS) return "healthy";
   return "stalled";
 };
 var INSTANT_TICK_UUID_KEY = "taskUuid";
@@ -14543,6 +14852,36 @@ var src_default = {
         error: { code: "WORKER_CONFIG_MISSING", message: report.message, missing: report.missing }
       });
     }
+    if (pathname.endsWith("/tick-report")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method !== "GET") {
+        return jsonWithCors(405, {
+          success: false,
+          error: { code: "METHOD_NOT_ALLOWED", message: "/tick-report \u53EA\u63A5\u53D7 GET" }
+        });
+      }
+      const token = env.AMSG_SERVER_TOKEN?.trim() ?? "";
+      const clientToken = request.headers.get("X-Client-Token") ?? "";
+      if (token && (!clientToken || !await constantTimeEqual2(clientToken, token))) {
+        return jsonWithCors(401, {
+          success: false,
+          error: { code: "INVALID_CLIENT_TOKEN", message: "\u5171\u4EAB\u5BC6\u94A5\u65E0\u6548\u6216\u7F3A\u5931" }
+        });
+      }
+      try {
+        const report2 = await buildTickReport(env.DB, {
+          masterKey: env.AMSG_MASTER_KEY?.trim(),
+          serializeKeyOf: amsgSerializeKey
+        });
+        return jsonWithCors(200, { success: true, data: report2 });
+      } catch (error) {
+        const cause = summarizeErrorCause(error, "request");
+        return jsonWithCors(500, {
+          success: false,
+          error: { code: "TICK_REPORT_FAILED", message: cause.message ? `${cause.name}: ${cause.message}` : cause.name }
+        });
+      }
+    }
     if (pathname.endsWith("/instant-chat")) {
       if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
       if (method !== "POST") {
@@ -14561,7 +14900,8 @@ var src_default = {
       console.error(`[amsg] \u5B9A\u65F6\u4EFB\u52A1\u6574\u8F6E\u8DF3\u8FC7\uFF1A${report.message}`);
       return;
     }
-    await upstream.scheduled(event, env);
+    const outcome = await upstream.scheduled(event, env);
+    await recordTickOutcome(env.DB, outcome);
   }
 };
 export {
@@ -14569,6 +14909,7 @@ export {
   amsgFireSettled,
   amsgHooks,
   amsgReasoningKey,
+  amsgSerializeKey,
   amsgStaleSkip,
   attachScheduledTasks,
   buildWorkerConfig,

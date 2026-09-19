@@ -1,4 +1,5 @@
 import { toMountedWorldbook } from './worldbook';
+import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
 
 
@@ -116,7 +117,7 @@ const SULLY_PRESET_EMOJIS = [
 // 单例连接缓存。openDB 原本每次调用都新开一条 IDB 连接, 既不复用也不 close ——
 // 在记忆管线 (hybridSearch / touchAccess 等) 并发读写下会瞬间堆出几十条 AetherOS_Data
 // 连接, 撑爆 Chromium 底层 backing store; 一旦底层报错, 整个 origin 的 IndexedDB
-// (含 Service Worker 的 dedupe / inbox 库) 可能跟着开不了或被强关, Instant Push 因此确认超时。
+// (含 Service Worker 的 dedupe / inbox 库) 可能跟着开不了或被强关, 推送消息因此确认超时。
 // 改成复用同一条连接, 并在连接被外部失效 (另一 tab 升级版本 / 浏览器强制关闭) 时
 // 清掉缓存, 下次 openDB 自动重开 —— 一处改, 全部 ~165 个调用点受益。
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -2778,6 +2779,24 @@ export const DB = {
       });
   },
 
+  /** Apply UI changes against the latest persisted world without rolling back engine progress. */
+  updateWorld: async (id: string, patch: Partial<WorldProfile> | ((current: WorldProfile) => Partial<WorldProfile>)): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_WORLDS, 'readwrite');
+          const store = tx.objectStore(STORE_WORLDS);
+          const request = store.get(id);
+          request.onsuccess = () => {
+              if (!request.result) return;
+              const current = request.result as WorldProfile;
+              store.put({ ...current, ...(typeof patch === 'function' ? patch(current) : patch), id });
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+      });
+  },
+
   deleteWorld: async (id: string): Promise<void> => {
       const db = await openDB();
       // 连带删掉该世界的全部演绎历史
@@ -2802,17 +2821,67 @@ export const DB = {
           const index = db.transaction(STORE_WORLD_EPISODES, 'readonly').objectStore(STORE_WORLD_EPISODES).index('worldId');
           const request = index.getAll(IDBKeyRange.only(worldId));
           request.onsuccess = () => {
-              const all = (request.result || []).sort((a: WorldEpisode, b: WorldEpisode) => b.round - a.round);
+              const all = orderWorldEpisodes(request.result || []);
               resolve(all.slice(0, limit));
           };
           request.onerror = () => reject(request.error);
       });
   },
 
+  /** 重演的正文与副作用同事务提交；请求期间的世界编辑不被旧快照覆盖。 */
+  replaceWorldBeat: async (
+      world: WorldProfile, episode: WorldEpisode, charId: string,
+      card: { content: string; metadata: Message['metadata']; insertIfMissing: boolean },
+      expectedWorld: WorldProfile, expectedEpisode: WorldEpisode,
+  ): Promise<void> => {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_WORLDS, STORE_WORLD_EPISODES, STORE_MESSAGES], 'readwrite');
+          const worlds = tx.objectStore(STORE_WORLDS);
+          const episodes = tx.objectStore(STORE_WORLD_EPISODES);
+          const messages = tx.objectStore(STORE_MESSAGES);
+          let failure: Error | undefined;
+          const abort = () => { failure = new Error('重演期间家园记录已变化，请重新重演'); tx.abort(); };
+          const request = worlds.get(world.id);
+          request.onsuccess = () => {
+              const current = request.result as WorldProfile | undefined;
+              const fields = ['storyClock', 'threads', 'seeds', 'relationships', 'feedReactions'] as const;
+              if (!current || fields.some(key => JSON.stringify(current[key]) !== JSON.stringify(expectedWorld[key]))) { abort(); return; }
+              worlds.put({ ...current, threads: world.threads, seeds: world.seeds, relationships: world.relationships, feedReactions: world.feedReactions, updatedAt: Date.now() });
+          };
+          const epRequest = episodes.get(episode.id);
+          epRequest.onsuccess = () => {
+              if (!epRequest.result || JSON.stringify(epRequest.result.beats) !== JSON.stringify(expectedEpisode.beats)) { abort(); return; }
+              const { observationNumber: _display, ...stored } = episode;
+              episodes.put(stored);
+          };
+          let found = false;
+          const cursorRequest = messages.index('charId').openCursor(IDBKeyRange.only(charId));
+          cursorRequest.onsuccess = () => {
+              const cursor = cursorRequest.result;
+              if (cursor) {
+                  const message = cursor.value as Message;
+                  const meta = message.metadata as any;
+                  if (message.type === 'world_card' && meta?.worldId === world.id && meta.round === episode.round && meta.storyTime === episode.storyTime) {
+                      found = true;
+                      cursor.update({ ...message, content: card.content, metadata: card.metadata });
+                  }
+                  cursor.continue();
+              } else if (!found && card.insertIfMissing) {
+                  messages.add({ charId, role: 'assistant', type: 'world_card', content: card.content, metadata: card.metadata, timestamp: Date.now() });
+              }
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(failure || tx.error);
+          tx.onabort = () => reject(failure || tx.error || new Error('重演保存失败'));
+      });
+  },
+
   saveWorldEpisode: async (episode: WorldEpisode): Promise<void> => {
       const db = await openDB();
       const tx = db.transaction(STORE_WORLD_EPISODES, 'readwrite');
-      tx.objectStore(STORE_WORLD_EPISODES).put(episode);
+      const { observationNumber: _displayOnly, ...stored } = episode;
+      tx.objectStore(STORE_WORLD_EPISODES).put(stored);
       return new Promise((resolve, reject) => {
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);

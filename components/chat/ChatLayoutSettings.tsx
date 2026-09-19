@@ -332,7 +332,6 @@ export default function ChatLayoutSettings({theme,updateTheme}:{theme:OSTheme;up
     const headerDensity = theme.chatHeaderDensity || defaults.chatHeaderDensity;
     const statusStyle = theme.chatStatusStyle || defaults.chatStatusStyle;
     const sendButtonStyle = theme.chatSendButtonStyle || defaults.chatSendButtonStyle;
-    const pendingIndicator = theme.chatPendingIndicator !== false;
     const showHeaderBuffs = theme.chatHideHeaderBuffs !== true;
 
 return <div><details className="chat-decoration-layout-group"><summary>内置布局</summary><div>
@@ -397,19 +396,6 @@ return <div><details className="chat-decoration-layout-group"><summary>内置布
                 </div>
                 <div className="mt-4">
                     <ChoiceGroup title="时间戳" items={choices.timestamp} value={showTimestamp} onPick={(value) => updateTheme({ chatShowTimestamp: value as OSTheme['chatShowTimestamp'] })} />
-                </div>
-                <div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2.5">
-                    <div className="min-w-0 pr-3">
-                        <div className="text-[11px] font-bold text-slate-700">发送准备中圆点</div>
-                        <div className="mt-0.5 text-[10px] text-slate-400">Instant Push 期间，自己的气泡左侧显示三个跳动的小圆点。</div>
-                    </div>
-                    <button
-                        onClick={() => updateTheme({ chatPendingIndicator: !pendingIndicator })}
-                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${pendingIndicator ? 'bg-primary' : 'bg-slate-300'}`}
-                        aria-pressed={pendingIndicator}
-                    >
-                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${pendingIndicator ? 'left-[22px]' : 'left-0.5'}`} />
-                    </button>
                 </div>
                 </div></details>
 <details className="chat-decoration-layout-group" open><summary>细节微调</summary><div><ChatFineTunePanel value={theme} onChange={updateTheme}/><button className="chat-decoration-link" onClick={()=>updateTheme({...FINE_TUNE_DEFAULTS})}>微调恢复默认</button></div></details>
