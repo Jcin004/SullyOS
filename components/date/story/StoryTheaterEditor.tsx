@@ -4,7 +4,7 @@ import { DB } from '../../../utils/db';
 import { storyTheaterThreadId } from '../../../utils/storyTheater';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
-import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask, hasStoryTheaterParticipant } from '../../../utils/storyTheater';
+import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask, hasStoryTheaterParticipant } from '../../../utils/storyTheater';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -72,7 +72,6 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             ...current,
             characterIds,
             selectedWorldbookIds: adding ? Array.from(new Set([...current.selectedWorldbookIds, ...(char.mountedWorldbooks || []).map(book => book.id)])) : current.selectedWorldbookIds.filter(id => validBooks.has(id)),
-            characterContextLimits: { ...current.characterContextLimits, ...(adding && !current.characterContextLimits[char.id] ? { [char.id]: 100 } : {}) },
             updatedAt: Date.now(),
         };
     });
@@ -91,6 +90,29 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         try { await onSave({ ...draft, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
         finally { setSaving(false); }
     };
+    const recentContextFields = <div className='space-y-2'>
+        {memoryParticipants.map(char => (
+            <label key={char.id} className='flex items-center gap-3 text-xs'>
+                <span className='flex-1 truncate'>{char.name}{draft.mask?.type === 'character' && draft.mask.id === char.id ? '（当前身份）' : ''} 最近原文</span>
+                <input
+                    type='number'
+                    min={0}
+                    max={500}
+                    value={getStoryCharacterContextLimit(draft.characterContextLimits[char.id])}
+                    onChange={event => {
+                        const limit = getStoryCharacterContextLimit(event.currentTarget.valueAsNumber || 0);
+                        setDraft(current => ({
+                            ...current,
+                            characterContextLimits: { ...current.characterContextLimits, [char.id]: limit },
+                            updatedAt: Date.now(),
+                        }));
+                    }}
+                    className='w-20 px-3 py-2 rounded-xl bg-white border border-slate-200 text-right'
+                />
+                <span className='text-slate-400'>条</span>
+            </label>
+        ))}
+    </div>;
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
         <header className='story-safe-header shrink-0 border-b border-slate-200'>
@@ -122,15 +144,19 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>03 / Memory</div><h2 className='mt-1 text-lg font-semibold'>这段故事是真的吗</h2>
                 <div className='mt-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'><button disabled={maskLocked} onClick={() => setDraft(current => ({ ...current, mask: { type: 'user' }, writesToCharacterMemory: true, carryCharacterMemory: true, updatedAt: Date.now() }))} className={`py-3 rounded-lg text-[11px] font-bold disabled:opacity-35 ${draft.writesToCharacterMemory ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>真实时间陪伴</button><button disabled={maskLocked} onClick={() => setDraft(current => ({ ...current, writesToCharacterMemory: false, carryCharacterMemory: false, updatedAt: Date.now() }))} className={`py-3 rounded-lg text-[11px] font-bold disabled:opacity-35 ${!draft.writesToCharacterMemory ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>虚构剧场</button></div>
                 {maskLocked && <p className='mt-2 text-[10px] text-slate-400'>故事开始后，真实/虚构模式也会固定；虚构剧场的记忆输入仍可单独调整。</p>}
-                {draft.writesToCharacterMemory ? <div className='mt-5 p-4 rounded-2xl bg-amber-50 border border-amber-200'>
-                    <div className='text-xs font-bold text-amber-800'>记忆输入与输出都会开启</div>
-                    <p className='mt-1 text-[10px] leading-5 text-amber-700'>会读取角色既有记忆；你写的内容与故事正文也会分别进入每位角色的正常记忆，作为你们的共同经历。</p>
-                    <p className='mt-2 text-[10px] leading-5 text-amber-700'>跟随真实时间：你的输入和角色回复会按各自实际发送的时间记录，无需设置日期。正文中的虚构日期不会改变聊天记录的时间与顺序；如果不希望故事成为共同记忆，请在开始前选择「虚构剧场」。</p>
-                    <p className='mt-2 pt-2 border-t border-amber-200 text-[10px] leading-5 font-semibold text-amber-800'>内置真实性保护：角色不能捏造和你的共同记忆，也不能给已有记忆添油加醋。</p>
+                {draft.writesToCharacterMemory ? <div className='mt-5 space-y-4'>
+                    <div className='p-4 rounded-2xl bg-amber-50 border border-amber-200'>
+                        <div className='text-xs font-bold text-amber-800'>记忆输入与输出都会开启</div>
+                        <p className='mt-1 text-[10px] leading-5 text-amber-700'>会读取角色既有记忆；你写的内容与故事正文也会分别进入每位角色的正常记忆，作为你们的共同经历。</p>
+                        <p className='mt-2 text-[10px] leading-5 text-amber-700'>跟随真实时间：你的输入和角色回复会按各自实际发送的时间记录，无需设置日期。正文中的虚构日期不会改变聊天记录的时间与顺序；如果不希望故事成为共同记忆，请在开始前选择「虚构剧场」。</p>
+                        <p className='mt-2 pt-2 border-t border-amber-200 text-[10px] leading-5 font-semibold text-amber-800'>内置真实性保护：角色不能捏造和你的共同记忆，也不能给已有记忆添油加醋。</p>
+                    </div>
+                    <p className='text-[10px] leading-5 text-slate-500'>最近原文是从角色时间线额外带入的记录。填 0 可关闭该角色的原文。</p>
+                    {recentContextFields}
                 </div> : <div className='mt-5 space-y-5'>
                     <div className='py-3 border-y border-slate-200 flex items-center justify-between gap-3'><div><div className='text-sm font-semibold'>自动记忆输出</div><p className='mt-1 text-[10px] leading-5 text-slate-500'>虚构时间与经历不会自动写入角色的正常记忆。需要保留时，可在剧情右上角「事件盒」选择摘要、填写日期，手动转为带剧情来源的记忆。</p></div><span className='shrink-0 px-2 py-1 rounded-full bg-slate-200 text-[9px] font-bold text-slate-500'>关闭</span></div>
                     <div className='flex items-start justify-between gap-5'><div><div className='text-sm font-semibold'>记忆输入</div><p className='mt-1 text-[10px] text-slate-500'>默认关闭；打开后角色会带着既有记忆进入虚构故事。关闭时只读取名字、核心指令和世界观。</p></div><Toggle value={draft.carryCharacterMemory} onChange={value => update('carryCharacterMemory', value)} /></div>
-                    {draft.carryCharacterMemory && <div className='space-y-2'>{memoryParticipants.map(char => <label key={char.id} className='flex items-center gap-3 text-xs'><span className='flex-1 truncate'>{char.name}{draft.mask?.type === 'character' && draft.mask.id === char.id ? '（当前身份）' : ''} 最近原文</span><input type='number' min={0} max={500} value={draft.characterContextLimits[char.id] ?? 100} onChange={event => update('characterContextLimits', { ...draft.characterContextLimits, [char.id]: Math.max(0, Math.min(500, Number(event.target.value) || 0)) })} className='w-20 px-3 py-2 rounded-xl bg-white border border-slate-200 text-right' /><span className='text-slate-400'>条</span></label>)}</div>}
+                    {draft.carryCharacterMemory && recentContextFields}
                     <div><div className='text-sm font-semibold'>归档方式</div><div className='mt-2 grid grid-cols-3 p-1 rounded-xl bg-slate-200'>
                         {(['summary', 'vector', 'manual'] as const).map(mode => <button key={mode} disabled={summarizing} onClick={() => setDraft(current => ({ ...current, archiveMode: mode === 'manual' ? 'manual' : 'auto', archiveStrategy: mode === 'vector' ? 'vector' : 'summary' }))} className={`py-2 rounded-lg text-[11px] font-bold ${(draft.archiveMode === 'manual' ? mode === 'manual' : mode === draft.archiveStrategy) ? 'bg-white shadow-sm' : 'text-slate-500'}`}>{mode === 'summary' ? '事件盒' : mode === 'vector' ? '独立向量' : '手动总结'}</button>)}
                     </div></div>

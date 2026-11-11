@@ -14,6 +14,24 @@ describe('剧情重写上下文和保存', () => {
         ] as const) await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content, metadata });
         expect((await loadStoryActorContext(char, 'current', 20)).map(message => message.content)).toEqual(['私聊', '别的剧情']);
     });
+
+    it('用中央消息的副本映射排除失去来源标记的当前剧情原文，再按角色额度截取', async () => {
+        const char = { id: 'legacy-mirror-actor', contextRangeMode: 'manual', contextLimit: 20, contextRangePolicyVersion: 1 } as CharacterProfile;
+        await DB.saveMessage({ charId: char.id, role: 'user', type: 'text', content: '私聊' });
+        const mirrorId = await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: '当前剧情原文' });
+        const centralId = await DB.saveMessage({
+            charId: 'story-theater:current',
+            role: 'assistant',
+            type: 'text',
+            content: '当前剧情原文',
+            metadata: { source: 'story_theater', theaterId: 'current', theaterMirrorIds: { [char.id]: mirrorId } },
+        });
+        const current = (await DB.getMessagesByCharId('story-theater:current', true)).filter(row => row.id === centralId);
+        expect((await loadStoryActorContext(char, 'current', 1, current)).map(row => row.content)).toEqual(['私聊']);
+        expect(await loadStoryActorContext(char, 'current', 0, current)).toEqual([]);
+        expect((await DB.getMessagesByCharId(char.id, true)).map(row => row.content)).toEqual(['私聊', '当前剧情原文']);
+    });
+
     const seed = async (id: string): Promise<Message> => {
         const centralId = await DB.saveMessage({ charId: id, role: 'assistant', type: 'text', content: '旧回复' });
         const mirrorId = await DB.saveMessage({ charId: id + '-actor', role: 'assistant', type: 'text', content: '旧回复' });

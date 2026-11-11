@@ -1395,6 +1395,17 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
     return blocks;
 };
 
+export const getStoryCharacterContextLimit = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(0, Math.min(500, Math.floor(value)))
+        : 100;
+
+const formatStoryContextContent = (content: string): string => String(content || '')
+    .replace(/<scene_header\b[^>]*>[\s\S]*?<\/scene_header\s*>/gi, '')
+    .replace(/data:[^\s]+/gi, '[媒体]')
+    .trim()
+    .slice(0, 4000);
+
 export const formatActorRecentMessages = (
     char: CharacterProfile,
     messages: Message[],
@@ -1408,21 +1419,76 @@ export const formatActorRecentMessages = (
     const withTimestamps = options?.includeTimestamps === true && char.timeAwarenessEnabled !== false;
     const rows = messages.map(message => {
         const speaker = message.role === 'user' ? `记忆中的你（${originalUser}）` : message.role === 'assistant' ? char.name : '系统';
-        const clean = String(message.content || '')
-            .replace(/<scene_header\b[^>]*>[\s\S]*?<\/scene_header\s*>/gi, '')
-            .replace(/data:[^\s]+/gi, '[媒体]')
-            .trim()
-            .slice(0, 4000);
         const prefix = withTimestamps && hasReliableMessageTimestamp(message)
             ? `[${new Date(message.timestamp).toLocaleString()}] `
             : '';
-        return `- ${prefix}${speaker}：${clean}`;
+        return `- ${prefix}${speaker}：${formatStoryContextContent(message.content)}`;
     });
     const identityReminder = currentIdentity === originalUser
         ? ''
         : `\n当前执笔身份是「${currentIdentity}」；不得把下列“记忆中的你”重新解释成当前身份。`;
     return `### ${char.name} 最近携带的专属原文上下文（${messages.length} 条）\n以下记录只属于「${char.name}」与原互动对象「${originalUser}」，不得并入其他角色的经历。${identityReminder}\n${rows.join('\n')}`;
 };
+
+interface StoryActorPromptContext {
+    actor: CharacterProfile;
+    core: string;
+    recent: Message[];
+}
+
+export function formatStoryActorContexts(
+    contexts: readonly StoryActorPromptContext[],
+    originalUserName: string,
+    currentIdentityName: string,
+    shareStoryOriginals: boolean,
+): string {
+    const groups = new Map<string, { actor: CharacterProfile; message: Message }[]>();
+    if (shareStoryOriginals) {
+        for (const { actor, recent } of contexts) {
+            for (const message of recent) {
+                const { source, theaterId, theaterCentralId } = message.metadata ?? {};
+                const storyMirror = source === 'story_theater_memory';
+                const storyId = storyMirror && typeof theaterId === 'string' && theaterId ? theaterId : undefined;
+                const centralId = storyId && typeof theaterCentralId === 'number' && Number.isSafeInteger(theaterCentralId) && theaterCentralId > 0
+                    ? theaterCentralId
+                    : undefined;
+                // Older replies may only retain the story's markup. Compare full messages before formatting trims them.
+                const legacyStory = (!source || storyMirror) && message.role === 'assistant'
+                    && /<(?:story_text|scene_header)\b[^>]*>/i.test(message.content);
+                if (!centralId && !legacyStory) continue;
+                const key = JSON.stringify([storyId, centralId, message.role, message.content]);
+                const copies = groups.get(key);
+                if (copies) copies.push({ actor, message });
+                else groups.set(key, [{ actor, message }]);
+            }
+        }
+    }
+
+    const shared: { message: Message; owners: string[] }[] = [];
+    const sharedCopies = new Set<Message>();
+    for (const copies of groups.values()) {
+        const actors = new Set(copies.map(copy => copy.actor.id));
+        // A repeated occurrence in one timeline makes the pairing ambiguous.
+        if (actors.size < 2 || actors.size !== copies.length) continue;
+        shared.push({ message: copies[0].message, owners: copies.map(copy => copy.actor.name) });
+        for (const { message } of copies) sharedCopies.add(message);
+    }
+
+    const blocks = contexts.map(({ actor, core, recent }) => {
+        const individual = recent.filter(message => !sharedCopies.has(message));
+        return `${core}\n${formatActorRecentMessages(actor, individual, originalUserName, currentIdentityName)}`.trim();
+    });
+    if (shared.length > 0) {
+        shared.sort((a, b) => a.message.timestamp - b.message.timestamp || a.message.id - b.message.id);
+        const user = originalUserName.trim() || '你';
+        const rows = shared.map(({ message, owners }) => {
+            const speaker = message.role === 'user' ? `用户推进（${user}）` : message.role === 'assistant' ? '剧情正文' : '系统';
+            return `- 时间线：${owners.join('、')}｜${speaker}：${formatStoryContextContent(message.content)}`;
+        });
+        blocks.push(`### 多位角色时间线中的共同剧情原文\n每条只展示一份正文，归属以列出的角色时间线为准。\n${rows.join('\n')}`);
+    }
+    return blocks.join('\n\n---\n\n');
+}
 
 export const buildStoryHistory = (messages: Message[]): StoryApiMessage[] => messages
     .filter(message => !message.metadata?.theaterArchived && message.role !== 'system')
