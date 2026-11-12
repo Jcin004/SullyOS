@@ -6,6 +6,7 @@ import { restoreSARLocalBackup } from './vrWorld/sarBackup';
 import { canMigrateLocalKey } from './independentUserImport';
 import { importUserSpaces } from './userSpaceBackup';
 import { STORY_THEATER_APPEARANCE_STORAGE_KEY } from './storyTheaterBackup';
+import { STORY_LIBRARY_STORAGE_KEY } from './storyTheaterLibrary';
 import { restoreDecorationMedia } from './decorationMediaBackup';
 import { createLocalId } from './localId';
 
@@ -149,6 +150,7 @@ export async function importLegacyAsIndependentUser(data: FullBackupData, zip: a
     put('spark_char_handles', data.socialAppData?.charHandles, true);
     put('spark_user_id', data.socialAppData?.userId);
     put(STORY_THEATER_APPEARANCE_STORAGE_KEY, data.storyTheaterAppearance);
+    put(STORY_LIBRARY_STORAGE_KEY, data.storyTheaterLibrary);
     restoreSARLocalBackup(data.sarLocalState, { replaceMissing: false }, { getItem: key => local[key] ?? null, setItem: (key, value) => put(key, value), removeItem: key => { delete local[key]; } });
 
     for (const asset of data.collaborationAssetIndex || []) {

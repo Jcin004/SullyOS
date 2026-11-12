@@ -11,6 +11,7 @@ import {
   PaintBrush,
   Palette,
   Heart,
+  FilmSlate,
   BookOpenText,
   SealCheck,
   House,
@@ -50,6 +51,7 @@ export const Icons: Record<string, React.FC<{ className?: string }>> = {
   ThemeMaker: ({ className }) => <PaintBrush className={className} weight="regular" />,
   Appearance: ({ className }) => <Palette className={className} weight="regular" />,
   Date: ({ className }) => <Heart className={className} weight="regular" />,
+  Story: ({ className }) => <FilmSlate className={className} weight="regular" />,
   Journal: ({ className }) => <BookOpenText className={className} weight="regular" />,
   Schedule: ({ className }) => <SealCheck className={className} weight="regular" />,
   Room: ({ className }) => <House className={className} weight="regular" />,
@@ -93,6 +95,7 @@ export const INSTALLED_APPS: AppConfig[] = [
   { id: AppID.FriendFeed, name: '哔哔', icon: 'FriendFeed', color: 'emerald' },
   // { id: AppID.Browser, name: '浏览器', icon: 'Browser', color: 'blue' }, // Hidden
   { id: AppID.Date, name: '见面', icon: 'Date', color: 'pink' },
+  { id: AppID.Story, name: '剧情', icon: 'Story', color: 'violet' },
   { id: AppID.User, name: '档案', icon: 'User', color: 'blue' },
   { id: AppID.Bank, name: '存钱罐', icon: 'Bank', color: 'lime' }, // Hidden
   { id: AppID.Journal, name: '交换日记', icon: 'Journal', color: 'amber' },

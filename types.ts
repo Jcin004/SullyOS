@@ -11,6 +11,7 @@ export enum AppID {
   ThemeMaker = 'thememaker', // Legacy shortcut ID; opens the embedded bubble maker, not an installed App.
   Appearance = 'appearance',
   Date = 'date',
+  Story = 'story',
   User = 'user',
   Journal = 'journal',
   Schedule = 'schedule',
@@ -4168,6 +4169,7 @@ export interface FullBackupData {
     bm25Mode?: string;
     lastActiveCharId?: string;
     storyTheaterAppearance?: string;
+    storyTheaterLibrary?: string;
     eventNotifFlags?: Record<string, string>;  // sullyos_* 事件通知标记
     hotNewsSnapshots?: HotNewsSnapshot[];
     dreamCollection?: Record<string, { firstAt: number; count: number }>;  // 梦境盲盒收藏册（os_dream_collection，账号级 localStorage）

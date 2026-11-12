@@ -542,7 +542,17 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
   }, []);
 
   const availableGridIds = useMemo(() => availableGridApps.map(app => app.id), [availableGridApps]);
-  const [launcherAppOrder, setLauncherAppOrder] = useState<string[]>(() => normalizeOrder(theme.launcherAppOrder, INSTALLED_APPS.filter(app => !DOCK_APPS.includes(app.id)).map(app => app.id)));
+  const APPS_PER_PAGE = 8;
+  const [launcherAppOrder, setLauncherAppOrder] = useState<string[]>(() => {
+      const order = normalizeOrder(theme.launcherAppOrder, availableGridIds);
+      if (theme.launcherAppOrder?.includes(AppID.Story)) return order;
+      const storyIndex = order.indexOf(AppID.Story);
+      if (storyIndex < APPS_PER_PAGE) return order;
+      const dateIndex = order.indexOf(AppID.Date);
+      order.splice(storyIndex, 1);
+      order.splice(dateIndex < 0 ? APPS_PER_PAGE - 1 : Math.min(dateIndex + 1, APPS_PER_PAGE - 1), 0, AppID.Story);
+      return order;
+  });
   const [launcherDockOrder, setLauncherDockOrder] = useState<string[]>(() => normalizeOrder(theme.launcherDockOrder, DOCK_APPS));
   const [pinwheelOrder, setPinwheelOrder] = useState<Array<'music' | 'appsA' | 'appsB' | 'image'>>(() => {
       const available = ['music', 'appsA', 'appsB', 'image'] as const;
@@ -591,7 +601,6 @@ const Launcher: React.FC<{ staticPreview?: boolean }> = ({ staticPreview = false
   // Split apps into pages of 8 (4 cols x 2 rows fit comfortably below widget)
   // Pages: 0 = clock+chat+music+grid (original), 1 = pinwheel, 2 = widget images + grid,
   //        3+ = plain grid. Pad to at least 3 slots so the pinwheel/widget pages always exist.
-  const APPS_PER_PAGE = 8;
   const appPages = useMemo(() => {
       const pages: typeof INSTALLED_APPS[] = [];
       for (let i = 0; i < gridApps.length; i += APPS_PER_PAGE) {

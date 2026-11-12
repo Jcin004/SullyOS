@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { readShareFile } from '../../../utils/pngShare';
-import { Archive, ArrowLeft, Database, DownloadSimple, FilmSlate, Plus, SpinnerGap, Trash, UploadSimple, UsersThree, X } from '@phosphor-icons/react';
+import { Archive, ArrowLeft, CaretRight, Database, DotsThree, DownloadSimple, FolderSimple, FolderSimplePlus, Plus, SpinnerGap, UploadSimple, UsersThree, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
 import type { StoryTheaterEntry, StoryTheaterMask, StoryTheaterMaskSelection, StoryTheaterPreset } from '../../../types';
@@ -26,9 +26,11 @@ import StoryVectorMemoryPanel from './StoryVectorMemoryPanel';
 import StoryArchivePanel from './StoryArchivePanel';
 import { StoryAppearanceButton, StoryTheaterThemeProvider } from './StoryTheaterTheme';
 import { deleteStoryTheaterData } from '../../../utils/storyTheaterDeletion';
+import { getStoryFolder, loadStoryLibrary, moveStoryInLibrary, saveStoryLibrary, type StoryLibrary } from '../../../utils/storyTheaterLibrary';
+import StoryLibraryDialog, { type StoryLibraryAction } from './StoryLibraryDialog';
 
 interface Props {
-    onSwitchCompanion: () => void;
+    onSwitchCompanion?: () => void;
     onClose: () => void;
 }
 
@@ -45,8 +47,39 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     const [maskLocked, setMaskLocked] = useState(false);
     const [deletingEntry, setDeletingEntry] = useState<StoryTheaterEntry | null>(null);
     const [deletingStory, setDeletingStory] = useState(false);
+    const [library, setLibrary] = useState(loadStoryLibrary);
+    const [folderId, setFolderId] = useState<string | null>(null);
+    const [libraryAction, setLibraryAction] = useState<StoryLibraryAction | null>(null);
+    const libraryScroll = useRef<HTMLElement>(null);
     const importInput = useRef<HTMLInputElement>(null);
     const presets = useMemo(() => withBuiltInStoryPresets(customPresets), [customPresets]);
+    const currentFolder = library.folders.find(folder => folder.id === folderId);
+    const parentFolder = library.folders.find(folder => folder.id === currentFolder?.parentId);
+    const visibleFolders = library.folders.filter(folder => folder.parentId === folderId);
+    const visibleEntries = entries.filter(entry => getStoryFolder(library, entry.id) === folderId);
+
+    const updateLibrary = useCallback((update: (current: StoryLibrary) => StoryLibrary) => {
+        try {
+            const next = update(loadStoryLibrary());
+            saveStoryLibrary(next);
+            setLibrary(next);
+            return true;
+        } catch {
+            addToast('文件夹更改未保存，请重试', 'error');
+            return false;
+        }
+    }, [addToast]);
+
+    const closeLibraryDialog = useCallback(() => setLibraryAction(null), []);
+    const openFolder = (id: string | null) => {
+        setFolderId(id);
+        if (libraryScroll.current) libraryScroll.current.scrollTop = 0;
+    };
+    const startStory = () => {
+        setMaskLocked(false);
+        setActiveEntry({ ...createStoryTheaterDraft(), presetId: presets[0]?.id });
+        setView('editor');
+    };
 
     const reload = useCallback(async () => {
         const [storedEntries, storedPresets, storedMasks] = await Promise.all([DB.getStoryTheaters(), DB.getStoryTheaterPresets(), DB.getStoryTheaterMasks()]);
@@ -74,10 +107,13 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     const saveEntry = useCallback(async (next: StoryTheaterEntry) => {
         const normalized = normalizeStoryTheater(next);
         await DB.saveStoryTheater(normalized);
+        if (folderId && !entries.some(entry => entry.id === normalized.id)) {
+            updateLibrary(current => moveStoryInLibrary(current, normalized.id, folderId));
+        }
         setEntries(current => [normalized, ...current.filter(item => item.id !== normalized.id)].sort((a, b) => b.updatedAt - a.updatedAt));
         setActiveEntry(normalized);
         setView('session');
-    }, []);
+    }, [entries, folderId, updateLibrary]);
 
     const persistEntryInSession = useCallback(async (next: StoryTheaterEntry) => {
         const normalized = normalizeStoryTheater(next);
@@ -131,6 +167,9 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         try {
             const result = await deleteStoryTheaterData(deletingEntry, remoteVectorConfig);
             setEntries(current => current.filter(item => item.id !== deletingEntry.id));
+            if (getStoryFolder(library, deletingEntry.id)) {
+                updateLibrary(current => moveStoryInLibrary(current, deletingEntry.id, null));
+            }
             if (activeEntry?.id === deletingEntry.id) setActiveEntry(null);
             setDeletingEntry(null);
             setView('list');
@@ -145,7 +184,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         } finally {
             setDeletingStory(false);
         }
-    }, [activeEntry?.id, addToast, deletingEntry, deletingStory, remoteVectorConfig]);
+    }, [activeEntry?.id, addToast, deletingEntry, deletingStory, library, remoteVectorConfig, updateLibrary]);
 
     const selectMask = useCallback((selection: StoryTheaterMaskSelection) => {
         if (maskLocked) return;
@@ -234,26 +273,44 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
         <header className='story-safe-header shrink-0 border-b border-slate-200'>
             <div className='h-16 px-4 flex items-center gap-3'>
-                <button onClick={onClose} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
-                <div><div className='text-[9px] uppercase tracking-[.24em] font-bold text-violet-500'>Meet</div><h1 className='font-semibold'>见面</h1></div>
+                <button onClick={() => currentFolder ? openFolder(currentFolder.parentId) : onClose()} aria-label={currentFolder ? '返回上一级' : '返回桌面'} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
+                <h1 className='font-semibold'>{onSwitchCompanion ? '见面' : '剧情'}</h1>
                 <StoryAppearanceButton className='ml-auto bg-white border border-slate-200' />
-                <button onClick={() => { setMaskLocked(false); setActiveEntry({ ...createStoryTheaterDraft(), presetId: presets[0]?.id }); setView('editor'); }} className='w-10 h-10 rounded-full bg-slate-900 text-white grid place-items-center'><Plus size={19} /></button>
+                <button onClick={startStory} aria-label='新建剧情' className='w-10 h-10 rounded-full bg-slate-900 text-white grid place-items-center'><Plus size={19} /></button>
             </div>
-            <div className='mx-5 mb-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'>
+            {onSwitchCompanion && <div className='mx-5 mb-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'>
                 <button onClick={onSwitchCompanion} className='py-2 rounded-lg text-xs font-bold text-slate-500'>陪伴</button>
                 <button className='py-2 rounded-lg bg-white shadow-sm text-xs font-bold text-violet-700'>剧情</button>
-            </div>
+            </div>}
         </header>
 
-        <main className='story-page-scroll flex-1 overflow-y-auto px-5 py-6 pb-24'>
+        <main ref={libraryScroll} className='story-page-scroll flex-1 overflow-y-auto px-5 pb-24'>
             <div className='max-w-2xl mx-auto'>
-                <section className='story-cinema-rule pb-6 border-b border-slate-200'>
-                    <div className='text-[9px] tracking-[.24em] uppercase font-bold text-violet-500'>Your theaters</div>
-                    <div className='mt-2 flex items-end justify-between gap-5'><div><h2 className='text-3xl font-serif font-semibold'>很多条剧情，<br />各自拥有一条时间线。</h2><p className='mt-3 text-[11px] leading-5 text-slate-500'>角色在新增时一次选定。世界书、记忆与预设的改动都只发生在这只沙盒里。</p></div><FilmSlate size={48} weight='duotone' className='shrink-0 text-violet-300' /></div>
-                </section>
+                <div className='flex min-h-14 flex-wrap items-center justify-between gap-x-3 border-b border-slate-200'>
+                    <nav aria-label='剧情文件夹路径' className='min-w-0 flex flex-wrap items-center gap-x-1.5 text-sm'>
+                        {currentFolder ? <button onClick={() => openFolder(null)} className='min-h-10 text-violet-700'>剧情目录</button> : <h2 className='font-semibold'>剧情目录</h2>}
+                        {parentFolder && <><CaretRight size={12} className='shrink-0 text-slate-400' /><button onClick={() => openFolder(parentFolder.id)} className='min-h-10 max-w-full truncate text-violet-700'>{parentFolder.name}</button></>}
+                        {currentFolder && <><CaretRight size={12} className='shrink-0 text-slate-400' /><span aria-current='location' className='min-w-0 break-words font-semibold'>{currentFolder.name}</span></>}
+                    </nav>
+                    {!parentFolder && <button onClick={() => setLibraryAction({ type: 'create', parentId: folderId })} className='min-h-11 shrink-0 inline-flex items-center gap-1.5 text-xs font-semibold text-violet-700'>
+                        <FolderSimplePlus size={18} />{currentFolder ? '新建子文件夹' : '新建文件夹'}
+                    </button>}
+                </div>
 
-                <section className='py-6'>
-                    {entries.length === 0 ? <button onClick={() => { setMaskLocked(false); setActiveEntry({ ...createStoryTheaterDraft(), presetId: presets[0]?.id }); setView('editor'); }} className='w-full py-14 rounded-3xl border border-dashed border-slate-300 text-center'><span className='block text-sm font-semibold'>新增第一条剧情</span><span className='block mt-2 text-[10px] text-slate-400'>选择多位角色、记忆方式、世界书与原生预设</span></button> : <div className='divide-y divide-slate-200'>{entries.map(item => {
+                <section className='divide-y divide-slate-200' aria-label='当前目录内容'>
+                    {visibleFolders.map(folder => <div key={folder.id} className='flex items-center gap-2'>
+                        <button onClick={() => openFolder(folder.id)} className='min-w-0 min-h-14 flex flex-1 items-center gap-3 text-left'>
+                            <span className='w-10 h-10 shrink-0 rounded-xl grid place-items-center bg-violet-100 text-violet-700'><FolderSimple size={23} weight='duotone' /></span>
+                            <span className='min-w-0 flex-1 truncate text-sm font-semibold'>{folder.name}</span>
+                            <CaretRight size={14} className='shrink-0 text-slate-400' />
+                        </button>
+                        <button onClick={() => setLibraryAction({ type: 'folder', folder })} className='w-10 h-11 shrink-0 rounded-full grid place-items-center text-slate-500' aria-label={`管理文件夹 ${folder.name}`}><DotsThree size={23} weight='bold' /></button>
+                    </div>)}
+                    {visibleFolders.length === 0 && visibleEntries.length === 0 && <div className='py-9 text-center'>
+                        <p className='text-sm text-slate-500'>{currentFolder ? '这个文件夹还是空的' : '这里还没有剧情'}</p>
+                        <button onClick={startStory} className='mt-2 min-h-10 px-4 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-violet-700'>新建剧情</button>
+                    </div>}
+                    {visibleEntries.map(item => {
                         const cast = characters.filter(char => item.characterIds.includes(char.id));
                         const mask = resolveStoryTheaterMask(item.mask, userProfile, characters, masks);
                         const youLabel = mask.selection.type === 'user' ? '你' : `你（${mask.name}）`;
@@ -267,20 +324,22 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                             </button>
                             {item.archives.some(archive => archive.strategy === 'summary') && <button onClick={() => { setActiveEntry(item); setView('archives'); }} className='w-10 h-10 shrink-0 rounded-full bg-white border border-slate-200 grid place-items-center text-violet-600' title='查看本剧情事件盒' aria-label='查看本剧情事件盒'><Archive size={17} /></button>}
                             {hasVectorArchive && <button onClick={() => { setActiveEntry(item); setView('vectors'); }} className='w-10 h-10 shrink-0 rounded-full bg-white border border-slate-200 grid place-items-center text-violet-600' title='查看本剧情向量记忆' aria-label='查看本剧情向量记忆'><Database size={17} /></button>}
-                            <button onClick={() => setDeletingEntry(item)} className='w-10 h-10 shrink-0 rounded-full grid place-items-center text-rose-400 active:bg-rose-50' title='删除整个剧情' aria-label={`删除剧情 ${item.title}`}><Trash size={17} /></button>
+                            <button onClick={() => setLibraryAction({ type: 'story', story: item })} className='w-10 h-11 shrink-0 rounded-full grid place-items-center text-slate-500' aria-label={`管理剧情 ${item.title}`}><DotsThree size={23} weight='bold' /></button>
                         </div>;
-                    })}</div>}
+                    })}
                 </section>
 
-                <section className='pt-6 border-t border-slate-200'>
+                {!currentFolder && <section className='mt-6 pt-6 border-t border-slate-200'>
                     <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>Native presets</div><h2 className='mt-1 text-lg font-semibold'>糯米机预设制作器</h2></div><div className='flex gap-2'><button onClick={() => importInput.current?.click()} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><UploadSimple size={17} /></button><button onClick={() => { setEditingPreset(createBlankStoryPreset()); setView('preset'); }} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><Plus size={17} /></button></div></div>
                     <p className='mt-2 text-[10px] leading-5 text-slate-500'>仅支持导入与导出糯米机专属剧情预设文件，不支持其他应用的预设格式。</p>
                     <input ref={importInput} type='file' accept='.json,.png,application/json,image/png' className='hidden' onChange={async event => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) await importPreset(file); }} />
                     <div className='mt-4 divide-y divide-slate-200'>{presets.map(preset => <div key={preset.id} className='flex items-center gap-2'><button onClick={() => { setEditingPreset(preset); setView('preset'); }} className='min-w-0 flex-1 py-3 flex items-center gap-3 text-left'><span className={`w-2 h-2 rounded-full ${preset.builtIn ? 'bg-amber-400' : 'bg-violet-500'}`} /><span className='min-w-0 flex-1 text-xs font-semibold truncate'>{preset.name}</span><span className='text-[9px] text-slate-400'>{preset.builtIn ? '内置只读' : `${preset.document.prompts.length} 条`}</span></button><button onClick={() => { void downloadStoryPreset(preset); }} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400' title={`导出 ${preset.name}`}><DownloadSimple size={15} /></button></div>)}</div>
-                </section>
+                </section>}
             </div>
         </main>
-        {deletingEntry && <div className='fixed inset-0 z-[95] flex items-end justify-center overflow-y-auto overscroll-contain bg-slate-950/35' onClick={() => !deletingStory && setDeletingEntry(null)} role='presentation'>
+        {libraryAction && <StoryLibraryDialog action={libraryAction} library={library} onSave={updateLibrary} onClose={closeLibraryDialog}
+            onDeleteStory={story => { closeLibraryDialog(); setDeletingEntry(story); }} />}
+        {deletingEntry && <div className='fixed top-0 right-0 bottom-0 left-0 z-[95] flex items-end justify-center overflow-y-auto overscroll-contain bg-slate-950/35' onClick={() => !deletingStory && setDeletingEntry(null)} role='presentation'>
             <div className='story-safe-sheet w-full sm:max-w-sm rounded-t-[28px] bg-stone-100 px-5 pt-5 shadow-2xl' onClick={event => event.stopPropagation()} role='dialog' aria-modal='true' aria-labelledby='delete-story-title'>
                 <div className='flex items-start gap-4'><div className='min-w-0 flex-1'><div className='text-[9px] uppercase tracking-[.2em] font-bold text-rose-500'>删除确认</div><h2 id='delete-story-title' className='mt-1 text-lg font-semibold'>删除整个剧情？</h2></div><button disabled={deletingStory} onClick={() => setDeletingEntry(null)} className='w-9 h-9 shrink-0 rounded-full bg-white border border-slate-200 grid place-items-center text-slate-400 disabled:opacity-30' aria-label='关闭删除确认'><X size={16} /></button></div>
                 <p className='mt-4 text-[11px] leading-6 text-slate-600'>「{deletingEntry.title}」的楼层、事件盒、关系备注和本剧情专属记忆会一起删除。</p>
