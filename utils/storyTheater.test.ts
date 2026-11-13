@@ -456,8 +456,8 @@ describe('剧情沙盒辅助逻辑', () => {
             characterMemoryDates: { a: '2020-01-02T03:04' }, carryCharacterMemory: true,
             characterContextLimits: {}, archiveAfter: 40, archiveStrategy: 'summary', archives: [],
             selectedWorldbookIds: [], createdAt, updatedAt: createdAt,
-        }, 'a', createdAt + 5000);
-        expect(output).toBe(new Date('2020-01-02T03:04').getTime() + 5000);
+        }, 'a', undefined, '<scene_header><time>三天后</time></scene_header>');
+        expect(output).toBe(new Date('2020-01-05T03:04').getTime());
     });
 
     it('角色面具不会重复出演，但会加入共享记忆接收者', () => {

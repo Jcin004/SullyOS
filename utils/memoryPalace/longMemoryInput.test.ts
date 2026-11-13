@@ -37,6 +37,27 @@ describe('long scene extraction', () => {
         expect(request.messages[1].content).toContain('[炭治郎]: 你好');
         expect(request.messages[0].content).not.toContain('剧场记录识读');
     });
+    it('stores the referenced story or chat experience time separately from createdAt', async () => {
+        const sendTime = new Date(2026, 10, 13, 9).getTime();
+        const storyTime = new Date(2026, 3, 10, 9).getTime();
+        const input = [
+            { ...message('剧情记录'), timestamp: sendTime, metadata: { source: 'story_theater_memory', theaterTimelineTimestamp: storyTime } },
+            { ...message('普通聊天', 2), timestamp: sendTime + 1_000, metadata: undefined },
+            { ...message('剧情时间未知', 3), timestamp: sendTime + 2_000 },
+        ];
+        fetchJson.mockResolvedValue(reply(JSON.stringify([
+            { content: '剧情记忆', room: 'living_room', date: '2026-04-10', experienceSource: 'M0' },
+            { content: '聊天记忆', room: 'living_room', date: '2026-11-13', experienceSource: 'M1' },
+            { content: '未知时间', room: 'living_room', experienceSource: 'M2' },
+            { content: '没有来源', room: 'living_room' },
+        ])));
+        const { memories } = await extractMemoriesFromBuffer(input, 'c', '角色', config);
+        expect(memories.map(memory => memory.experiencedAt)).toEqual([storyTime, sendTime + 1_000, undefined, undefined]);
+        expect(memories[0].createdAt).toBe(sendTime + 1_000);
+        expect(memories[1].createdAt).toBe(new Date(2026, 10, 13, 12).getTime());
+        const request = JSON.parse(String(fetchJson.mock.calls[0][1]?.body));
+        expect(request.messages[1].content).toContain('[M0] [剧情日期 2026-04-10]');
+    });
     it('sends the entire scene and the subsequent Kanata message, including text beyond 600 characters', async () => {
         const scene = '<scene_header>场景</scene_header><story_text>' + '场景描写。'.repeat(200) + '结尾约定一起去海边。</story_text>';
         fetchJson.mockResolvedValue(reply('[]'));

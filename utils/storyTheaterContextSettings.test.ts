@@ -65,25 +65,36 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
         expect(inputFor('角色乙')).toBeUndefined();
         await click('角色乙');
         expect(inputFor('角色乙')?.value).toBe('0');
-        const castSelect = (label: string) => Array.from(container.querySelectorAll('label'))
-            .find(node => node.textContent?.startsWith(label))?.querySelector('select');
+        const castInput = (label: string) => Array.from(container.querySelectorAll('label'))
+            .find(node => node.textContent?.startsWith(label))?.querySelector('input[type="number"]') as HTMLInputElement;
         const setCastLimit = async (label: string, value: string) => {
-            const select = castSelect(label)!;
-            await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
+            const input = castInput(label);
+            await act(async () => {
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            });
         };
+        await setCastLimit('每轮最多出演人数', '');
+        expect(container.textContent).toContain('请填写正整数');
+        await click('保存并进入');
+        expect(onSave).not.toHaveBeenCalled();
+        await setCastLimit('每轮最多出演人数', '12');
+        await setCastLimit('每轮最少出演人数', '6');
+        expect(container.textContent).toContain('不足以满足');
+        await click('保存并进入');
+        expect(onSave).not.toHaveBeenCalled();
+        await setCastLimit('每轮最少出演人数', '2');
         await setCastLimit('最少组数', '2');
-        await setCastLimit('最多组数', '3');
-        await setCastLimit('每组最少人数', '1');
-        await setCastLimit('每组最多人数', '2');
+        await setCastLimit('最多组数', '8');
         await click('保存并进入');
         const saved = onSave.mock.calls[0][0];
         expect(saved.characterContextLimits.b).toBe(0);
-        expect(saved.castLimits).toEqual({ minGroups: 2, maxGroups: 3, minPeople: 1, maxPeople: 2 });
+        expect(saved.castLimits).toEqual({ minGroups: 2, maxGroups: 8, minPeople: 2, maxPeople: 12 });
         await open(normalizeStoryTheater(saved), 'reopen');
         expect(inputFor('角色乙')?.value).toBe('0');
         expect(inputFor('角色甲')?.value).toBe('100');
-        expect(castSelect('最少组数')?.value).toBe('2');
-        expect(castSelect('每组最多人数')?.value).toBe('2');
+        expect(castInput('最少组数').value).toBe('2');
+        expect(castInput('每轮最多出演人数').value).toBe('12');
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

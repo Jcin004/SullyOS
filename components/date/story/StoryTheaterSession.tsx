@@ -47,6 +47,7 @@ import {
     selectStoryArchiveBatch,
     storyTheaterMemoryRecipientIds,
     storyTheaterThreadId,
+    storyTimelineTimestampForCharacter,
     type StoryAffinityInput,
     type StoryApiMessage,
     type StoryGenerationSettings,
@@ -299,7 +300,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const activeMiniTheater = useMemo(() => getActiveStoryMiniTheaterPrompt(effectivePreset.document), [effectivePreset.document]);
     const affinityEnabled = useMemo(() => effectivePreset.document.prompts.some(prompt => prompt.id === 'nmj-v65-affinity-control' && prompt.enabled), [effectivePreset.document]);
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
-    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits), [entry.castLimits]);
+    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits, actors.length), [entry.castLimits, actors.length]);
     const canStart = canDrawStoryCast(actors.length, castLimits);
     const [messages, setMessages] = useState<Message[]>([]);
     const currentCast = storyCastFromMessage([...messages].reverse().find(message => message.role === 'assistant')) ?? [];
@@ -494,7 +495,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         return content;
     }, [apiConfig, entry.omitSamplingParams]);
 
-    const buildActorContexts = useCallback(async (actors: CharacterProfile[], query: string, currentStoryMessages: readonly Message[]): Promise<string> => {
+    const buildActorContexts = useCallback(async (
+        actors: CharacterProfile[], query: string, currentStoryMessages: readonly Message[],
+        timelineByActor: ReadonlyMap<string, number | undefined>,
+    ): Promise<string> => {
         if (!entry.carryCharacterMemory) return actors.map(buildBareTheaterActorContext).join('\n\n---\n\n');
         const allBookIds = new Set(actors.flatMap(actor => (actor.mountedWorldbooks || []).map(book => book.id)));
         const contexts: { actor: CharacterProfile; core: string; recent: Message[] }[] = [];
@@ -504,7 +508,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             let recalled = '';
             const embedding = memoryPalaceConfig.embedding;
             if (actor.memoryPalaceEnabled && embedding?.baseUrl && embedding?.apiKey) {
-                const rawRecall = await retrieveMemories(recent, actor.id, embedding, actor.activeBuffs?.[0]?.name, actor.personalityStyle || 'emotional', actor.ruminationTendency ?? 0.3, query, userProfile.name, remoteVectorConfig, actor.name, undefined, { omitDates: !entry.writesToCharacterMemory || actor.timeAwarenessEnabled === false });
+                const rawRecall = await retrieveMemories(recent, actor.id, embedding, actor.activeBuffs?.[0]?.name, actor.personalityStyle || 'emotional', actor.ruminationTendency ?? 0.3, query, userProfile.name, remoteVectorConfig, actor.name, undefined, {
+                    omitDates: !entry.writesToCharacterMemory || actor.timeAwarenessEnabled === false,
+                    referenceTime: timelineByActor.get(actor.id),
+                });
                 recalled = buildStoryActorMemoryEnvelope(actor.name, rawRecall, userProfile.name, mask.name);
             }
             const theaterActor = { ...actor, memoryPalaceInjection: recalled };
@@ -711,9 +718,32 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
             const visibleHistory = history.filter(message => !mirrorArchived(message, promptEntry));
+            const timelineByActor = new Map<string, number | undefined>();
+            if (promptEntry.writesToCharacterMemory) {
+                const previousLayers = [...current].reverse().filter(message => !rerollTarget || message.id < rerollTarget.id);
+                await Promise.all(requestActors.map(async actor => {
+                    let previous: number | undefined;
+                    for (const layer of previousLayers) {
+                        const id = layer.metadata?.theaterMirrorIds?.[actor.id];
+                        if (!Number.isSafeInteger(id) || id <= 0) continue;
+                        const mirror = await DB.getMessageById(id);
+                        const timestamp: unknown = mirror?.metadata?.theaterTimelineTimestamp;
+                        if (mirror?.charId === actor.id && mirror.metadata?.theaterId === promptEntry.id
+                            && typeof timestamp === 'number' && Number.isFinite(new Date(timestamp).getTime())) {
+                            previous = timestamp;
+                            break;
+                        }
+                    }
+                    timelineByActor.set(actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, previous));
+                }));
+            }
+            const initialTimeline = requestActors.flatMap(actor => {
+                const time = timelineByActor.get(actor.id);
+                return time === undefined ? [] : [`${actor.name}：${new Date(time).toLocaleString('sv-SE')}`];
+            }).join('；');
 
             const [actorContext, maskMemoryContext, vectorRecall] = await Promise.all([
-                buildActorContexts(requestActors, modelText, current),
+                buildActorContexts(requestActors, modelText, current, timelineByActor),
                 buildMaskMemoryContext(modelText),
                 independentRecall(modelText, visibleHistory.slice(-8), promptEntry),
             ]);
@@ -751,6 +781,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     const payloadBeforeTurn = [
                     ...compiled.messages,
                     ...(promptEntry.writesToCharacterMemory ? [{ role: 'system' as const, content: REAL_COMPANION_MEMORY_GUARD }] : []),
+                    ...(promptEntry.writesToCharacterMemory ? [{ role: 'system' as const, content: [
+                        '将本轮正文结束时的剧情时间写入 <scene_header><time>，优先使用 YYYY-MM-DD HH:mm；如果只知道相对推进，写明确的“3天后”等，不要借用现实日期。',
+                        initialTimeline && `各候选角色在本轮开始前的剧情时间（可能来自不同场景）：${initialTimeline}。`,
+                    ].filter(Boolean).join('\n') }] : []),
                     ...(backstageAftermathReminder ? [{ role: 'system' as const, content: backstageAftermathReminder }] : []),
                     ...(miniTheaterReminder ? [{ role: 'system' as const, content: miniTheaterReminder }] : []),
                     ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
@@ -809,14 +843,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             };
             if (isReroll && rerollTarget) {
                 if (cannotRerollStoryReply(rerollTarget, promptEntry)) throw new Error('这条回复已进入记忆归档，请刷新后查看');
-                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true);
+                const finalTimes = new Map(castActors.map(actor => [
+                    actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, timelineByActor.get(actor.id), content),
+                ]));
+                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes);
             } else {
                 const pending = userMessageId ? current.find(message => message.id === userMessageId) : undefined;
                 if (userMessageId && (!pending || pending.content.trim() !== text)) throw new Error('本轮输入已被修改，请刷新后重试');
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
-                }, pending, groups, entry.writesToCharacterMemory ? (id, original) => createStoryTheaterMirrorMessage(entry, id, original) : undefined);
+                }, pending, groups, entry.writesToCharacterMemory
+                    ? (id, original) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
+                    : undefined);
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -948,7 +987,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
-                {!canStart && <p role='status' className='mb-2 text-[10px] text-amber-700'>候选角色不足，请在剧场设置增加候选或调低最少组数或人数。</p>}
+                {!canStart && <p role='status' className='mb-2 text-[10px] text-amber-700'>当前无法满足出演范围，请在剧场设置检查上下限和候选人数。</p>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
                 {!sending && !memoryStatus && canWriteOpening && <div className='mb-2 text-[10px] text-violet-600'>准备好了，点击推进让故事写下第一幕</div>}
                 {affinityEnabled && <div className='mb-2 overflow-hidden rounded-2xl border border-rose-200 bg-rose-50/70'>

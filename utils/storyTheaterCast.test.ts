@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseStoryCastReply } from './storyTheaterCast';
+import { buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseStoryCastReply } from './storyTheaterCast';
 
 function seededRandom(seed: number) {
     return () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
@@ -24,7 +24,40 @@ describe('剧场选角协议', () => {
     it('完整保留正文协议并剥离名单，人数和组数允许不取上限', () => {
         expect(parseStoryCastReply('<turn_cast>[["c"]]</turn_cast>\n<story_text>她在修表。</story_text>', ids, limits))
             .toEqual({ groups: [['c']], body: '<story_text>她在修表。</story_text>' });
-        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2, minPeople: 2, maxPeople: 2 }))).toBe(false);
+        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2, minPeople: 2, maxPeople: 2 }))).toBe(true);
+    });
+
+    it('允许超过五位演员和四个分组，整轮上限以候选池为准', () => {
+        const pool = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+        const range = normalizeStoryCastLimits({ minGroups: 5, maxGroups: 8, minPeople: 6, maxPeople: 12 });
+        const actors = pool.map(id => ({ id, name: id }));
+        for (let seed = 1; seed <= 12; seed++) {
+            const groups = drawStoryCastGroups(pool, range, [], seededRandom(seed));
+            expect(groups.length).toBeGreaterThanOrEqual(5);
+            expect(groups.flat().length).toBeGreaterThanOrEqual(6);
+            expect(groups.flat().length).toBeLessThanOrEqual(7);
+            expect(new Set(groups.flat()).size).toBe(groups.flat().length);
+            expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(groups)}</turn_cast>正文`, pool, range).groups).toEqual(groups);
+            expect(buildStoryCastInstruction(actors, range, groups)).toContain('共 6～7 位不同演员');
+        }
+        const singleGroup = [pool];
+        expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(singleGroup)}</turn_cast>正文`, pool, normalizeStoryCastLimits(undefined, pool.length)).groups).toEqual(singleGroup);
+    });
+
+    it.each([
+        { minPeople: 5, maxPeople: 8 },
+        { minGroups: 3, maxPeople: 2 },
+        { minGroups: 3, maxGroups: 2 },
+        { minPeople: 3, maxPeople: 2 },
+        { minPeople: 0 },
+        { maxGroups: 2.5 },
+        { maxPeople: NaN },
+        { maxPeople: Infinity },
+    ])('无法用当前候选满足范围时拒绝生成或校验：%j', partial => {
+        const range = normalizeStoryCastLimits(partial);
+        expect(canDrawStoryCast(ids.length, range)).toBe(false);
+        expect(drawStoryCastGroups(ids, range, [])).toEqual([]);
+        expect(() => parseStoryCastReply('<turn_cast>[["a"]]</turn_cast>正文', ids, range)).toThrow('出演名单无效');
     });
 
     it.each([
@@ -32,6 +65,9 @@ describe('剧场选角协议', () => {
         '<turn_cast>[["外人"]]</turn_cast>正文',
         '<turn_cast>[["a","a"]]</turn_cast>正文',
         '<turn_cast>[["a","b"],["b","a"]]</turn_cast>正文',
+        '<turn_cast>[["a","b"],["b"]]</turn_cast>正文',
+        '<turn_cast>[["a"],["b","c"]]</turn_cast>正文',
+        '<turn_cast>[["a"],[]]</turn_cast>正文',
         '<turn_cast>[["a"],["b"],["c"]]</turn_cast>正文',
         '<turn_cast>[["a","b","c"]]</turn_cast>正文',
         '<turn_cast>[["a"]]</turn_cast>',

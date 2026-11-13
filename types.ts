@@ -2288,6 +2288,7 @@ export interface StoryTheaterMask {
 export interface StoryCastLimits {
     minGroups: number;
     maxGroups: number;
+    /** 每轮所有分组合计的人数。 */
     minPeople: number;
     maxPeople: number;
 }

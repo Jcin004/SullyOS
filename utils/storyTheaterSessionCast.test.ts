@@ -13,10 +13,11 @@ vi.mock('../components/os/TokenImg', () => ({ default: () => null }));
 vi.mock('../components/date/story/StoryTheaterTheme', () => ({ StoryAppearanceButton: () => null }));
 vi.mock('./memoryPalace/pipeline', async importOriginal => ({
     ...await importOriginal<typeof import('./memoryPalace/pipeline')>(),
-    retrieveMemories: async () => '',
+    retrieveMemories: vi.fn(async (..._args: unknown[]) => ''),
 }));
 vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive: mocks.archive }));
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
+import { retrieveMemories } from './memoryPalace/pipeline';
 
 it('剧场界面单次请求选角，换人后只整理出演者，失败重试和重写不重复写入', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -42,9 +43,9 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
     const fetch = vi.fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(new Response('{}', { status: 503 }))
         .mockResolvedValueOnce(reply('<story_text>越界回复</story_text>', [['unknown']]))
-        .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text>', [[a.id, b.id]]))
-        .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。</story_text>', [[c.id]]))
-        .mockResolvedValueOnce(reply('演员 c 独自收拾旧信。</story_text>'))
+        .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, b.id]]))
+        .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。</story_text><scene_header><time>3天后</time></scene_header>', [[c.id]]))
+        .mockResolvedValueOnce(reply('演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>'))
         .mockResolvedValueOnce(reply('<story_text>另一个剧场。</story_text>', [[a.id]]));
     vi.stubGlobal('fetch', fetch);
     const container = document.createElement('div');
@@ -54,6 +55,7 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
         characterIds: actors.map(actor => actor.id), writesToCharacterMemory: true, carryCharacterMemory: true,
         selectedWorldbookIds: ['test-worldbook'],
+        characterMemoryDates: { [a.id]: '2026-04-10T09:00', [b.id]: '2026-04-11T09:00', [c.id]: '2026-04-10T09:00' },
     };
     const render = (id: string) => act(async () => {
         root.render(createElement(StoryTheaterSession, {
@@ -64,6 +66,12 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
     const checked = () => Array.from(container.querySelectorAll<HTMLInputElement>('fieldset input:checked'))
         .map(input => input.parentElement?.textContent);
     const contents = async (id: string) => (await DB.getMessagesByCharId(id, true)).map(row => row.content);
+    const timeline = async (id: string) => (await DB.getMessagesByCharId(id, true)).map(row => {
+        expect(row.timestamp).toBe(row.metadata.theaterReceivedAt);
+        return row.metadata.theaterTimelineTimestamp;
+    });
+    const at = (day: number) => new Date(2026, 3, day, 9).getTime();
+    const lastReference = (id: string) => vi.mocked(retrieveMemories).mock.calls.filter(call => call[1] === id).at(-1)?.[11]?.referenceTime;
     const thread = storyTheaterThreadId(entry.id);
     const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); });
     const send = async (button: HTMLButtonElement, calls: number) => {
@@ -96,7 +104,9 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         await send(advance(), 3);
         await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id]));
         expect(checked()).toEqual([a.name, b.name]);
-        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text>']);
+        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
+        expect(await timeline(a.id)).toEqual([at(10), at(13)]);
+        expect(await timeline(b.id)).toEqual([at(11), at(13)]);
         expect(await contents(b.id)).toEqual(await contents(a.id));
         expect(await contents(c.id)).toEqual([]);
         expect(payload(2).at(-1)?.role).toBe('user');
@@ -112,14 +122,17 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         expect(checked()).toEqual([c.name]);
         expect(await contents(a.id)).toHaveLength(2);
         expect(await contents(b.id)).toHaveLength(2);
-        expect(await contents(c.id)).toEqual(['我翻到另一页。', '<story_text>演员 c 自己整理行李。</story_text>']);
+        expect(await timeline(c.id)).toEqual([at(10), at(13)]);
+        expect(lastReference(a.id)).toBe(at(13));
         expect(payload(3).map(row => row.content).join('\n').match(/第一幕暗号/g)).toHaveLength(1);
 
         const reroll = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!;
         await vi.waitFor(async () => { await flush(); expect(reroll.disabled).toBe(false); });
         await send(reroll, 5);
         expect(checked()).toEqual([c.name]);
-        expect(await contents(c.id)).toEqual(['我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text>']);
+        expect(await contents(c.id)).toEqual(['我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>']);
+        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
+        expect(lastReference(c.id)).toBe(at(10));
         expect(await contents(thread)).toHaveLength(4);
         expect(mocks.archive).toHaveBeenCalledTimes(3);
         expect(payload(4).map(row => row.content).join('\n')).toContain('沿用已确定的出演分组');
@@ -128,6 +141,7 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         await render('other-cast-session');
         await setInput('在另一个地方开场。');
         await send(advance(), 6);
+        expect(lastReference(a.id)).toBe(at(10));
         expect(payload(5).map(row => row.content).join('\n')).toContain('第一幕暗号');
         expect(await contents(thread)).toHaveLength(4);
         expect(await contents(a.id)).toHaveLength(4);

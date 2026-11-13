@@ -382,6 +382,7 @@ export interface RecallRetrievalOptions {
     formatterMaxOutputItems?: number;
     /** 隐去召回结果上的现实日期与「今天/距今X天」标注（用于虚构剧场与关掉线下时间感知的见面）。 */
     omitDates?: boolean;
+    referenceTime?: number;
 }
 
 export async function retrieveMemories(
@@ -1114,7 +1115,9 @@ export async function retrieveMemories(
         const anticipations = await tRetrieve('AnticipationDB.getByCharId', 'IDB', AnticipationDB.getByCharId(charId));
 
         // 10. 格式化
-        const formatted = await tRetrieve('expandAndFormat', 'IDB', expandAndFormat(results, charId, anticipations, userName, formatterCap, { omitDates: recallOptions?.omitDates }));
+        const formatted = await tRetrieve('expandAndFormat', 'IDB', expandAndFormat(results, charId, anticipations, userName, formatterCap, {
+            omitDates: recallOptions?.omitDates, referenceTime: recallOptions?.referenceTime,
+        }));
 
         // ── 汇总打印 ──
         const perfTotal = Math.round(performance.now() - perfRetrieveT0);

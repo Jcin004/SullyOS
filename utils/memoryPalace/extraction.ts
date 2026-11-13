@@ -98,14 +98,16 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
 **日期标注（date，必填）**：每条消息前缀都带了 \`[YYYY-MM-DD HH:MM]\` 时间戳。每条记忆必须根据**该事件实际发生的那一天**填 date 字段（"YYYY-MM-DD"），而不是套用整批的某一天。同一批对话跨多天时，跨日的记忆要分别标各自的日期。`;
 }
 
-function buildConversationText(messages: Message[], charName: string, userLabel: string, linkDates = false): string {
+function buildConversationText(messages: Message[], charName: string, userLabel: string): string {
     // 每行带 [YYYY-MM-DD HH:MM] 时间戳前缀。
     // 没有这个 LLM 完全看不到日期，多日 batch 提取出来的记忆全部会被压到一个时间点
     // （见 parseMemoryNodesFromBuffer 的 midTime 兜底），跨日时间线就乱了。
     const pad2 = (n: number) => String(n).padStart(2, '0');
     return messages
         .map((m, index) => {
-            const body = (linkDates ? `[M${index}] ` : '') + formatExtractionMessage(m, charName, userLabel);
+            const experienced = m.metadata?.source === 'story_theater_memory' ? messageExperienceTime(m) : undefined;
+            const plotDate = experienced === undefined ? '' : `[剧情日期 ${getLocalDateKey(new Date(experienced))}] `;
+            const body = `[M${index}] ` + plotDate + formatExtractionMessage(m, charName, userLabel);
             const ts = m.timestamp;
             if (!ts || ts <= 0) return body;
             const d = new Date(ts);
@@ -119,6 +121,27 @@ const VALID_ROOMS: MemoryRoom[] = [
     'living_room', 'bedroom', 'study', 'user_room',
     'self_room', 'attic', 'windowsill',
 ];
+
+function messageExperienceTime(message: Message): number | undefined {
+    const time: unknown = message.metadata?.source === 'story_theater_memory'
+        ? message.metadata.theaterTimelineTimestamp : message.timestamp;
+    return typeof time === 'number' && Number.isFinite(new Date(time).getTime())
+        && (message.metadata?.source === 'story_theater_memory' || time > 0) ? time : undefined;
+}
+
+function resolveExperienceTime(item: { experienceSource?: unknown; date?: unknown }, messages: Message[]): number | undefined {
+    if (typeof item.experienceSource === 'string' && /^M\d+$/.test(item.experienceSource)) {
+        const source = messages[Number(item.experienceSource.slice(1))];
+        return source && messageExperienceTime(source);
+    }
+    const times = new Set(messages.map(messageExperienceTime));
+    if (times.size === 1) return times.values().next().value;
+    // Older extractors may provide only the event date. Accept it when it identifies one original timestamp.
+    if (typeof item.date === 'string' && !times.has(undefined)) {
+        const sameDay = [...times].filter(time => time !== undefined && getLocalDateKey(new Date(time)) === item.date);
+        if (sameDay.length === 1) return sameDay[0];
+    }
+}
 
 /** 从消息缓冲区直接解析记忆节点（不依赖 TopicBox） */
 function parseMemoryNodesFromBuffer(
@@ -183,6 +206,7 @@ function parseMemoryNodesFromBuffer(
         .filter(item => item.content && item.room)
         .map((item): MemoryNode => {
             const createdAt = resolveCreatedAt(item.date);
+            const experiencedAt = resolveExperienceTime(item, messages);
             const pinDays = parseInt(item.pinDays, 10);
             // 置顶 deadline 跟着 per-memory createdAt 算，否则"今天感冒 pinDays 5"
             // 会从 batch 中点起算，跨日 batch 里就直接少算/多算。
@@ -204,6 +228,7 @@ function parseMemoryNodesFromBuffer(
                 arousal: a,
                 embedded: false,
                 createdAt,
+                ...(experiencedAt !== undefined ? { experiencedAt } : {}),
                 lastAccessedAt: createdAt,
                 accessCount: 0,
                 pinnedUntil,
@@ -445,7 +470,7 @@ export async function extractMemoriesFromBuffer(
     const includeEntities = readRecallRuntimeSnapshot().featureFlagsSnapshot.recallRouter;
     const linkDates = relativeTimeEnabled();
     const userLabel = userName || '用户';
-    const conversationText = buildConversationText(messages, charName, userLabel, linkDates);
+    const conversationText = buildConversationText(messages, charName, userLabel);
     const hasTheaterRecords = messages.some(message => message.metadata?.source === 'story_theater_memory');
     const theaterMemoryRule = hasTheaterRecords
         ? `\n\n## 剧场记录识读\n[剧场记录] 是第三人称叙事原文，不代表记忆主体或用户亲口讲述。直接引语按剧情中的实际说话者理解。\n提取 ${charName} 实际参与、观察、听见或后来获知的经历。其他地点或分组发生的事，须有感知或获知依据才能写入其个人认知。\n根据事实与经历的重要性提取；剧场记录中原本由谁输入，不决定事件的关注优先级。`
@@ -497,11 +522,13 @@ content 保留原消息的相对时间措辞，不要自行添加日期括号。
     "tags": ["标签1", "标签2"],${includeEntities ? `
     "entities": [{"name": "明确出现的专名", "type": "person"}],` : ''}
     "date": "YYYY-MM-DD",
+    "experienceSource": "M0",
     "pinDays": 3${relatedToFormat}
   }
 ]
 
 date 必填，按该记忆实际发生当天填（参考消息行首的时间戳）。
+experienceSource 可选。填写最直接记录该经历的原消息编号（如 "M0"）。剧场记录用对应剧情日期，普通消息用原时间。没有可靠来源时省略。
 pinDays 仅在需要置顶时才写，大多数记忆不需要。
 如果对话过于琐碎无值得记忆的内容，返回空数组 []。`;
 

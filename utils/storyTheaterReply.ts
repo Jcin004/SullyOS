@@ -22,7 +22,10 @@ export async function loadStoryActorContext(
 export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故事落点重新写这一轮，换一个合理的切入角度、对白和细节展开；保留已确立的事实和用户输入，不把这次操作写进故事，不把尚未发生的旧版本当作既定经历。';
 
 /** 成功后一次事务替换正文和镜像；失败/并发编辑时保留原文，不先删后写。 */
-export async function replaceStoryTheaterReply(original: Message, content: string, metadata: Record<string, unknown>, requireLatest = false): Promise<void> {
+export async function replaceStoryTheaterReply(
+    original: Message, content: string, metadata: Record<string, unknown>, requireLatest = false,
+    timelineByActor?: ReadonlyMap<string, number | undefined>,
+): Promise<void> {
     const mirrorIds = Object.values((original.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(id => Number.isFinite(id) && id > 0);
     const ids = [...new Set([original.id, ...mirrorIds])];
     const db = await openDB();
@@ -43,7 +46,11 @@ export async function replaceStoryTheaterReply(original: Message, content: strin
                         transaction.abort();
                         return;
                     }
-                    store.put({ ...current, content, ...(id === original.id ? { metadata: { ...current.metadata, ...metadata } } : {}) });
+                    const nextMetadata = id === original.id ? { ...current.metadata, ...metadata }
+                        : timelineByActor?.has(current.charId) && current.metadata?.source === 'story_theater_memory'
+                            ? { ...current.metadata, theaterTimelineTimestamp: timelineByActor.get(current.charId) }
+                            : current.metadata;
+                    store.put({ ...current, content, metadata: nextMetadata });
                 };
             }
         };

@@ -87,6 +87,7 @@ export interface MemoryNode {
     arousal?: number;
     embedded: boolean;          // 是否已向量化
     createdAt: number;          // timestamp ms
+    experiencedAt?: number;     // 事件经历时间，毫秒；可独立于归档时间
     lastAccessedAt: number;     // timestamp ms
     accessCount: number;
     pinnedUntil?: number | null; // 便利贴置顶截止时间（timestamp ms），null/undefined = 不置顶

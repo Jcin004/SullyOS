@@ -57,14 +57,16 @@ export async function expandAndFormat(
     userName?: string,
     /** 注入上限。rerank 启用时传 15 + topN，让 rerank 额外召回的不被切。 */
     maxOutputItems: number = DEFAULT_MAX_OUTPUT_ITEMS,
-    options?: { omitDates?: boolean },
+    options?: { omitDates?: boolean; referenceTime?: number },
 ): Promise<string> {
     const MAX_OUTPUT_ITEMS = maxOutputItems;
     const omitDates = options?.omitDates === true;
     // 0. 加载便利贴置顶记忆（pinnedUntil > now，不占 15 条名额）
-    const now = Date.now();
+    const referenceTime = options?.referenceTime;
+    const now = referenceTime ?? Date.now();
+    const realNow = referenceTime === undefined ? now : Date.now();
     const allCharNodes = await MemoryNodeDB.getByCharId(charId);
-    const pinnedNodes = allCharNodes.filter(n => n.pinnedUntil && n.pinnedUntil > now && !n.archived);
+    const pinnedNodes = allCharNodes.filter(n => n.pinnedUntil && n.pinnedUntil > realNow && !n.archived);
     const pinnedIds = new Set(pinnedNodes.map(n => n.id));
 
     if (results.length === 0 && anticipations.length === 0 && pinnedNodes.length === 0) return '';
@@ -156,7 +158,7 @@ export async function expandAndFormat(
     if (pinnedNodes.length > 0) {
         console.groupCollapsed(`📌 便利贴置顶（不占 ${MAX_OUTPUT_ITEMS} 条名额）${pinnedNodes.length} 条 · ${pinnedTotalChars} 字`);
         for (const p of pinnedNodes) {
-            const daysLeft = Math.ceil((p.pinnedUntil! - now) / (24 * 60 * 60 * 1000));
+            const daysLeft = Math.ceil((p.pinnedUntil! - realNow) / (24 * 60 * 60 * 1000));
             console.log(
                 `📌 [${p.room}] 剩余 ${daysLeft} 天 · ${p.content.length} 字\n${p.content}`
             );
@@ -213,8 +215,8 @@ export async function expandAndFormat(
             if (omitDates) {
                 output += `- ${node.content}\n`;
             } else {
-                const daysLeft = Math.ceil((node.pinnedUntil! - now) / (24 * 60 * 60 * 1000));
-                output += `- [${formatMemoryDateWithDistance(node.createdAt, now)}] ${memoryContentWithDates(node)}（剩余 ${daysLeft} 天）\n`;
+                const daysLeft = Math.ceil((node.pinnedUntil! - realNow) / (24 * 60 * 60 * 1000));
+                output += `- [${formatMemoryDateWithDistance(node.experiencedAt ?? node.createdAt, now)}] ${memoryContentWithDates(node)}（剩余 ${daysLeft} 天）\n`;
             }
         }
         output += `\n`;
@@ -263,7 +265,7 @@ function buildStandaloneItem(r: ScoredMemory, now: number, omitDates = false): R
     const node = r.node;
     const body = omitDates
         ? `(重要性: ${node.importance})\n${node.content}`
-        : `(${formatMemoryDateWithDistance(node.createdAt, now)}, 重要性: ${node.importance})\n${memoryContentWithDates(node)}`;
+        : `(${formatMemoryDateWithDistance(node.experiencedAt ?? node.createdAt, now)}, 重要性: ${node.importance})\n${memoryContentWithDates(node)}`;
     return {
         guaranteed: r.recallGuarantee === 'explicit_entity',
         score: r.finalScore,
@@ -320,7 +322,7 @@ async function buildBoxItem(
         if (omitDates) {
             body += `_整合回忆_ (重要性 ${summary.importance}, 已压缩 ${box.compressionCount} 次)\n`;
         } else {
-            const sDate = formatMemoryDateWithDistance(summary.createdAt, now);
+            const sDate = formatMemoryDateWithDistance(summary.experiencedAt ?? summary.createdAt, now);
             body += `_整合回忆_ (${sDate}, 重要性 ${summary.importance}, 已压缩 ${box.compressionCount} 次)\n`;
         }
         body += `${summary.content}\n`;
@@ -332,7 +334,7 @@ async function buildBoxItem(
             if (omitDates) {
                 body += `- ${n.content}\n`;
             } else {
-                const d = formatMemoryDateWithDistance(n.createdAt, now);
+                const d = formatMemoryDateWithDistance(n.experiencedAt ?? n.createdAt, now);
                 body += `- [${d}] ${memoryContentWithDates(n)}\n`;
             }
         }

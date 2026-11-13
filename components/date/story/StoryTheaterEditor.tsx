@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import { DB } from '../../../utils/db';
 import { storyTheaterThreadId } from '../../../utils/storyTheater';
-import { canDrawStoryCast, normalizeStoryCastLimits } from '../../../utils/storyTheaterCast';
+import { canDrawStoryCast, normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
 import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
@@ -59,7 +59,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         return characters.filter(char => participantIds.has(char.id));
     }, [characters, draft.characterIds, draft.mask]);
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
-    const castLimits = normalizeStoryCastLimits(draft.castLimits);
+    const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
+    const validCastLimits = validStoryCastLimits(castLimits);
     const canStart = canDrawStoryCast(actors.length, castLimits);
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
@@ -146,15 +147,18 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
-                            ['minGroups', '最少组数', castLimits.maxGroups], ['maxGroups', '最多组数', 4],
-                            ['minPeople', '每组最少人数', castLimits.maxPeople], ['maxPeople', '每组最多人数', 5],
-                        ] as const).map(([key, label, max]) => <label key={key} className='flex items-center justify-between gap-2 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
-                            {label}<select value={castLimits[key]} onChange={event => update('castLimits', normalizeStoryCastLimits({ ...castLimits, [key]: Number(event.target.value) }))} className='rounded bg-slate-100 px-2 py-1'>
-                                {Array.from({ length: max }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
-                            </select>
+                            ['minGroups', '最少组数'], ['maxGroups', '最多组数'],
+                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'],
+                        ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
+                            {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
+                                onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}
+                                className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>候选角色不足以满足最少组数或人数。请增加候选或调低最小值。</p>}
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。出演人数按整轮计算，每人只进入一组，每组至少一人。</p>
+                    {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
+                        ? '请填写正整数，且每项最小值不能超过最大值。'
+                        : '当前候选或最多出演人数不足以满足最少组数或人数。请调整范围或增加候选。'}</p>}
                 </fieldset>
             </section>
             <section className='pt-6 border-t border-slate-200'>
@@ -165,11 +169,17 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <div className='p-4 rounded-2xl bg-amber-50 border border-amber-200'>
                         <div className='text-xs font-bold text-amber-800'>记忆输入与输出都会开启</div>
                         <p className='mt-1 text-[10px] leading-5 text-amber-700'>会读取角色既有记忆；你写的内容与故事正文也会分别进入每位角色的正常记忆，作为你们的共同经历。</p>
-                        <p className='mt-2 text-[10px] leading-5 text-amber-700'>跟随真实时间：你的输入和角色回复会按各自实际发送的时间记录，无需设置日期。正文中的虚构日期不会改变聊天记录的时间与顺序；如果不希望故事成为共同记忆，请在开始前选择「虚构剧场」。</p>
+                        <p className='mt-2 text-[10px] leading-5 text-amber-700'>聊天记录按实际发送时间排序。剧场内的记忆距离按角色的剧情时间计算，可为每位角色填写初始剧情时间。</p>
                         <p className='mt-2 pt-2 border-t border-amber-200 text-[10px] leading-5 font-semibold text-amber-800'>内置真实性保护：角色不能捏造和你的共同记忆，也不能给已有记忆添油加醋。</p>
                     </div>
                     <p className='text-[10px] leading-5 text-slate-500'>最近原文是从角色时间线额外带入的记录。填 0 可关闭该角色的原文。</p>
                     {recentContextFields}
+                    {actors.map(actor => <label key={actor.id} className='block text-[11px] text-slate-600'>
+                        {actor.name} · 初始剧情时间（可选）
+                        <input type='datetime-local' value={draft.characterMemoryDates[actor.id] ?? ''}
+                            onChange={event => update('characterMemoryDates', { ...draft.characterMemoryDates, [actor.id]: event.currentTarget.value })}
+                            className='mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2' />
+                    </label>)}
                 </div> : <div className='mt-5 space-y-5'>
                     <div className='py-3 border-y border-slate-200 flex items-center justify-between gap-3'><div><div className='text-sm font-semibold'>自动记忆输出</div><p className='mt-1 text-[10px] leading-5 text-slate-500'>虚构时间与经历不会自动写入角色的正常记忆。需要保留时，可在剧情右上角「事件盒」选择摘要、填写日期，手动转为带剧情来源的记忆。</p></div><span className='shrink-0 px-2 py-1 rounded-full bg-slate-200 text-[9px] font-bold text-slate-500'>关闭</span></div>
                     <div className='flex items-start justify-between gap-5'><div><div className='text-sm font-semibold'>记忆输入</div><p className='mt-1 text-[10px] text-slate-500'>默认关闭；打开后角色会带着既有记忆进入虚构故事。关闭时只读取名字、核心指令和世界观。</p></div><Toggle value={draft.carryCharacterMemory} onChange={value => update('carryCharacterMemory', value)} /></div>

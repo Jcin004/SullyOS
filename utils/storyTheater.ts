@@ -1552,12 +1552,72 @@ export const describeEmptyStoryCompletion = (data: unknown): string => {
     return `没有生成正文${finishReason ? `（finish_reason=${finishReason}）` : '：上游返回了空内容'}，请重试`;
 };
 
-/** 仅表示设定中的剧情时间，禁止写入 Message.timestamp 或用于现实互动间隔。 */
-export const storyTimelineTimestampForCharacter = (entry: StoryTheaterEntry, charId: string, realTimestamp: number): number => {
-    const anchorText = entry.characterMemoryDates?.[charId];
-    const storyAnchor = anchorText ? new Date(anchorText).getTime() : NaN;
-    if (!Number.isFinite(storyAnchor)) return realTimestamp;
-    return storyAnchor + Math.max(0, realTimestamp - entry.createdAt);
+const validStoryTime = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(new Date(value).getTime());
+
+function parseStoryTime(text: string, base?: number): number | undefined {
+    const value = text.trim().normalize('NFKC');
+    const full = /^(\d{4})(?:[-/.]|年)(\d{1,2})(?:[-/.]|月)(\d{1,2})日?/.exec(value);
+    const partial = !full && /^(\d{1,2})月(\d{1,2})日/.exec(value);
+    const clock = /(?:^|[^\d])(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?/.exec(value);
+    const relative = /^(?:(次日|翌日|明天|昨天|今天|当天|前天|后天)|(\d+|[一二两三四五六七八九十]+)\s*(天|周|小时|分钟)(后|前))/.exec(value);
+    const original = base === undefined ? undefined : new Date(base);
+    const date = original ? new Date(original) : new Date(2000, 0, 1);
+    if (full || partial) {
+        if (partial && !original) return;
+        const year = full ? Number(full[1]) : date.getFullYear();
+        const month = Number(full ? full[2] : partial![1]);
+        const day = Number(full ? full[3] : partial![2]);
+        date.setFullYear(year, month - 1, day);
+        if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return;
+        date.setHours(0, 0, 0, 0);
+    } else if (relative && original) {
+        const namedDays: Record<string, number> = { 次日: 1, 翌日: 1, 明天: 1, 昨天: -1, 今天: 0, 当天: 0, 前天: -2, 后天: 2 };
+        if (relative[1]) {
+            date.setDate(date.getDate() + namedDays[relative[1]]);
+        } else {
+            const digits = '一二三四五六七八九';
+            const numeric = (token: string) => token === '两' ? 2 : token ? digits.indexOf(token) + 1 : 0;
+            const count = relative[2];
+            const chinese = /^([一二两三四五六七八九])?(十)?([一二三四五六七八九])?$/.exec(count);
+            const amount = /^\d+$/.test(count) ? Number(count)
+                : chinese?.[2] ? (numeric(chinese[1]) || 1) * 10 + numeric(chinese[3])
+                    : count.length === 1 ? numeric(count) : NaN;
+            const delta = amount * (relative[4] === '前' ? -1 : 1);
+            if (!Number.isSafeInteger(delta)) return;
+            if (relative[3] === '天' || relative[3] === '周') date.setDate(date.getDate() + delta * (relative[3] === '周' ? 7 : 1));
+            else date.setTime(date.getTime() + delta * (relative[3] === '小时' ? 3_600_000 : 60_000));
+        }
+    } else if (!original || !/^\d{1,2}:\d{2}/.test(value)) {
+        return;
+    }
+    if (clock) {
+        const [, hours, minutes, seconds = '0', fraction = ''] = clock;
+        if (+hours > 23 || +minutes > 59 || +seconds > 59) return;
+        date.setHours(+hours, +minutes, +seconds, Number(fraction.padEnd(3, '0')));
+        const zone = full && /(Z|[+-]\d{2}:?\d{2})$/i.exec(value)?.[1];
+        if (zone) {
+            if (zone.toUpperCase() !== 'Z' && (+zone.slice(1, 3) > 23 || +zone.slice(-2) > 59)) return;
+            const offset = zone.toUpperCase() === 'Z' ? 0 : (zone[0] === '-' ? -1 : 1)
+                * (+zone.slice(1, 3) * 60 + +zone.slice(-2));
+            const utc = new Date(0);
+            utc.setUTCFullYear(+full![1], +full![2] - 1, +full![3]);
+            utc.setUTCHours(+hours, +minutes, +seconds, Number(fraction.padEnd(3, '0')));
+            return utc.getTime() - offset * 60_000;
+        }
+    }
+    const result = date.getTime();
+    return validStoryTime(result) ? result : undefined;
+}
+
+/** 剧情时钟只由起点、上一条镜像和本轮正文推进。 */
+export const storyTimelineTimestampForCharacter = (
+    entry: StoryTheaterEntry, charId: string, previous?: number, content?: string,
+): number | undefined => {
+    const base = validStoryTime(previous) ? previous : parseStoryTime(entry.characterMemoryDates?.[charId] ?? '');
+    const header = content?.match(/<scene_header\b[^>]*>([\s\S]*?)<\/scene_header\s*>/i)?.[1];
+    const time = header?.match(/<time\b[^>]*>([^<]*)<\/time\s*>/i)?.[1];
+    return (time ? parseStoryTime(time, base) : undefined) ?? base;
 };
 
 /** 现实时间用于共享历史排序；角色的剧情时间单独保存，不改变消息收发时间。 */
@@ -1565,12 +1625,14 @@ export const createStoryTheaterMirrorMessage = (
     entry: StoryTheaterEntry,
     charId: string,
     central: Pick<Message, 'id' | 'role' | 'content' | 'timestamp'>,
+    previousTimeline?: number,
 ): Omit<Message, 'id'> => ({
     charId, role: central.role, type: 'text', content: central.content, timestamp: central.timestamp,
     metadata: {
         source: 'story_theater_memory', theaterId: entry.id, theaterTitle: entry.title,
         theaterCentralId: central.id, theaterTimestampVersion: 1, theaterReceivedAt: central.timestamp,
-        theaterTimelineTimestamp: storyTimelineTimestampForCharacter(entry, charId, central.timestamp),
+        theaterTimelineTimestamp: storyTimelineTimestampForCharacter(entry, charId, previousTimeline,
+            central.role === 'assistant' ? central.content : undefined),
     },
 });
 
