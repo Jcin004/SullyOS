@@ -46,6 +46,23 @@ export function isSseResponseText(text: string, contentType?: string | null): bo
     return contentType?.toLowerCase().includes('text/event-stream') === true;
 }
 
+/** Some proxies send SSE heartbeat comments, then one ordinary JSON response without data: fields. */
+function parseHeartbeatPrefixedJson(text: string): any | undefined {
+    const lines = text.split(/\r?\n/);
+    let index = 0;
+    let sawHeartbeat = false;
+    while (index < lines.length) {
+        const line = lines[index].trim();
+        if (!line) { index++; continue; }
+        if (line.startsWith(':')) { sawHeartbeat = true; index++; continue; }
+        break;
+    }
+    if (!sawHeartbeat) return undefined;
+    const body = lines.slice(index).join('\n').trim();
+    if (!/^[{\[]/.test(body)) return undefined;
+    try { return JSON.parse(body); } catch { return undefined; }
+}
+
 /** safeResponseJson 的纯文本内核：HTML/空响应/SSE/JSON 判定与解析（流式路径复用） */
 function parseRawBodyText(text: string, status: number, contentType?: string | null): any {
     // Detect HTML / XML responses
@@ -67,6 +84,8 @@ function parseRawBodyText(text: string, status: number, contentType?: string | n
     // SSE / 流式响应（有些 OpenAI 兼容代理无视 stream:false 强行流式返回）：
     // 注释/心跳行（以 ":" 开头）由 SseAssembler 忽略，data 事件照常拼成完整 content。
     if (isSseResponseText(text, contentType)) {
+        const wholeJson = parseHeartbeatPrefixedJson(text);
+        if (wholeJson !== undefined) return wholeJson;
         const assembled = parseSseToCompletion(text);
         if (assembled) return assembled;
         const preview = text.slice(0, 200);
