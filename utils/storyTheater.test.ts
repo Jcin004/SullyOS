@@ -75,6 +75,13 @@ describe('共通剧场原文预算', () => {
     });
 });
 
+it('旧剧场默认沿用自动出演，显式关闭的设置在读取时保留', () => {
+    const legacy = createStoryTheaterDraft();
+    expect(normalizeStoryTheater(legacy).castModeEnabled).toBe(true);
+    expect(normalizeStoryTheater({ ...legacy, castModeEnabled: false, writesToCharacterMemory: true }))
+        .toMatchObject({ castModeEnabled: false, carryCharacterMemory: true });
+});
+
 describe('剧情接口报错诊断', () => {
     it('保留上游 400 的具体原因', () => {
         expect(describeStoryApiError(400, { error: { message: 'context_length_exceeded: maximum 32768' } }))

@@ -2307,6 +2307,7 @@ export interface StoryTheaterEntry {
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];
     castLimits?: StoryCastLimits;
+    castModeEnabled?: boolean;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
     writesToCharacterMemory: boolean;
     /** 每位演员各自的剧情时间锚点（datetime-local 字符串），允许跨时区/跨世界线。 */

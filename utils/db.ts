@@ -1077,7 +1077,8 @@ export const DB = {
             }
             const finish = () => store.put({ ...original, metadata: {
                 ...original.metadata,
-                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : { theaterCastGroups: groups }),
+                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : groups.length ? { theaterCastGroups: groups } : {}),
+                ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
                 ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
             } });
             const missing = recipients.filter(id => !mirrors.has(id));
@@ -1092,7 +1093,8 @@ export const DB = {
             const cursor = latest.result;
             const current = cursor?.value as Message | undefined;
             if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
-            if (pending ? !current || current.id !== pending.id || current.role !== 'user' || current.content !== pending.content : current) {
+            if (pending ? !current || current.id !== pending.id || current.role !== 'user' || current.content !== pending.content
+                || current.metadata?.theaterInputRevision !== pending.metadata?.theaterInputRevision : current) {
                 throw new Error('剧情已在别处修改或推进，请刷新后重试');
             }
             if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);

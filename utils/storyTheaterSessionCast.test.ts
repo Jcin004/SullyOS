@@ -3,7 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import StoryTheaterSession from '../components/date/story/StoryTheaterSession';
-import type { CharacterProfile } from '../types';
+import type { CharacterProfile, StoryTheaterEntry } from '../types';
 import { DB } from './db';
 import { createBlankStoryPreset, createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
 import { moveStoryInLibrary, saveStoryLibrary, STORY_LIBRARY_STORAGE_KEY, type StoryLibrary } from './storyTheaterLibrary';
@@ -20,7 +20,7 @@ vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
 
-it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复续写后沿用剧情时间', async () => {
+it('单次请求处理出演、私轴、自由续写和场外对话，并保留镜像、时间线与共通剧场行为', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
@@ -38,15 +38,18 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
     });
     const preset = createBlankStoryPreset('验收预设');
     preset.document.assistantPrefill = '<story_text>';
+    const privateAxes = (ids: string[], doing = '整理旧线索') => '<private_axes>' + JSON.stringify(Object.fromEntries(
+        ids.map(id => [id, { doing, thinking: '手头的事尚未完成', next: '继续手头的事' }]),
+    )) + '</private_axes>';
     const reply = (body: string, groups?: string[][]) => new Response(JSON.stringify({
-        choices: [{ message: { content: (groups ? '<turn_cast>' + JSON.stringify(groups) + '</turn_cast>' : '') + body } }],
+        choices: [{ message: { content: (groups ? '<turn_cast>' + JSON.stringify(groups) + '</turn_cast>' + privateAxes([...new Set(groups.flat())]) : '') + body } }],
     }));
     const fetch = vi.fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(new Response('{}', { status: 503 }))
         .mockResolvedValueOnce(reply('<story_text>越界回复</story_text>', [['unknown']]))
-        .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, b.id]]))
+        .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, b.id], [b.id]]))
         .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。</story_text><scene_header><time>3天后</time></scene_header>', [[c.id]]))
-        .mockResolvedValueOnce(reply('演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>'))
+        .mockResolvedValueOnce(reply(privateAxes([c.id], '收拾旧信') + '演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>'))
         .mockResolvedValueOnce(reply('<story_text>另一个剧场。</story_text>', [[a.id]]))
         .mockResolvedValueOnce(reply('<out_of_story>可以把旧信留到下一幕揭晓。</out_of_story>'))
         .mockResolvedValueOnce(reply('<out_of_story>这样能让悬念多留一幕。</out_of_story>'))
@@ -56,7 +59,7 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-    const entry = {
+    let entry: StoryTheaterEntry = {
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
         characterIds: actors.map(actor => actor.id), writesToCharacterMemory: true, carryCharacterMemory: true,
         selectedWorldbookIds: ['test-worldbook'],
@@ -125,10 +128,15 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         expect(await contents(c.id)).toEqual([]);
         expect(payload(2).at(-1)?.role).toBe('user');
         expect(payload(2).map(row => row.content).join('\n')).toContain('本轮随机建议组合');
-        expect(payload(2).map(row => row.content).join('\n')).toContain('名单关闭后，正文沿用预设起始文本');
+        expect(promptText(2)).toContain('私轴关闭后，正文沿用预设起始文本');
         expect(payload(2).map(row => row.content).join('\n').match(/城南钟楼已经停摆/g)).toHaveLength(1);
         expect(container.textContent).toContain('第一幕暗号');
         expect(container.textContent).not.toContain('<turn_cast>');
+        expect(container.textContent).not.toContain('<private_axes>');
+        await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="查看演员b的私轴"]')!.click());
+        expect(container.querySelector('[role="dialog"]')?.textContent).toContain('整理旧线索');
+        await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="关闭私轴"]')!.click());
+        expect((await DB.getMessagesByCharId(b.id, true)).every(row => !row.metadata.theaterPrivateAxes)).toBe(true);
 
         await setInput('我翻到另一页。');
         await send(advance(), 4);
@@ -139,6 +147,7 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         expect(await timeline(c.id)).toEqual([at(10), at(13)]);
         expect(lastReference(a.id)).toBe(at(13));
         expect(payload(3).map(row => row.content).join('\n').match(/第一幕暗号/g)).toHaveLength(1);
+        expect(promptText(3)).toContain('各角色最近有效私轴');
 
         const reroll = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!;
         await vi.waitFor(async () => { await flush(); expect(reroll.disabled).toBe(false); });
@@ -151,6 +160,7 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         expect(mocks.archive).toHaveBeenCalledTimes(3);
         expect(payload(4).map(row => row.content).join('\n')).toContain('沿用已确定的出演分组');
         expect(payload(4).map(row => row.content).join('\n')).not.toContain('本轮随机建议组合');
+        expect(promptText(4)).not.toContain(`"${c.id}":{"doing":"整理旧线索"`);
 
         await render('other-cast-session');
         await setInput('在另一个地方开场。');
@@ -208,6 +218,7 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         await send(container.querySelector<HTMLButtonElement>('button[aria-label="继续当前剧情"]')!, 10);
         expect(payload(9).some(row => row.content.includes('本轮使用剧情续写模式'))).toBe(true);
         expect(lastReference(c.id)).toBe(at(15));
+        expect(promptText(9)).toContain(`"${c.id}":{"doing":"收拾旧信"`);
         expect(await timeline(c.id)).toEqual([at(10), at(15), at(15), at(17)]);
         expect(checked()).toEqual([c.name]);
         await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls + 1));
@@ -265,6 +276,32 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         expect(promptText(14)).toContain('移回后的新一轮。');
         expect(promptText(14)).not.toContain('共通文件夹 · 其他剧场原文');
         expect((await contents(secondThread)).join('\n')).not.toContain('第一幕暗号');
+
+        const freeEntry = { ...entry, id: 'free-story-session', castModeEnabled: false, archiveAfter: 3 };
+        entry = freeEntry;
+        await render(freeEntry.id);
+        const beforeFree = await Promise.all(actors.map(actor => contents(actor.id)));
+        const archiveBeforeFree = mocks.archive.mock.calls.length;
+        fetch.mockImplementation(async () => reply('自由生成的正文。'));
+        for (const [index, input] of ['自由第一轮', '自由第二轮', '自由第三轮'].entries()) {
+            await setInput(input);
+            await send(advance(), 16 + index);
+        }
+        expect(promptText(17)).not.toContain('自由第一轮');
+        expect(promptText(17)).toContain('自由第二轮');
+        expect(promptText(17)).not.toMatch(/<turn_cast>|<private_axes>|本轮随机建议组合/);
+        expect(promptText(17)).toContain('演员设定c');
+        expect(await Promise.all(actors.map(actor => contents(actor.id)))).toEqual(beforeFree);
+        expect(mocks.archive).toHaveBeenCalledTimes(archiveBeforeFree);
+        const freeRows = await DB.getMessagesByCharId(storyTheaterThreadId(freeEntry.id), true);
+        expect(freeRows).toHaveLength(6);
+        expect(freeRows.every(row => !row.metadata.theaterMirrorIds && !row.metadata.theaterCastGroups && !row.metadata.theaterPrivateAxes)).toBe(true);
+        expect(freeRows.slice(0, 4).every(row => row.metadata.theaterArchived)).toBe(true);
+        expect(freeRows.slice(4).every(row => !row.metadata.theaterArchived)).toBe(true);
+        fetch.mockImplementationOnce(async () => reply('<out_of_story>我们聊聊这一段。</out_of_story>'));
+        await setInput('出戏聊聊？');
+        await send(advance(), 19);
+        expect(container.textContent).toContain('我们聊聊这一段。');
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

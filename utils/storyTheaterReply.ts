@@ -25,6 +25,7 @@ export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故
 export async function replaceStoryTheaterReply(
     original: Message, content: string, metadata: Record<string, unknown>, requireLatest = false,
     timelineByActor?: ReadonlyMap<string, number | undefined>,
+    input?: Message,
 ): Promise<void> {
     const mirrorIds = Object.values((original.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(id => Number.isFinite(id) && id > 0);
     const ids = [...new Set([original.id, ...mirrorIds])];
@@ -41,7 +42,8 @@ export async function replaceStoryTheaterReply(
                 const request = store.get(id);
                 request.onsuccess = () => {
                     const current = request.result as Message | undefined;
-                    if (!current || current.content !== original.content) {
+                    if (!current || current.content !== original.content || (id === original.id
+                        && current.metadata?.theaterInputRevision !== original.metadata?.theaterInputRevision)) {
                         failure = new Error('这条回复已被修改或删除，请刷新后重试');
                         transaction.abort();
                         return;
@@ -64,7 +66,17 @@ export async function replaceStoryTheaterReply(
                 transaction.abort();
                 return;
             }
-            replace();
+            if (!input) { replace(); return; }
+            const request = store.get(input.id);
+            request.onsuccess = () => {
+                const current = request.result as Message | undefined;
+                if (!current || current.content !== input.content || current.metadata?.theaterInputRevision !== input.metadata?.theaterInputRevision) {
+                    failure = new Error('本轮输入已被修改或删除，请刷新后重试');
+                    transaction.abort();
+                    return;
+                }
+                replace();
+            };
         };
     });
 }

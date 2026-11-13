@@ -14,7 +14,8 @@ const archivedBlock = source.slice(
 
 describe('剧情正常记忆归档原文入口', () => {
     it('真实时间陪伴归档后仍使用可展开原文的 details，而不是不可点击占位', () => {
-        expect(archivedBlock).toContain("entry.writesToCharacterMemory\n                                ? '已作为正常记忆归档'");
+        expect(archivedBlock).toContain("entry.writesToCharacterMemory ? '已作为正常记忆归档'");
+        expect(archivedBlock).toContain('已归档 · 剧场原文');
         expect(archivedBlock).toContain('展开查看原文');
         expect(archivedBlock).toContain('<details key={message.id}');
         expect(archivedBlock).toContain('open={isExpanded}');

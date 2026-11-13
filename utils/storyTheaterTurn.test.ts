@@ -3,6 +3,7 @@ import type { Message, StoryTheaterEntry } from '../types';
 import { DB } from './db';
 import { createStoryTheaterMirrorMessage, storyTheaterThreadId } from './storyTheater';
 import { replaceStoryTheaterReply } from './storyTheaterReply';
+import { storyPrivateAxesFromMessage } from './storyTheaterCast';
 
 const original = (theaterId: string, role: 'user' | 'assistant', content: string): Omit<Message, 'id'> => ({
     charId: storyTheaterThreadId(theaterId), role, type: 'text', content, timestamp: Date.now(),
@@ -13,6 +14,31 @@ const mirrors = (theaterId: string) => (actor: string, message: Message) =>
 const read = (id: string) => DB.getMessagesByCharId(id, true);
 
 describe('剧场整轮提交', () => {
+    it('输入修改或删除后旧私轴失效，重写校验输入版本并原子保存新私轴', async () => {
+        const theater = 'axes-edit';
+        const user = original(theater, 'user', '旧输入');
+        const input = { ...user, id: await DB.saveMessage(user) };
+        const axis = { doing: '修表', thinking: '缺零件', next: '去找工具' };
+        const reply = original(theater, 'assistant', '旧正文');
+        await DB.commitStoryTheaterTurn({ ...reply, metadata: { ...reply.metadata, theaterInputId: input.id, theaterPrivateAxes: { actor: axis } } },
+            input, [['actor']], mirrors(theater));
+        const [savedInput, savedReply] = await read(user.charId);
+        expect(storyPrivateAxesFromMessage(savedReply, new Map([[savedInput.id, savedInput]]))).toEqual({ actor: axis });
+        await replaceStoryTheaterReply(savedInput, '新输入', { theaterInputRevision: 'new-input' });
+        const edited = (await read(user.charId))[0];
+        expect(storyPrivateAxesFromMessage(savedReply, new Map([[edited.id, edited]]))).toEqual({});
+        await expect(replaceStoryTheaterReply(savedReply, '过期正文', {}, true, undefined, savedInput)).rejects.toThrow('本轮输入已被修改');
+        const revisedAxis = { ...axis, next: '先问师傅' };
+        await replaceStoryTheaterReply(savedReply, '新正文', {
+            theaterPrivateAxes: { actor: revisedAxis }, theaterPrivateAxesInputRevision: 'new-input',
+        }, true, undefined, edited);
+        const revised = (await read(user.charId))[1];
+        expect(storyPrivateAxesFromMessage(revised, new Map([[edited.id, edited]]))).toEqual({ actor: revisedAxis });
+        expect((await read('actor')).map(row => row.content)).toEqual(['新输入', '新正文']);
+        await DB.deleteMessages([edited.id, edited.metadata.theaterMirrorIds.actor]);
+        expect(storyPrivateAxesFromMessage(revised, new Map())).toEqual({});
+    });
+
     it('开场没有虚构的用户镜像；虚构剧场只存中央正文和名单', async () => {
         await DB.commitStoryTheaterTurn(original('solo-opening', 'assistant', '开场'), undefined, [['opening-actor']], mirrors('solo-opening'));
         expect((await read('opening-actor')).map(row => row.role)).toEqual(['assistant']);

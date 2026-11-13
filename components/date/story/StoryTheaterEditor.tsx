@@ -61,7 +61,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
     const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
     const validCastLimits = validStoryCastLimits(castLimits);
-    const canStart = canDrawStoryCast(actors.length, castLimits);
+    const castEnabled = draft.castModeEnabled !== false;
+    const canStart = !castEnabled || canDrawStoryCast(actors.length, castLimits);
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
@@ -91,7 +92,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         setSaving(true);
         const archiveAfter = Math.max(2, Math.min(200, Number(draft.archiveAfter) || 40));
         const archiveKeepRecent = Math.max(1, Math.min(archiveAfter - 1, Number(draft.archiveKeepRecent) || 5));
-        try { await onSave({ ...draft, castLimits, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
+        try { await onSave({ ...draft, castLimits: castEnabled ? castLimits : draft.castLimits, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
         finally { setSaving(false); }
     };
     const recentContextFields = <div className='space-y-2'>
@@ -143,7 +144,11 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 </button>
                 {(maskLocked || draft.writesToCharacterMemory) && <p className='mt-2 text-[10px] leading-5 text-slate-500'>{draft.writesToCharacterMemory ? '真实时间陪伴只能使用真实的你，不能扮演已有角色或原创人物。' : '第一段内容发出后，当前身份会锁定，避免中途更换导致人物记忆与叙事视角错位。'}</p>}
                 <div className='mt-4 grid grid-cols-2 gap-2.5'>{characters.map(char => { const selected = draft.characterIds.includes(char.id); const isMask = draft.mask?.type === 'character' && draft.mask.id === char.id; return <button key={char.id} disabled={isMask} onClick={() => toggleCharacter(char)} className={`flex items-center gap-3 p-3 rounded-2xl border text-left disabled:opacity-45 ${selected ? 'bg-violet-50 border-violet-300' : 'bg-white border-slate-200'}`}><TokenImg value={char.avatar} alt='' className='w-10 h-10 rounded-full object-cover' /><span className='min-w-0 flex-1'><span className='block text-sm font-semibold truncate'>{char.name}</span>{isMask && <span className='block text-[9px] text-violet-500'>当前由你扮演</span>}</span><span className={`w-4 h-4 rounded-full border-2 ${selected ? 'bg-violet-600 border-violet-600' : 'border-slate-300'}`} /></button>; })}</div>
-                <fieldset className='mt-4'>
+                <div className='mt-4 flex items-center justify-between gap-3'>
+                    <span className='text-sm font-semibold'>出演模式</span>
+                    <Toggle label='出演模式' value={castEnabled} onChange={value => update('castModeEnabled', value)} />
+                </div>
+                {castEnabled && <fieldset className='mt-4'>
                     <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
@@ -155,11 +160,11 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                                 className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。出演人数按整轮计算，每人只进入一组，每组至少一人。</p>
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。同一人物可跨组，出演人数按整轮去重。</p>
                     {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
                         ? '请填写正整数，且每项最小值不能超过最大值。'
                         : '当前候选或最多出演人数不足以满足最少组数或人数。请调整范围或增加候选。'}</p>}
-                </fieldset>
+                </fieldset>}
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>03 / Memory</div><h2 className='mt-1 text-lg font-semibold'>这段故事是真的吗</h2>
@@ -167,8 +172,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 {maskLocked && <p className='mt-2 text-[10px] text-slate-400'>故事开始后，真实/虚构模式也会固定；虚构剧场的记忆输入仍可单独调整。</p>}
                 {draft.writesToCharacterMemory ? <div className='mt-5 space-y-4'>
                     <div className='p-4 rounded-2xl bg-amber-50 border border-amber-200'>
-                        <div className='text-xs font-bold text-amber-800'>记忆输入与输出都会开启</div>
-                        <p className='mt-1 text-[10px] leading-5 text-amber-700'>会读取角色既有记忆；你写的内容与故事正文也会分别进入每位角色的正常记忆，作为你们的共同经历。</p>
+                        <div className='text-xs font-bold text-amber-800'>读取角色既有记忆</div>
+                        <p className='mt-1 text-[10px] leading-5 text-amber-700'>{castEnabled ? '本轮用户输入和正文只写入出演角色的记忆。' : '自由续写保存在剧场历史。生成时会优先带入最近的剧情。'}</p>
                         <p className='mt-2 text-[10px] leading-5 text-amber-700'>聊天记录按实际发送时间排序。剧场内的记忆距离按角色的剧情时间计算，可为每位角色填写初始剧情时间。</p>
                         <p className='mt-2 pt-2 border-t border-amber-200 text-[10px] leading-5 font-semibold text-amber-800'>内置真实性保护：角色不能捏造和你的共同记忆，也不能给已有记忆添油加醋。</p>
                     </div>
