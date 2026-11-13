@@ -10,7 +10,7 @@ it('剧场和普通聊天用各自的现在格式化同一条记忆，旧节点�
     const node: MemoryNode = {
         id: 'experience-test', charId: 'experience-actor', content: '修好钟表', room: 'living_room',
         tags: [], importance: 5, mood: 'neutral', createdAt: today, experiencedAt: experience,
-        lastAccessedAt: today, accessCount: 0, eventBoxId: null,
+        lastAccessedAt: today, accessCount: 0, eventBoxId: null, embedded: false,
     };
     const scored = (memory: MemoryNode): ScoredMemory =>
         ({ node: memory, finalScore: 1, similarity: 1, bm25Score: 0, roomScore: 1 });

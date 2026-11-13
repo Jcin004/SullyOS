@@ -1558,7 +1558,7 @@ const validStoryTime = (value: unknown): value is number =>
 function parseStoryTime(text: string, base?: number): number | undefined {
     const value = text.trim().normalize('NFKC');
     const full = /^(\d{4})(?:[-/.]|年)(\d{1,2})(?:[-/.]|月)(\d{1,2})日?/.exec(value);
-    const partial = !full && /^(\d{1,2})月(\d{1,2})日/.exec(value);
+    const partial = full ? null : /^(\d{1,2})月(\d{1,2})日/.exec(value);
     const clock = /(?:^|[^\d])(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?/.exec(value);
     const relative = /^(?:(次日|翌日|明天|昨天|今天|当天|前天|后天)|(\d+|[一二两三四五六七八九十]+)\s*(天|周|小时|分钟)(后|前))/.exec(value);
     const original = base === undefined ? undefined : new Date(base);
