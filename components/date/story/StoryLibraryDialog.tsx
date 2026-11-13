@@ -24,6 +24,7 @@ interface Props {
 export default function StoryLibraryDialog({ action, library, onSave, onDeleteStory, onClose }: Props) {
     const { registerBackHandler } = useOS();
     const [name, setName] = useState(action.type === 'folder' ? action.folder.name : '');
+    const [mode, setMode] = useState<NonNullable<StoryFolder['mode']>>(action.type === 'folder' ? action.folder.mode ?? 'normal' : 'normal');
     const [stage, setStage] = useState<'main' | 'move' | 'remove'>('main');
     const [destination, setDestination] = useState(action.type === 'story' ? getStoryFolder(library, action.story.id) : null);
     React.useEffect(() => registerBackHandler(() => { onClose(); return true; }), [onClose, registerBackHandler]);
@@ -37,7 +38,7 @@ export default function StoryLibraryDialog({ action, library, onSave, onDeleteSt
     const saveFolder = (event: React.FormEvent) => {
         event.preventDefault();
         if (!cleanedName || duplicate || action.type === 'story') return;
-        const next = { id: folder?.id ?? makeStoryTheaterId(), name: cleanedName, parentId };
+        const next = { id: folder?.id ?? makeStoryTheaterId(), name: cleanedName, parentId, mode };
         if (onSave(current => ({
             ...current,
             folders: folder ? current.folders.map(item => item.id === folder.id ? next : item) : [...current.folders, next],
@@ -69,8 +70,8 @@ export default function StoryLibraryDialog({ action, library, onSave, onDeleteSt
                 <div className='mt-3 max-h-[36vh] overflow-y-auto' aria-label='移动位置'>
                     {choice(null, '剧情根目录')}
                     {library.folders.filter(item => item.parentId === null).map(item => <React.Fragment key={item.id}>
-                        {choice(item.id, item.name)}
-                        {library.folders.filter(child => child.parentId === item.id).map(child => choice(child.id, child.name, true))}
+                        {choice(item.id, item.mode === 'shared' ? `${item.name}（共通）` : item.name)}
+                        {library.folders.filter(child => child.parentId === item.id).map(child => choice(child.id, child.mode === 'shared' ? `${child.name}（共通）` : child.name, true))}
                     </React.Fragment>)}
                 </div>
                 <button type='button' onClick={() => { if (onSave(current => moveStoryInLibrary(current, action.story.id, destination))) onClose(); }}
@@ -82,8 +83,15 @@ export default function StoryLibraryDialog({ action, library, onSave, onDeleteSt
                 <input id='story-folder-name' value={name} onChange={event => setName(event.target.value)} maxLength={STORY_FOLDER_NAME_LIMIT}
                     className='mt-2 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-base' />
                 {duplicate && <p className='mt-2 text-xs text-rose-600' role='status'>当前位置已有同名文件夹</p>}
+                <label className='mt-3 block text-xs font-semibold text-slate-600' htmlFor='story-folder-mode'>文件夹类型</label>
+                <select id='story-folder-mode' value={mode} onChange={event => setMode(event.target.value === 'shared' ? 'shared' : 'normal')}
+                    className='mt-2 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-base'>
+                    <option value='normal'>普通文件夹</option>
+                    <option value='shared'>共通文件夹</option>
+                </select>
+                <p className='mt-2 text-xs text-slate-500'>{mode === 'shared' ? '直接放在这里的剧场共享尚未归档的剧情原文。' : '文件夹用于分类，各剧场独立续写。'}</p>
                 <button type='submit' disabled={!cleanedName || duplicate} className='mt-4 min-h-11 w-full rounded-xl bg-violet-700 text-white text-sm font-semibold disabled:opacity-40'>
-                    {folder ? '保存名称' : '创建文件夹'}
+                    {folder ? '保存设置' : '创建文件夹'}
                 </button>
                 {folder && <button type='button' onClick={() => setStage('remove')} className='mt-1 min-h-11 w-full text-sm text-rose-600'>移除文件夹</button>}
             </form>}

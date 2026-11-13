@@ -7,6 +7,7 @@ import { useOS } from '../../../context/OSContext';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, Message, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset } from '../../../types';
 import { DB } from '../../../utils/db';
+import { getSharedStoryIds, loadStoryLibrary } from '../../../utils/storyTheaterLibrary';
 import { ContextBuilder } from '../../../utils/context';
 import { safeResponseJson, extractContent } from '../../../utils/safeApi';
 import {
@@ -30,6 +31,7 @@ import {
     describeStoryApiError,
     estimateStoryTokens,
     formatActorRecentMessages,
+    formatSharedStoryHistory,
     formatStoryActorContexts,
     formatStoryTheaterExport,
     getActiveStoryMiniTheaterPrompt,
@@ -819,7 +821,22 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             if (promptEntry.forceUserLastMessage && payload[payload.length - 1]?.role !== 'user') {
                 payload.push({ role: 'user', content: '请按以上要求继续本轮剧情。' });
             }
-            let promptTokenCount = estimateStoryTokens(payload.map(message => `${message.role}\n${message.content}`).join('\n'));
+            const estimatePayload = () => estimateStoryTokens(payload.map(message => `${message.role}\n${message.content}`).join('\n'));
+            const sharedIds = rerollOutOfStory ? [] : getSharedStoryIds(loadStoryLibrary(), entry.id);
+            if (sharedIds.length > 0) {
+                const peers = (await DB.getStoryTheaters()).filter(story => sharedIds.includes(story.id));
+                const sources = await Promise.all(peers.map(async story => ({
+                    entry: story,
+                    rows: await DB.getMessagesByCharId(storyTheaterThreadId(story.id), true),
+                })));
+                const sharedHistory = formatSharedStoryHistory(sources, mirrorArchived, estimatePayload(), compiled.settings.max_tokens);
+                if (sharedHistory && compiled.scenarioMessage) {
+                    compiled.scenarioMessage.content += `\n\n${sharedHistory}`;
+                } else if (sharedHistory) {
+                    payload.splice(payload.indexOf(pendingTurn), 0, { role: 'system', content: sharedHistory });
+                }
+            }
+            let promptTokenCount = estimatePayload();
             let promptTokenCountExact = false;
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);

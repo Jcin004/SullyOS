@@ -2,6 +2,7 @@ export interface StoryFolder {
     id: string;
     name: string;
     parentId: string | null;
+    mode?: 'normal' | 'shared';
 }
 
 export interface StoryLibrary {
@@ -27,6 +28,7 @@ export function parseStoryLibrary(value: string): StoryLibrary {
             id: folder.id,
             name: folder.name.trim().slice(0, STORY_FOLDER_NAME_LIMIT),
             parentId: folder.parentId,
+            ...(folder.mode === 'normal' || folder.mode === 'shared' ? { mode: folder.mode } : {}),
         });
     }
     const folders = [...foldersById.values()].filter(folder =>
@@ -52,6 +54,12 @@ export function saveStoryLibrary(library: StoryLibrary): void {
 
 export function getStoryFolder(library: StoryLibrary, storyId: string): string | null {
     return Object.prototype.hasOwnProperty.call(library.locations, storyId) ? library.locations[storyId] : null;
+}
+
+export function getSharedStoryIds(library: StoryLibrary, storyId: string): string[] {
+    const folderId = getStoryFolder(library, storyId);
+    if (!library.folders.some(folder => folder.id === folderId && folder.mode === 'shared')) return [];
+    return Object.entries(library.locations).flatMap(([id, location]) => id !== storyId && location === folderId ? [id] : []);
 }
 
 export function moveStoryInLibrary(library: StoryLibrary, storyId: string, folderId: string | null): StoryLibrary {

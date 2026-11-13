@@ -1025,10 +1025,11 @@ export const compileStoryPreset = (input: {
     historyMessages?: StoryApiMessage[];
     userName: string;
     characterNames: string[];
-}): { messages: StoryApiMessage[]; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage } => {
+}): { messages: StoryApiMessage[]; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage; scenarioMessage?: StoryApiMessage } => {
     const { preset, slots, userName, characterNames } = input;
     const document = (preset || BUILTIN_NIGHT_SCREENING_PRESET).document;
     const messages: StoryApiMessage[] = [];
+    let scenarioMessage: StoryApiMessage | undefined;
 
     const worldBeforePrompts = document.prompts.filter(prompt => prompt.marker === 'world_before');
     const enabledWorldBeforePrompt = worldBeforePrompts.find(prompt => prompt.enabled);
@@ -1069,7 +1070,11 @@ export const compileStoryPreset = (input: {
             raw = slotForMarker(prompt.marker, slots);
         }
         if (!raw.trim()) continue;
-        pushPromptMessage(messages, prompt.role, macroReplace(raw, userName, characterNames));
+        const content = macroReplace(raw, userName, characterNames).trim();
+        if (!content) continue;
+        const message = { role: prompt.role, content };
+        messages.push(message);
+        if (prompt.marker === 'scenario') scenarioMessage = message;
     }
 
     // 兼容没有任何原生槽位的旧自定义预设，确保角色设定前世界书不会静默丢失。
@@ -1090,6 +1095,7 @@ export const compileStoryPreset = (input: {
             max_tokens: document.generation.maxTokens,
         },
         assistantPrefill,
+        scenarioMessage,
     };
 };
 
@@ -1514,6 +1520,50 @@ export const estimateStoryTokens = (text: string): number => {
     const rest = Math.max(0, text.length - cjk);
     return cjk + Math.ceil(rest / 4);
 };
+
+const SHARED_STORY_TOKEN_LIMIT = 4_000;
+const SHARED_STORY_CONTEXT_TARGET = 32_000;
+const SHARED_STORY_HEADING = '### 共通文件夹 · 其他剧场原文\n以当前剧场历史为续写落点。人物仅能依据自己的经历和获知渠道行动；虚构剧场的情节不能作为真实陪伴经历。';
+
+export function formatSharedStoryHistory(
+    sources: { entry: StoryTheaterEntry; rows: Message[] }[],
+    isArchived: (message: Message, entry: StoryTheaterEntry) => boolean,
+    basePromptTokens: number,
+    outputTokens: number,
+): string {
+    let remaining = Math.min(SHARED_STORY_TOKEN_LIMIT, SHARED_STORY_CONTEXT_TARGET - basePromptTokens - outputTokens)
+        - estimateStoryTokens(`system\n${SHARED_STORY_HEADING}\n\n`);
+    if (remaining <= 0) return '';
+
+    const rounds = sources.flatMap(({ entry, rows }) => {
+        const storyRows = rows.filter(row => row.metadata?.source === 'story_theater'
+            && (row.role === 'user' || row.role === 'assistant')).sort((a, b) => a.id - b.id);
+        const available = (row: Message) => !row.metadata?.theaterOutOfStory && !isArchived(row, entry);
+        return storyRows.flatMap((reply, index) => {
+            if (reply.role !== 'assistant' || !available(reply)) return [];
+            const previous = storyRows[index - 1];
+            const inputId = reply.metadata?.theaterInputId;
+            const input = inputId !== 0 && previous?.role === 'user' ? previous : undefined;
+            if (input && (!available(input) || (inputId != null && inputId !== input.id))) return [];
+            if (!input && inputId !== 0 && (inputId != null || index !== 0)) return [];
+            const text = [input && `用户：${input.content}`, `剧场：${reply.content}`].filter(Boolean).join('\n');
+            return [{ id: reply.id, entry, text }];
+        });
+    }).sort((a, b) => b.id - a.id);
+
+    const selected = new Map<string, { title: string; turns: string[] }>();
+    for (const { entry, text } of rounds) {
+        const group = selected.get(entry.id);
+        const heading = `#### 来源剧场：${entry.title}（${entry.writesToCharacterMemory ? '真实时间陪伴' : '虚构剧场'}）\n`;
+        const cost = estimateStoryTokens(`${group ? '' : heading}${text}\n\n`);
+        if (cost > remaining) continue;
+        remaining -= cost;
+        if (group) group.turns.push(text);
+        else selected.set(entry.id, { title: heading, turns: [text] });
+    }
+    if (selected.size === 0) return '';
+    return [SHARED_STORY_HEADING, ...Array.from(selected.values(), group => group.title + group.turns.reverse().join('\n\n'))].join('\n\n');
+}
 
 const storyApiDetail = (value: unknown): string => {
     if (typeof value === 'string') return value.trim();

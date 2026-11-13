@@ -302,6 +302,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                         <button onClick={() => openFolder(folder.id)} className='min-w-0 min-h-14 flex flex-1 items-center gap-3 text-left'>
                             <span className='w-10 h-10 shrink-0 rounded-xl grid place-items-center bg-violet-100 text-violet-700'><FolderSimple size={23} weight='duotone' /></span>
                             <span className='min-w-0 flex-1 truncate text-sm font-semibold'>{folder.name}</span>
+                            {folder.mode === 'shared' && <span className='shrink-0 text-xs text-violet-700'>共通</span>}
                             <CaretRight size={14} className='shrink-0 text-slate-400' />
                         </button>
                         <button onClick={() => setLibraryAction({ type: 'folder', folder })} className='w-10 h-11 shrink-0 rounded-full grid place-items-center text-slate-500' aria-label={`管理文件夹 ${folder.name}`}><DotsThree size={23} weight='bold' /></button>

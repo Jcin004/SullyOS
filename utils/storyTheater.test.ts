@@ -43,10 +43,37 @@ import {
     selectStoryArchiveBatch,
     storyTheaterMemoryRecipientIds,
     formatActorRecentMessages,
+    formatSharedStoryHistory,
+    estimateStoryTokens,
     formatStoryTheaterExport,
     makeStoryPresetFileName,
     makeStoryTheaterFileName,
 } from './storyTheater';
+
+describe('共通剧场原文预算', () => {
+    it('用现有 Token 估算裁剪完整轮次，保留原文与来源剧场内的记录顺序', () => {
+        const entry = { ...createStoryTheaterDraft(), title: '支线' };
+        const row = (id: number, role: 'user' | 'assistant', content: string, theaterInputId?: number): Message => ({
+            id, charId: 'peer', timestamp: 20 - id, role, content, type: 'text', metadata: { source: 'story_theater', theaterInputId },
+        });
+        const rows = [
+            row(1, 'assistant', '独立开场', 0),
+            row(2, 'user', '旧输入'), row(3, 'assistant', '旧回复' + '字'.repeat(40), 2),
+            row(4, 'user', '较新输入'), row(5, 'assistant', '较新回复', 4),
+            row(6, 'user', '超长输入' + '字'.repeat(4_100)), row(7, 'assistant', '超长轮次的回复', 6),
+        ];
+        const sources = [{ entry, rows: [...rows].reverse() }];
+        const full = formatSharedStoryHistory(sources, () => false, 2_000, 8_000);
+        expect(full).toContain('剧场：独立开场\n\n用户：旧输入\n剧场：旧回复' + '字'.repeat(40) + '\n\n用户：较新输入\n剧场：较新回复');
+        expect(full).not.toContain('超长轮次的回复');
+        const small = formatSharedStoryHistory(sources, () => false, 23_885, 8_000);
+        expect(estimateStoryTokens(small)).toBeLessThanOrEqual(115);
+        expect(small).toContain('用户：较新输入\n剧场：较新回复');
+        expect(small).not.toContain('旧输入');
+        expect(small).not.toContain('旧回复');
+        expect(formatSharedStoryHistory(sources, () => false, 24_000, 8_000)).toBe('');
+    });
+});
 
 describe('剧情接口报错诊断', () => {
     it('保留上游 400 的具体原因', () => {

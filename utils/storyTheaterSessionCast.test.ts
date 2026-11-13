@@ -6,6 +6,7 @@ import StoryTheaterSession from '../components/date/story/StoryTheaterSession';
 import type { CharacterProfile } from '../types';
 import { DB } from './db';
 import { createBlankStoryPreset, createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
+import { moveStoryInLibrary, saveStoryLibrary, STORY_LIBRARY_STORAGE_KEY, type StoryLibrary } from './storyTheaterLibrary';
 
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, archive: vi.fn(), toast: vi.fn() }));
 vi.mock('../context/OSContext', () => ({ useOS: () => mocks.state }));
@@ -61,9 +62,10 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         selectedWorldbookIds: ['test-worldbook'],
         characterMemoryDates: { [a.id]: '2026-04-10T09:00', [b.id]: '2026-04-11T09:00', [c.id]: '2026-04-10T09:00' },
     };
+    let second = { ...entry, id: 'other-cast-session', title: '第二剧场' };
     const render = (id: string) => act(async () => {
         root.render(createElement(StoryTheaterSession, {
-            key: id, entry: { ...entry, id }, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+            key: id, entry: id === second.id ? second : entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
         }));
     });
     const advance = () => container.querySelector<HTMLButtonElement>('button.story-send-button')!;
@@ -92,7 +94,15 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const payload = (index: number) => JSON.parse(String(fetch.mock.calls[index][1]?.body)).messages as { role: string; content: string }[];
+    const promptText = (index: number) => payload(index).map(row => row.content).join('\n');
     try {
+        await DB.saveStoryTheater(entry);
+        await DB.saveStoryTheater(second);
+        const library: StoryLibrary = {
+            folders: [{ id: 'folder', name: '共同世界', parentId: null, mode: 'normal' }],
+            locations: { [entry.id]: 'folder', [second.id]: 'folder' },
+        };
+        saveStoryLibrary(library);
         await render(entry.id);
         await setInput('我在窗边坐下。');
         await send(advance(), 1);
@@ -147,6 +157,7 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         await send(advance(), 6);
         expect(lastReference(a.id)).toBe(at(10));
         expect(payload(5).map(row => row.content).join('\n')).toContain('第一幕暗号');
+        expect(promptText(5)).not.toContain('共通文件夹 · 其他剧场原文');
         expect(await contents(thread)).toHaveLength(4);
         expect(await contents(a.id)).toHaveLength(4);
 
@@ -200,9 +211,64 @@ it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复�
         expect(await timeline(c.id)).toEqual([at(10), at(15), at(15), at(17)]);
         expect(checked()).toEqual([c.name]);
         await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls + 1));
+
+        library.folders[0].mode = 'shared';
+        saveStoryLibrary(library);
+        const secondThread = storyTheaterThreadId(second.id);
+        second = { ...second, writesToCharacterMemory: false, carryCharacterMemory: false };
+        await DB.saveStoryTheater(second);
+        const addPeerLayer = (role: 'user' | 'assistant' | 'system', content: string, extra = {}) =>
+            DB.saveMessage({ charId: secondThread, role, type: 'text', content, metadata: { source: 'story_theater', ...extra } });
+        await addPeerLayer('user', '归档用户原文', { theaterArchived: true });
+        await addPeerLayer('assistant', '归档回复原文', { theaterArchived: true });
+        await addPeerLayer('user', '场外用户原文', { theaterOutOfStory: true });
+        await addPeerLayer('assistant', '场外回复原文', { theaterOutOfStory: true });
+        await addPeerLayer('system', '来源剧场系统规则');
+        await addPeerLayer('user', '第二剧场完整轮输入 {{user}}');
+        await addPeerLayer('assistant', '第二剧场完整轮回复');
+        await addPeerLayer('user', '尚未回复的输入');
+        fetch.mockImplementation(async () => reply('<story_text>共通验证</story_text>', [[c.id]]));
+        await setInput('接着从当前地点继续。');
+        await send(advance(), 11);
+        const sharedScenario = payload(10).find(row => row.content.includes('### 当前剧情'))?.content;
+        expect(sharedScenario).toContain('来源剧场：第二剧场');
+        expect(sharedScenario).toContain('第二剧场完整轮输入 {{user}}\n剧场：第二剧场完整轮回复');
+        expect(sharedScenario).not.toMatch(/归档用户原文|归档回复原文|场外用户原文|场外回复原文|来源剧场系统规则|尚未回复的输入|第一幕暗号/);
+        expect(promptText(10).match(/第一幕暗号/g)).toHaveLength(1);
+
+        await render(second.id);
+        await setInput('回到第二剧场。');
+        await send(advance(), 12);
+        const reverse = payload(11).find(row => row.content.includes('共通文件夹 · 其他剧场原文'))?.content;
+        expect(reverse).toContain('来源剧场：剧情选角验证');
+        expect(reverse).toContain('第一幕暗号');
+        expect(reverse).not.toContain('可以把旧信留到下一幕揭晓。');
+
+        const archivedRealReply = (await DB.getMessagesByCharId(thread, true)).find(row => row.content.includes('第一幕暗号'))!;
+        const watermarks = Object.entries(archivedRealReply.metadata.theaterMirrorIds);
+        for (const [id, watermark] of watermarks) localStorage.setItem(`mp_lastMsgId_${id}`, String(watermark));
+
+        saveStoryLibrary(moveStoryInLibrary(library, entry.id, null));
+        await setInput('移出后的新一轮。');
+        await send(advance(), 13);
+        expect(promptText(12)).not.toContain('共通文件夹 · 其他剧场原文');
+        saveStoryLibrary(moveStoryInLibrary(library, entry.id, 'folder'));
+        await setInput('移回后的新一轮。');
+        await send(advance(), 14);
+        expect(promptText(13)).toContain('来源剧场：剧情选角验证');
+        expect(promptText(13)).not.toMatch(/第一幕暗号|我在窗边坐下/);
+        for (const [id] of watermarks) localStorage.removeItem(`mp_lastMsgId_${id}`);
+
+        await setInput('本剧场长输入' + '长'.repeat(26_000));
+        await send(advance(), 15);
+        expect(promptText(14)).toContain('本剧场长输入' + '长'.repeat(26_000));
+        expect(promptText(14)).toContain('移回后的新一轮。');
+        expect(promptText(14)).not.toContain('共通文件夹 · 其他剧场原文');
+        expect((await contents(secondThread)).join('\n')).not.toContain('第一幕暗号');
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();
+        localStorage.removeItem(STORY_LIBRARY_STORAGE_KEY);
         if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
         else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
         vi.unstubAllGlobals();

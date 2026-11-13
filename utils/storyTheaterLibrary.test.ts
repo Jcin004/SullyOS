@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { exportStoryLibrarySetting, restoreStoryLibrarySetting } from './storyTheaterBackup';
-import { getStoryFolder, loadStoryLibrary, moveStoryInLibrary, parseStoryLibrary, removeStoryFolder, saveStoryLibrary } from './storyTheaterLibrary';
+import { getSharedStoryIds, getStoryFolder, loadStoryLibrary, moveStoryInLibrary, parseStoryLibrary, removeStoryFolder, saveStoryLibrary, type StoryLibrary } from './storyTheaterLibrary';
 
 const main = { id: 'main', name: '主线', parentId: null };
 const child = { id: 'child', name: '番外', parentId: main.id };
@@ -9,6 +9,23 @@ const child = { id: 'child', name: '番外', parentId: main.id };
 beforeEach(() => localStorage.clear());
 
 describe('剧情文件夹', () => {
+    it('通过现有备份恢复共通模式和归属，旧目录和子目录保持独立', () => {
+        const library: StoryLibrary = {
+            folders: [{ ...main, mode: 'shared' }, child],
+            locations: { a: main.id, b: main.id, c: child.id, d: child.id },
+        };
+        saveStoryLibrary(library);
+        const backup = exportStoryLibrarySetting();
+        localStorage.clear();
+        restoreStoryLibrarySetting(backup);
+        const restored = loadStoryLibrary();
+        expect(restored).toEqual(library);
+        expect(getSharedStoryIds(restored, 'a')).toEqual(['b']);
+        expect(getSharedStoryIds(restored, 'b')).toEqual(['a']);
+        expect(getSharedStoryIds(restored, 'c')).toEqual([]);
+        expect(getSharedStoryIds(moveStoryInLibrary(restored, 'b', null), 'a')).toEqual([]);
+        expect(getSharedStoryIds(moveStoryInLibrary(restored, 'c', main.id), 'a')).toEqual(['b', 'c']);
+    });
     it('旧剧情留在根目录，并能把二级分类随备份恢复', () => {
         let library = loadStoryLibrary();
         expect(getStoryFolder(library, 'existing')).toBeNull();
