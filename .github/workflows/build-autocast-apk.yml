@@ -1,0 +1,81 @@
+name: Build AutoCast Test APK
+
+on:
+  push:
+    branches:
+      - feat/real-story-raw-context
+    paths:
+      - .github/workflows/build-autocast-apk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify story memory and API response handling
+        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts
+
+      - name: Build Capacitor web assets
+        run: |
+          node scripts/build-chat-preview-css.mjs
+          pnpm exec vite build --mode capacitor
+
+      - name: Prepare isolated test app identity
+        run: |
+          node -e "const fs=require('fs');const p='capacitor.config.json';const x=JSON.parse(fs.readFileSync(p,'utf8'));x.appId='com.aetheros.simulator.autocasttest';x.appName='SullyOS AutoCast Test';fs.writeFileSync(p,JSON.stringify(x,null,2)+'\n')"
+
+      - name: Generate and sync Android project
+        run: |
+          pnpm exec cap add android
+          pnpm exec cap sync android
+
+      - name: Build debug APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Prepare APK output
+        run: |
+          mkdir -p apk-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-AutoCast-Test.apk
+          sha256sum apk-output/SullyOS-AutoCast-Test.apk
+          ls -lh apk-output/SullyOS-AutoCast-Test.apk
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SullyOS-AutoCast-Test-APK
+          path: apk-output/SullyOS-AutoCast-Test.apk
+          if-no-files-found: error
+          retention-days: 14
