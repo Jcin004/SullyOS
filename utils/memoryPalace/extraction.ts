@@ -15,6 +15,12 @@ import { readRecallRuntimeSnapshot } from './trace';
 import { hasRelativeTime, hasMatchingRelativeSource, relativeTimeEnabled } from './relativeTime';
 import { getLocalDateKey } from '../localDate';
 
+/** Theater mirrors are world narration, not direct dialogue from either sender. */
+function formatExtractionMessage(message: Message, charName: string, userName: string): string {
+    if (message.metadata?.source === 'story_theater_memory') return '[剧场记录]: ' + message.content;
+    return formatMessageForPrompt(message, charName, userName);
+}
+
 function generateId(): string {
     return `mn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -25,7 +31,7 @@ export function splitExtractionMessages(messages: Message[], charName: string, u
     let batch: Message[] = [];
     let chars = 0;
     for (const message of messages) {
-        const size = formatMessageForPrompt(message, charName, userName).length + 50;
+        const size = formatExtractionMessage(message, charName, userName).length + 50;
         if (batch.length && (chars + size > 24_000 || batch.length >= 250)) {
             batches.push(batch);
             batch = [];
@@ -99,7 +105,7 @@ function buildConversationText(messages: Message[], charName: string, userLabel:
     const pad2 = (n: number) => String(n).padStart(2, '0');
     return messages
         .map((m, index) => {
-            const body = (linkDates ? `[M${index}] ` : '') + formatMessageForPrompt(m, charName, userLabel);
+            const body = (linkDates ? `[M${index}] ` : '') + formatExtractionMessage(m, charName, userLabel);
             const ts = m.timestamp;
             if (!ts || ts <= 0) return body;
             const d = new Date(ts);
@@ -210,7 +216,7 @@ function parseMemoryNodesFromBuffer(
                 && typeof item.relativeTimeSource === 'string' && /^M\d+$/.test(item.relativeTimeSource)) {
                 const source = messages[Number(item.relativeTimeSource.slice(1))];
                 if (source && Number.isFinite(source.timestamp) && source.timestamp > 0
-                    && hasMatchingRelativeSource(memory.content, formatMessageForPrompt(source, '', ''))) {
+                    && hasMatchingRelativeSource(memory.content, formatExtractionMessage(source, '', ''))) {
                     memory.relativeTimeAnchor = {
                         dateKey: getLocalDateKey(new Date(source.timestamp)), source: 'message', messageId: source.id,
                     };
@@ -440,6 +446,10 @@ export async function extractMemoriesFromBuffer(
     const linkDates = relativeTimeEnabled();
     const userLabel = userName || '用户';
     const conversationText = buildConversationText(messages, charName, userLabel, linkDates);
+    const hasTheaterRecords = messages.some(message => message.metadata?.source === 'story_theater_memory');
+    const theaterMemoryRule = hasTheaterRecords
+        ? `\n\n## 剧场记录识读\n[剧场记录] 是第三人称叙事原文，不代表记忆主体或用户亲口讲述。直接引语按剧情中的实际说话者理解。\n提取 ${charName} 实际参与、观察、听见或后来获知的经历。其他地点或分组发生的事，须有感知或获知依据才能写入其个人认知。\n根据事实与经历的重要性提取；剧场记录中原本由谁输入，不决定事件的关注优先级。`
+        : '';
     const sarMemoryBoundary = buildSARMemoryBoundaryInstruction(conversationText);
 
     const contextBlock = charContext
@@ -468,7 +478,7 @@ export async function extractMemoriesFromBuffer(
 
     const systemPrompt = `你是 ${charName}。根据给定的对话内容，以你的第一人称视角（"我"）提取值得记住的记忆。${contextBlock}${relatedBlock}${pinnedBlock}
 
-${buildRulesBlock(charName, userLabel, includeEntities)}${relatedToRule}${unpinRule}${sarMemoryBoundary ? `\n\n${sarMemoryBoundary}` : ''}${linkDates ? `
+${buildRulesBlock(charName, userLabel, includeEntities)}${theaterMemoryRule}${relatedToRule}${unpinRule}${sarMemoryBoundary ? `\n\n${sarMemoryBoundary}` : ''}${linkDates ? `
 
 ## 相对时间来源
 content 保留原消息的相对时间措辞，不要自行添加日期括号。含“昨天、前天、几天前、上周、上个月、去年”等措辞时，额外输出 relativeTimeSource 字段，值为说出该措辞的原消息编号（例如 "M0"）。系统将以该消息的发送日补注，不使用 date 事件日。不同说话日期的相对时间应拆成不同记忆。没有可靠来源、跨时区语义不明或无法使用同一个参照日时，省略该字段，禁止猜测。` : ''}
