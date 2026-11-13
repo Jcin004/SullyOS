@@ -35,6 +35,29 @@ const lingeringSseResponse = (events: string[], onCancel: () => void) => new Res
 afterEach(() => vi.restoreAllMocks());
 
 describe('safeFetchJson streaming', () => {
+    it('accepts SSE heartbeat followed by a complete unframed JSON response', async () => {
+        const json = { choices: [{ message: { role: 'assistant', content: '[{"content":"已提取"}]' }, finish_reason: 'stop' }] };
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(': PING\r\n\r\n: PING\r\n\r\n' + JSON.stringify(json), {
+            status: 200, headers: { 'Content-Type': 'text/event-stream' },
+        })));
+        const data = await safeFetchJson('https://api.test/v1/chat/completions', { method: 'POST', body: '{"stream":false}' }, 0, 0);
+        expect(data).toEqual(json);
+    });
+    it('accepts the heartbeat-plus-JSON response in a streamed reader too', async () => {
+        const json = { choices: [{ message: { role: 'assistant', content: '完整结果' }, finish_reason: 'stop' }] };
+        vi.stubGlobal('fetch', vi.fn(async () => sseResponse([': PING\n\n', JSON.stringify(json)])));
+        const deltas: string[] = [];
+        const data = await safeFetchJson('https://api.test/v1/chat/completions', { method: 'POST', body: '{"stream":true}' }, 0, 0, undefined, {
+            onDelta: delta => deltas.push(delta),
+        });
+        expect(data).toEqual(json);
+        expect(deltas).toEqual([]);
+    });
+    it('rejects truncated JSON after heartbeat rather than treating it as success', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => sseResponse([': PING\n\n', '{"choices":['])));
+        await expect(safeFetchJson('https://api.test/v1/chat/completions', { method: 'POST', body: '{}' }, 0, 0))
+            .rejects.toThrow('API流式响应未返回有效数据');
+    });
     it('SSE 增量触发 onDelta 且最终 completion 与整包解析一致', async () => {
         const events = [
             'data: {"id":"x","choices":[{"delta":{"role":"assistant","content":"你好"}}]}\n\n',
