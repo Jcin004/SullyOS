@@ -13,6 +13,30 @@ const reply = (content: string, finish_reason = 'stop') => ({ choices: [{ messag
 beforeEach(() => { fetchJson.mockReset(); localStorage.clear(); });
 
 describe('long scene extraction', () => {
+    it('marks both roles of theater mirrors as neutral records while preserving ordinary chat', async () => {
+        const input = [
+            { ...message('和叶拿着创可贴走进教室。', 10), role: 'user' as const },
+            message('炭治郎转身，其他教室里有人上课。', 11),
+            { ...message('今天第一节是体育课。', 12), role: 'user' as const, metadata: undefined },
+        ];
+        fetchJson.mockResolvedValue(reply('[]'));
+        await extractMemoriesFromBuffer(input, 'c', '炭治郎', config, undefined, '和叶');
+        const request = JSON.parse(String(fetchJson.mock.calls[0][1]?.body));
+        const story = request.messages[1].content as string;
+        expect(story).toContain('[剧场记录]: 和叶拿着创可贴走进教室。');
+        expect(story).toContain('[剧场记录]: 炭治郎转身，其他教室里有人上课。');
+        expect(story).toContain('[和叶]: 今天第一节是体育课。');
+        expect(story).not.toContain('[炭治郎]: 炭治郎转身');
+        expect(request.messages[0].content).toContain('剧场记录识读');
+        expect(request.messages[0].content).toContain('其他地点或分组');
+    });
+    it('keeps ordinary conversation formatting and prompt unchanged without theater mirrors', async () => {
+        fetchJson.mockResolvedValue(reply('[]'));
+        await extractMemoriesFromBuffer([{ ...message('你好', 1), metadata: undefined }], 'c', '炭治郎', config, undefined, '和叶');
+        const request = JSON.parse(String(fetchJson.mock.calls[0][1]?.body));
+        expect(request.messages[1].content).toContain('[炭治郎]: 你好');
+        expect(request.messages[0].content).not.toContain('剧场记录识读');
+    });
     it('sends the entire scene and the subsequent Kanata message, including text beyond 600 characters', async () => {
         const scene = '<scene_header>场景</scene_header><story_text>' + '场景描写。'.repeat(200) + '结尾约定一起去海边。</story_text>';
         fetchJson.mockResolvedValue(reply('[]'));
