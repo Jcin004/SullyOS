@@ -2587,8 +2587,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       };
   }, []);
 
-  // 旧版本曾在 Push 后处理里只写宫殿、没写神经链接。每个角色升级后保守修一次：
-  // 只补“最后一条 palace 日志之后整天完全空白”的聊天提取节点，不调 API、不动水位线。
+  // 升级后按宫殿节点 ID 补一次缺失的神经链接关联。
   useEffect(() => {
       if (!isDataLoaded) return;
       let cancelled = false;
@@ -2598,7 +2597,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           ));
           for (const character of enabledCharacters) {
               if (cancelled) return;
-              const marker = `mp_autoArchiveDualWriteRepair_v1_${character.id}`;
+              const marker = `mp_autoArchiveDualWriteRepair_v2_${character.id}`;
               if (localStorage.getItem(marker) === '1') continue;
               try {
                   await repairMissingAutoArchiveMemories(character.id);

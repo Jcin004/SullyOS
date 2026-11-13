@@ -1,5 +1,5 @@
-import type { MemoryFragment } from '../../types';
-import { DB } from '../db';
+import type { CharacterProfile, MemoryFragment } from '../../types';
+import { DB, openDB } from '../db';
 import { MemoryNodeDB } from './db';
 import type { MemoryNode } from './types';
 import {
@@ -41,16 +41,46 @@ function dispatchSync(detail: MemoryAutoArchiveSyncDetail): void {
     window.dispatchEvent(new CustomEvent<MemoryAutoArchiveSyncDetail>(MEMORY_AUTO_ARCHIVE_SYNC_EVENT, { detail }));
 }
 
-function sameMemories(a: MemoryFragment[] | undefined, b: MemoryFragment[]): boolean {
-    if (a === b) return true;
-    if (!a || a.length !== b.length) return false;
-    return a.every((item, index) => (
-        item.id === b[index].id
-        && item.date === b[index].date
-        && item.mood === b[index].mood
-        && item.summary === b[index].summary
-        && item.palaceMemoryId === b[index].palaceMemoryId
-    ));
+async function writeAutoArchive(
+    charId: string,
+    getFragments: (current: MemoryFragment[]) => AutoArchiveFragment[],
+    hideBeforeMessageId = 0,
+): Promise<{ fragments: number; changed: boolean }> {
+    const db = await openDB();
+    const detail = await new Promise<MemoryAutoArchiveSyncDetail | undefined>((resolve, reject) => {
+        const tx = db.transaction('characters', 'readwrite');
+        const store = tx.objectStore('characters');
+        const request = store.get(charId);
+        let change: MemoryAutoArchiveSyncDetail | undefined;
+        let failure: unknown;
+        tx.oncomplete = () => resolve(change);
+        tx.onabort = () => reject(failure ?? tx.error ?? new Error('神经链接档案保存失败'));
+        request.onsuccess = () => {
+            const character = request.result as CharacterProfile | undefined;
+            if (!character?.memoryPalaceEnabled || !character.autoArchiveEnabled) return;
+            const current: MemoryFragment[] = character.memories || [];
+            try {
+                const ids = new Set(current.map(memory => memory.id));
+                const linked = new Set(current.map(memory => memory.palaceMemoryId));
+                const fragments = getFragments(current).filter(fragment =>
+                    !ids.has(fragment.id) && (!fragment.palaceMemoryId || !linked.has(fragment.palaceMemoryId)));
+                const hideChanged = hideBeforeMessageId > (character.hideBeforeMessageId || 0);
+                if (!fragments.length && !hideChanged) return;
+                change = { charId, fragments, hideBeforeMessageId: hideChanged ? hideBeforeMessageId : undefined };
+                store.put({
+                    ...character,
+                    ...(fragments.length ? { memories: mergePalaceFragmentsIntoMemories(current, fragments) } : {}),
+                    ...(hideChanged ? { hideBeforeMessageId } : {}),
+                });
+            } catch (error) {
+                failure = error;
+                tx.abort();
+            }
+        };
+    });
+    if (!detail) return { fragments: 0, changed: false };
+    dispatchSync(detail);
+    return { fragments: detail.fragments.length, changed: true };
 }
 
 /**
@@ -68,40 +98,21 @@ export function persistAutoArchiveResult(
     }
 
     return enqueuePersist(charId, async () => {
-        const allCharacters = await DB.getAllCharacters();
-        const character = allCharacters.find(item => item.id === charId);
+        const character = await DB.getCharacter(charId);
         if (!character?.memoryPalaceEnabled || !character.autoArchiveEnabled) {
             return { fragments: 0, changed: false };
         }
 
-        const fragments = result.autoArchive?.fragments || [];
-        const currentMemories = character.memories || [];
-        const nextMemories = fragments.length > 0
-            ? mergePalaceFragmentsIntoMemories(currentMemories, fragments)
-            : currentMemories;
-        const currentHide = character.hideBeforeMessageId || 0;
+        const fragments = result.autoArchive?.fragments ?? [];
+        if (!fragments.length && result.stored > 0) {
+            const nodes = await MemoryNodeDB.getByCharId(charId);
+            return writeAutoArchive(charId, current => buildConservativeRepairFragments(current, nodes));
+        }
         const nextHide = Math.max(
-            currentHide,
             result.autoArchive?.hideBeforeMessageId || 0,
             getMemoryPalaceHighWaterMark(charId),
         );
-        const memoriesChanged = !sameMemories(currentMemories, nextMemories);
-        const hideChanged = nextHide > currentHide;
-        if (!memoriesChanged && !hideChanged) {
-            return { fragments: 0, changed: false };
-        }
-
-        await DB.saveCharacter({
-            ...character,
-            ...(memoriesChanged ? { memories: nextMemories } : {}),
-            ...(hideChanged ? { hideBeforeMessageId: nextHide } : {}),
-        });
-        dispatchSync({
-            charId,
-            fragments: memoriesChanged ? fragments : [],
-            hideBeforeMessageId: hideChanged ? nextHide : undefined,
-        });
-        return { fragments: fragments.length, changed: true };
+        return writeAutoArchive(charId, () => fragments, nextHide);
     });
 }
 
@@ -114,38 +125,18 @@ export async function processNewMessagesWithAutoArchive(
     return result;
 }
 
-const localDate = (timestamp: number): string => {
-    const date = new Date(timestamp);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-};
-
-/**
- * 为旧版本漏写的数据构造保守回填：
- * - 必须已经有过 palace 传统记忆，证明该角色原本确实在走双写；
- * - 只看聊天提取节点，排除群聊、消化衍生和事件盒总结；
- * - 只补最后一条 palace 记忆之后、且神经链接整天完全空白的日期。
- *
- * 这样可以修复“7 月 21 日后整段断掉”这类缺口，同时不重复搬运手动导入或旧迁移内容。
- */
+/** 只从已向量化的个人提取节点补缺失关联，保留旧日度档案。 */
 export function buildConservativeRepairFragments(
     existing: MemoryFragment[],
     nodes: MemoryNode[],
 ): AutoArchiveFragment[] {
-    const palaceDates = existing
-        .filter(memory => memory.mood === 'palace' && /^\d{4}-\d{2}-\d{2}$/.test(memory.date))
-        .map(memory => memory.date)
-        .sort();
-    const lastPalaceDate = palaceDates[palaceDates.length - 1];
-    if (!lastPalaceDate) return [];
-
-    const occupiedDates = new Set(existing.map(memory => memory.date));
+    const linked = new Set(existing.map(memory => memory.palaceMemoryId));
     const candidates = nodes.filter(node => {
-        if (node.origin !== 'extraction' || node.groupId || node.isBoxSummary || node.sourceId) return false;
-        if (!node.content?.trim() || !Number.isFinite(node.createdAt)) return false;
-        const date = localDate(node.createdAt);
-        return date > lastPalaceDate && !occupiedDates.has(date);
+        if (linked.has(node.id) || node.embedded === false || node.origin !== 'extraction'
+            || node.groupId || node.isBoxSummary || node.sourceId) return false;
+        return !!node.content?.trim() && Number.isFinite(new Date(node.experiencedAt ?? node.createdAt).getTime());
     });
-    return buildAutoArchiveFragments(candidates, 0)?.fragments || [];
+    return buildAutoArchiveFragments(candidates, 0, true)?.fragments ?? [];
 }
 
 /** 启动时跑一次的旧缺口修复；不调 LLM、不重做向量、不改宫殿水位线。 */
@@ -153,22 +144,12 @@ export function repairMissingAutoArchiveMemories(
     charId: string,
 ): Promise<{ fragments: number; changed: boolean }> {
     return enqueuePersist(charId, async () => {
-        const [allCharacters, nodes] = await Promise.all([
-            DB.getAllCharacters(),
-            MemoryNodeDB.getByCharId(charId),
-        ]);
-        const character = allCharacters.find(item => item.id === charId);
+        const character = await DB.getCharacter(charId);
         if (!character?.memoryPalaceEnabled || !character.autoArchiveEnabled) {
             return { fragments: 0, changed: false };
         }
 
-        const fragments = buildConservativeRepairFragments(character.memories || [], nodes);
-        if (fragments.length === 0) return { fragments: 0, changed: false };
-
-        const nextMemories = mergePalaceFragmentsIntoMemories(character.memories || [], fragments);
-        await DB.saveCharacter({ ...character, memories: nextMemories });
-        dispatchSync({ charId, fragments });
-        console.log(`[AutoArchiveRepair] ${character.name}: repaired ${fragments.length} missing day(s)`);
-        return { fragments: fragments.length, changed: true };
+        const nodes = await MemoryNodeDB.getByCharId(charId);
+        return writeAutoArchive(charId, current => buildConservativeRepairFragments(current, nodes));
     });
 }

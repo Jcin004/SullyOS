@@ -203,7 +203,7 @@ async function loadMemoriesByDateRanges(
  * 返回 null：memories 为空（没有新记忆，不需要归档动作）。
  */
 export function buildAutoArchiveFragments(
-    memories: { id: string; content: string; createdAt: number }[],
+    memories: { id: string; content: string; createdAt: number; experiencedAt?: number }[],
     hideBeforeMessageId: number,
     linkToPalace = false,
 ): NonNullable<PipelineResult['autoArchive']> | null {
@@ -212,7 +212,7 @@ export function buildAutoArchiveFragments(
         hideBeforeMessageId,
         fragments: memories.map(memory => ({
             id: `mp_link_${memory.id}`,
-            date: getLocalDateKey(new Date(memory.createdAt)),
+            date: getLocalDateKey(new Date(memory.experiencedAt ?? memory.createdAt)),
             summary: memory.content,
             mood: 'palace',
             palaceMemoryId: memory.id,
