@@ -153,6 +153,12 @@ function clearStaleMemoryMirror(transaction: IDBTransaction, charId: string, new
     };
 }
 
+function clearStaleLocalMemoryWatermark(key: string, newId: number): void {
+    try {
+        if (parseInt(localStorage.getItem(key) || '0', 10) >= newId) localStorage.removeItem(key);
+    } catch { /* localStorage unavailable */ }
+}
+
 function makeSpaceOpener(DB_NAME: string) {
  let dbPromise: Promise<IDBDatabase> | null = null;
  const open = (): Promise<IDBDatabase> => {
@@ -1021,19 +1027,76 @@ export const DB = {
             // （水位线本身是某条旧消息的 id）。出现 newId ≤ 水位线，说明水位与消息
             // ID 序列不一致（例如清库/恢复后的残留）。镜像已在同事务内清理，提交后
             // 再清本地值，避免新消息从 AI 上下文消失（请求只剩 system → 上游 400）。
-            try {
-                const staleKeys = [`mp_lastMsgId_${msg.charId}`];
-                if (msg.groupId) staleKeys.push(`mp_lastMsgId_group_${msg.groupId}`);
-                for (const key of staleKeys) {
-                    const hwm = parseInt(localStorage.getItem(key) || '0', 10) || 0;
-                    if (hwm >= newId) localStorage.removeItem(key);
-                }
-            } catch { /* localStorage 不可用时静默跳过 */ }
+            clearStaleLocalMemoryWatermark(`mp_lastMsgId_${msg.charId}`, newId);
+            if (msg.groupId) clearStaleLocalMemoryWatermark(`mp_lastMsgId_group_${msg.groupId}`, newId);
             resolve(newId);
         };
         request.onerror = () => reject(request.error);
         transaction.onerror = () => reject(transaction.error || new Error('消息未能保存'));
         transaction.onabort = () => reject(transaction.error || new Error('消息未能保存'));
+    });
+  },
+
+  /** Commit the central reply and both sets of text mirrors together. */
+  commitStoryTheaterTurn: async (
+      reply: Omit<Message, 'id'>,
+      pending: Message | undefined,
+      groups: string[][],
+      makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
+  ): Promise<void> => {
+    const db = await openDB();
+    const actorIds = [...new Set(groups.flat())];
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+        const store = tx.objectStore(STORE_MESSAGES);
+        const inserted: [string, number][] = [];
+        let failure: unknown;
+        const guarded = (action: () => void) => {
+            try { action(); } catch (error) { failure = error; tx.abort(); }
+        };
+        tx.oncomplete = () => {
+            for (const [id, messageId] of inserted) clearStaleLocalMemoryWatermark(`mp_lastMsgId_${id}`, messageId);
+            resolve();
+        };
+        tx.onabort = () => reject(failure ?? tx.error ?? new Error('本轮未能保存，请重试'));
+
+        const add = (message: Omit<Message, 'id'>, after: (id: number) => void) => {
+            const request = store.add(message);
+            request.onsuccess = () => guarded(() => {
+                const id = request.result as number;
+                clearStaleMemoryMirror(tx, message.charId, id);
+                inserted.push([message.charId, id]);
+                after(id);
+            });
+        };
+        const saveOriginal = (original: Message, existing: Record<string, number> = {}) => {
+            const recipients = makeMirror ? actorIds : [];
+            const mirrors = new Map(Object.entries(existing));
+            if (mirrors.size && (mirrors.size !== recipients.length || recipients.some(id => !mirrors.has(id)))) {
+                throw new Error('本轮已有不同的记忆接收者，原记录已保留');
+            }
+            const finish = () => store.put({ ...original, metadata: {
+                ...original.metadata, theaterCastGroups: groups,
+                ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
+            } });
+            const missing = recipients.filter(id => !mirrors.has(id));
+            if (!makeMirror || missing.length === 0) { finish(); return; }
+            for (const actorId of missing) add(makeMirror(actorId, original), id => {
+                mirrors.set(actorId, id);
+                if (mirrors.size === recipients.length) finish();
+            });
+        };
+        const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
+        latest.onsuccess = () => guarded(() => {
+            const cursor = latest.result;
+            const current = cursor?.value as Message | undefined;
+            if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+            if (pending ? !current || current.id !== pending.id || current.role !== 'user' || current.content !== pending.content : current) {
+                throw new Error('剧情已在别处修改或推进，请刷新后重试');
+            }
+            if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);
+            add(reply, id => saveOriginal({ ...reply, id }));
+        });
     });
   },
 

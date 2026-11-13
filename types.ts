@@ -2285,8 +2285,15 @@ export interface StoryTheaterMask {
     updatedAt: number;
 }
 
+export interface StoryCastLimits {
+    minGroups: number;
+    maxGroups: number;
+    minPeople: number;
+    maxPeople: number;
+}
+
 /**
- * 一条可反复进入的剧情。演员与世界书只保存 id/沙盒选择，不反写外部挂载配置。
+ * 一条可反复进入的剧情。候选演员与世界书只保存 id/沙盒选择，不反写外部挂载配置。
  * 消息正文复用 messages 表，charId 使用 `story-theater:${id}` 独立线程；仅显式开启时镜像到角色记忆流。
  */
 export interface StoryTheaterEntry {
@@ -2298,6 +2305,7 @@ export interface StoryTheaterEntry {
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];
+    castLimits?: StoryCastLimits;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
     writesToCharacterMemory: boolean;
     /** 每位演员各自的剧情时间锚点（datetime-local 字符串），允许跨时区/跨世界线。 */

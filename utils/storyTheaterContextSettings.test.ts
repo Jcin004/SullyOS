@@ -65,12 +65,25 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
         expect(inputFor('角色乙')).toBeUndefined();
         await click('角色乙');
         expect(inputFor('角色乙')?.value).toBe('0');
+        const castSelect = (label: string) => Array.from(container.querySelectorAll('label'))
+            .find(node => node.textContent?.startsWith(label))?.querySelector('select');
+        const setCastLimit = async (label: string, value: string) => {
+            const select = castSelect(label)!;
+            await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); });
+        };
+        await setCastLimit('最少组数', '2');
+        await setCastLimit('最多组数', '3');
+        await setCastLimit('每组最少人数', '1');
+        await setCastLimit('每组最多人数', '2');
         await click('保存并进入');
         const saved = onSave.mock.calls[0][0];
         expect(saved.characterContextLimits.b).toBe(0);
+        expect(saved.castLimits).toEqual({ minGroups: 2, maxGroups: 3, minPeople: 1, maxPeople: 2 });
         await open(normalizeStoryTheater(saved), 'reopen');
         expect(inputFor('角色乙')?.value).toBe('0');
         expect(inputFor('角色甲')?.value).toBe('100');
+        expect(castSelect('最少组数')?.value).toBe('2');
+        expect(castSelect('每组最多人数')?.value).toBe('2');
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

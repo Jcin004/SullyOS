@@ -868,11 +868,17 @@ const readAffinityScoreStates = (
  */
 export const reconcileStoryAffinityScores = (
     generated: string,
-    previousAssistantContent: string,
+    previousAssistantContent: string | readonly string[],
     inputs: StoryAffinityInput[],
     actors: Array<{ id: string; name: string }>,
+    allowLegacySingle = actors.length === 1,
 ): string => {
-    const previous = readAffinityScoreStates(previousAssistantContent, actors);
+    const previous = new Map<string, { cToU: number; uToC: number }>();
+    for (const content of typeof previousAssistantContent === 'string' ? [previousAssistantContent] : previousAssistantContent) {
+        for (const [key, value] of readAffinityScoreStates(content, allowLegacySingle ? actors : [])) {
+            if (!previous.has(key)) previous.set(key, value);
+        }
+    }
     const actorById = new Map(actors.map(actor => [affinityIdentityKey(actor.id), actor]));
     const actorByName = new Map(actors.map(actor => [affinityIdentityKey(actor.name), actor]));
     const inputById = new Map(inputs.filter(input => input.characterId).map(input => [affinityIdentityKey(input.characterId || ''), input]));
@@ -900,17 +906,17 @@ export const reconcileStoryAffinityScores = (
     });
 };
 
-export const buildStoryMultiAffinityGuide = (characters: Array<{ id: string; name: string }>): string => {
+export const buildStoryMultiAffinityGuide = (characters: Array<{ id: string; name: string }>, autoCast = false): string => {
     if (characters.length === 0) return '';
     const cast = characters.map(character => `- ${character.id}：${character.name}`).join('\n');
     return [
         '### 糯米机多人双向关系温度（覆盖旧的单一“当前 C”槽）',
         '本剧场为每一位角色分别记录 C→U、U→C、五维关系混音、察觉状态与关系质地。禁止共享数值、串用事实、平均多人状态或只输出第一位角色。',
-        '当前需要逐一维护的角色：',
+        autoCast ? '候选角色（本轮只更新出演者）：' : '当前需要逐一维护的角色：',
         cast,
         '',
         '【更新】',
-        '- 从最近一次多人 <affinity_panel> 中按 character_id 读取各自完整状态；没有旧记录时，该角色的 C→U、U→C 从 50 开始，五维依据角色卡与共同经历建立。旧历史只有单人面板时，只能迁移给姓名明确匹配的角色。',
+        '- 按 character_id 从各角色最近一次出现的 <affinity_panel> 读取各自完整状态；没有旧记录时，该角色的 C→U、U→C 从 50 开始，五维依据角色卡与共同经历建立。旧历史只有单人面板时，只能迁移给姓名明确匹配的角色。',
         '- C→U 与 trust、security、possessive_pull、emotional_pressure、repair_will 只读取对应角色的亲历事实、性格、处境与后果；不得用某个角色的变化影响另一位角色。',
         '- 最新 <u_affinity_updates> 只出现本轮由用户填写变化的角色。某角色没有对应更新时，其 U→C 绝对值保持不变，delta 记 +0，原因写“本轮未填写”。',
         '- U→C 新值 = 该角色上一轮 U→C + 对应 delta，并限制在 0—100。不得用某个角色的变化影响另一位角色。',
@@ -918,7 +924,7 @@ export const buildStoryMultiAffinityGuide = (characters: Array<{ id: string; nam
         '- 察觉规则只作用于同一条 u_affinity 指向的角色；其他角色不会因为同伴被选择为“已察觉”而共享透视。',
         '',
         '【输出】',
-        '用一个 <affinity_panel> 包住全部角色，并严格按当前角色名单顺序为每人输出一段：',
+        autoCast ? '用一个 <affinity_panel> 仅为本轮实际出演者输出各自的一段：' : '用一个 <affinity_panel> 包住全部角色，并严格按当前角色名单顺序为每人输出一段：',
         '<affinity_person>',
         '<character_id>角色 ID</character_id>',
         '<character_name>角色名</character_name>',
@@ -973,6 +979,7 @@ export const buildStoryIdentityGuard = (
     document: StoryTheaterPresetDocument,
     identityName: string,
     characterNames: string[],
+    autoCast = false,
 ): string => {
     const identity = identityName.trim() && identityName.trim() !== '你' ? identityName.trim() : '当前用户侧角色（未命名）';
     const cast = characterNames.filter(Boolean).join('、') || '暂无其他角色';
@@ -984,7 +991,7 @@ export const buildStoryIdentityGuard = (
             : '- 当前预设使用自定义人称；服从预设明确写出的叙述规则，但仍遵守下面的身份绑定。';
     return [
         '### 糯米机运行时身份与人称锚点（覆盖旧楼层的写法，不覆盖角色卡事实）',
-        `- 用户侧剧情身份：${identity}。本轮参与角色：${cast}。关系协议中的 U 只指「${identity}」，C 才指名单中的各个角色。`,
+        `- 用户侧剧情身份：${identity}。${autoCast ? '本轮候选角色' : '本轮参与角色'}：${cast}。关系协议中的 U 只指「${identity}」，C 只指本轮实际出演角色。`,
         '- 生成回复的一方不属于故事人物。系统指令为方便表达而出现的“你”，只是执行语法，不能据此把生成端写进故事，也不能把故事里的“你”解释成生成端自己。',
         '- 用户最新输入仍按实际句法辨认说话人与受话人；但在最终输出的叙事旁白、场景条和关系面板中，未另行点名的“你／你的”只允许指用户侧剧情身份。',
         perspectiveRule,

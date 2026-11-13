@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import { DB } from '../../../utils/db';
 import { storyTheaterThreadId } from '../../../utils/storyTheater';
+import { canDrawStoryCast, normalizeStoryCastLimits } from '../../../utils/storyTheaterCast';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
-import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask, hasStoryTheaterParticipant } from '../../../utils/storyTheater';
+import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -49,7 +50,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         finally { summaryLock.current = false; setSummarizing(false); }
     };
     const fileInput = useRef<HTMLInputElement>(null);
-    const actors = useMemo(() => characters.filter(char => draft.characterIds.includes(char.id)), [characters, draft.characterIds]);
+    const actors = useMemo(() => characters.filter(char => draft.characterIds.includes(char.id)
+        && !(draft.mask?.type === 'character' && draft.mask.id === char.id)), [characters, draft.characterIds, draft.mask]);
     const resolvedMask = useMemo(() => resolveStoryTheaterMask(draft.mask, user, characters, masks), [characters, draft.mask, masks, user]);
     const memoryParticipants = useMemo(() => {
         const participantIds = new Set(draft.characterIds);
@@ -57,7 +59,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         return characters.filter(char => participantIds.has(char.id));
     }, [characters, draft.characterIds, draft.mask]);
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
-    const canStart = hasStoryTheaterParticipant(draft, characters);
+    const castLimits = normalizeStoryCastLimits(draft.castLimits);
+    const canStart = canDrawStoryCast(actors.length, castLimits);
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
@@ -87,7 +90,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         setSaving(true);
         const archiveAfter = Math.max(2, Math.min(200, Number(draft.archiveAfter) || 40));
         const archiveKeepRecent = Math.max(1, Math.min(archiveAfter - 1, Number(draft.archiveKeepRecent) || 5));
-        try { await onSave({ ...draft, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
+        try { await onSave({ ...draft, castLimits, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
         finally { setSaving(false); }
     };
     const recentContextFields = <div className='space-y-2'>
@@ -131,7 +134,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>02 / Cast</div><h2 className='mt-1 text-lg font-semibold'>让谁参与</h2>
-                <p className='text-[11px] text-slate-500'>先决定你是谁，再一次选好这段剧情里的角色。你选择的身份只由你控制，不会自行行动。选已有角色作身份时，可不加其他人，直接开始个人线。</p>
+                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮由 AI 从候选池选出演员；你选择的身份始终由你执笔。</p>
                 <button disabled={maskLocked || draft.writesToCharacterMemory} onClick={() => onOpenMaskBox(draft)} className='mt-4 w-full p-4 rounded-2xl bg-slate-900 text-white flex items-center gap-3 text-left disabled:cursor-not-allowed'>
                     {resolvedMask.avatar ? <TokenImg value={resolvedMask.avatar} alt='' className='w-11 h-11 rounded-full object-cover' /> : <span className='w-11 h-11 rounded-full bg-white/10 grid place-items-center'><UserCircle size={24} /></span>}
                     <span className='min-w-0 flex-1'><span className='block text-[9px] uppercase tracking-[.18em] text-violet-200'>你</span><strong className='block mt-1 text-sm truncate'>{resolvedMask.selection.type === 'user' ? '本人' : resolvedMask.name}</strong><span className='block mt-1 text-[9px] text-slate-300 truncate'>{resolvedMask.selection.type === 'user' ? '以真实的自己进入剧场' : resolvedMask.selection.type === 'character' ? '扮演已有角色' : '扮演原创人物'}</span></span>
@@ -139,6 +142,20 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 </button>
                 {(maskLocked || draft.writesToCharacterMemory) && <p className='mt-2 text-[10px] leading-5 text-slate-500'>{draft.writesToCharacterMemory ? '真实时间陪伴只能使用真实的你，不能扮演已有角色或原创人物。' : '第一段内容发出后，当前身份会锁定，避免中途更换导致人物记忆与叙事视角错位。'}</p>}
                 <div className='mt-4 grid grid-cols-2 gap-2.5'>{characters.map(char => { const selected = draft.characterIds.includes(char.id); const isMask = draft.mask?.type === 'character' && draft.mask.id === char.id; return <button key={char.id} disabled={isMask} onClick={() => toggleCharacter(char)} className={`flex items-center gap-3 p-3 rounded-2xl border text-left disabled:opacity-45 ${selected ? 'bg-violet-50 border-violet-300' : 'bg-white border-slate-200'}`}><TokenImg value={char.avatar} alt='' className='w-10 h-10 rounded-full object-cover' /><span className='min-w-0 flex-1'><span className='block text-sm font-semibold truncate'>{char.name}</span>{isMask && <span className='block text-[9px] text-violet-500'>当前由你扮演</span>}</span><span className={`w-4 h-4 rounded-full border-2 ${selected ? 'bg-violet-600 border-violet-600' : 'border-slate-300'}`} /></button>; })}</div>
+                <fieldset className='mt-4'>
+                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
+                    <div className='grid grid-cols-2 gap-2'>
+                        {([
+                            ['minGroups', '最少组数', castLimits.maxGroups], ['maxGroups', '最多组数', 4],
+                            ['minPeople', '每组最少人数', castLimits.maxPeople], ['maxPeople', '每组最多人数', 5],
+                        ] as const).map(([key, label, max]) => <label key={key} className='flex items-center justify-between gap-2 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
+                            {label}<select value={castLimits[key]} onChange={event => update('castLimits', normalizeStoryCastLimits({ ...castLimits, [key]: Number(event.target.value) }))} className='rounded bg-slate-100 px-2 py-1'>
+                                {Array.from({ length: max }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+                            </select>
+                        </label>)}
+                    </div>
+                    {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>候选角色不足以满足最少组数或人数。请增加候选或调低最小值。</p>}
+                </fieldset>
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>03 / Memory</div><h2 className='mt-1 text-lg font-semibold'>这段故事是真的吗</h2>
@@ -193,7 +210,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 </div>
                 <div className='mt-5 pt-4 border-t border-slate-200'>
                     <div className='flex items-start justify-between gap-5'>
-                        <div><div className='text-sm font-semibold'>400 兼容模式</div><p className='mt-1 text-[10px] leading-5 text-slate-500'>仅当接口提示“最后一条消息必须是 user”时开启。</p></div>
+                        <div><div className='text-sm font-semibold'>400 兼容模式</div><p className='mt-1 text-[10px] leading-5 text-slate-500'>仅当重写时接口提示“最后一条消息必须是 user”时开启。</p></div>
                         <Toggle label='400 兼容模式' value={draft.forceUserLastMessage === true} onChange={value => update('forceUserLastMessage', value)} />
                     </div>
                     {draft.forceUserLastMessage && <p className='mt-3 border-l-2 border-amber-400 pl-3 text-[10px] leading-5 text-amber-700'>开启后会用系统指令代替原生助手预填，可能削弱格式与文风效果。优先建议更换支持该预设的模型。</p>}
