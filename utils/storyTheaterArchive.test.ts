@@ -121,10 +121,27 @@ describe('story archive regeneration', () => {
     });
 });
 
-async function addPending(role: 'user' | 'assistant', content: string) {
- return DB.saveMessage({ charId: storyTheaterThreadId(entry.id), role, type: 'text', content, metadata: { source: 'story_theater', theaterId: entry.id } });
+async function addPending(role: 'user' | 'assistant', content: string, theaterOutOfStory?: true) {
+ return DB.saveMessage({ charId: storyTheaterThreadId(entry.id), role, type: 'text', content, metadata: { source: 'story_theater', theaterId: entry.id, theaterOutOfStory } });
 }
 describe('manual story archive', () => {
+ it('keeps interleaved backstage dialogue in history and excludes it when summarizing or redoing a box', async () => {
+  await addPending('user', '故事开头'); await addPending('assistant', '他们推开门。');
+  const discussion = [await addPending('user', '场外讨论', true), await addPending('assistant', '场外回复', true)];
+  await addPending('user', '继续故事'); await addPending('assistant', '他们走进屋里。');
+  const result = await archiveStoryManually(entry, api);
+  expect(result.archives[1].messageCount).toBe(4);
+  fetchMock.mockResolvedValueOnce(response(completion('他们推开门走进屋里。')));
+  await regenerateStoryArchiveSummary(entry.id, result.archives[1].id, api);
+  for (const call of fetchMock.mock.calls) {
+   const prompt = JSON.parse(call[1].body).messages[1].content;
+   expect(prompt).toContain('他们推开门。');
+   expect(prompt).toContain('他们走进屋里。');
+   expect(prompt).not.toContain('场外讨论');
+   expect(prompt).not.toContain('场外回复');
+  }
+  for (const id of discussion) expect((await DB.getMessageById(id))?.metadata.theaterArchived).toBeUndefined();
+ });
  it('includes the latest completed pair, preserves old boxes/originals and does not touch character memory', async () => {
   await addPending('user', '本段最后的输入'); await addPending('assistant', '本段最后的回复');
   const before = await DB.getAllCharacters();

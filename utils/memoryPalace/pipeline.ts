@@ -2446,6 +2446,7 @@ export async function processMessageRange(
     toMsgId: number,
     userName: string = '',
     onProgress?: (stage: string) => void,
+    includeMessage: (message: Message) => boolean = () => true,
 ): Promise<RangeProcessResult> {
     // 复用同一把并发锁：避免和自动总结 / 另一次手动总结同时写同角色记忆产生竞态
     if (processingLocks.has(charId)) {
@@ -2461,6 +2462,7 @@ export async function processMessageRange(
         // 只加载用户选区内的正文，含已处理消息，不推进水位线。
         const allMessages = await loadRangeMessageContents(charId, lo, hi);
         const toProcess = allMessages
+            .filter(includeMessage)
             .filter(m => isMessageSemanticallyRelevant(m))
             .filter(m => m.id >= lo && m.id <= hi)
             .sort((a, b) => a.id - b.id);

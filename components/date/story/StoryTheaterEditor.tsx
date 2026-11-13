@@ -36,7 +36,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         let cancelled = false;
         void DB.getMessagesByCharId(storyTheaterThreadId(initial.id), true).then(rows => {
             if (cancelled) return;
-            const pending = rows.filter(row => row.metadata?.source === 'story_theater' && !row.metadata.theaterArchived).sort((a, b) => a.id - b.id);
+            const pending = rows.filter(row => row.metadata?.source === 'story_theater' && !row.metadata.theaterArchived && !row.metadata.theaterOutOfStory).sort((a, b) => a.id - b.id);
             setPendingLayers(pending.length);
             setHasCompleteReply(pending[pending.length - 1]?.role === 'assistant');
         }).catch(() => { if (!cancelled) setSummaryError('剧情读取失败，请重新打开'); });

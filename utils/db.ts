@@ -1076,7 +1076,8 @@ export const DB = {
                 throw new Error('本轮已有不同的记忆接收者，原记录已保留');
             }
             const finish = () => store.put({ ...original, metadata: {
-                ...original.metadata, theaterCastGroups: groups,
+                ...original.metadata,
+                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : { theaterCastGroups: groups }),
                 ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
             } });
             const missing = recipients.filter(id => !mirrors.has(id));

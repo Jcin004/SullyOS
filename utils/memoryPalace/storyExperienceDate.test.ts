@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import { expandAndFormat } from './formatter';
 import type { MemoryNode, ScoredMemory } from './types';
+
+it('详情仅在有经历时间时展示 zh-CN 日期，仍保留创建和最后访问日期', () => {
+    const source = readFileSync(new URL('../../apps/MemoryPalaceApp.tsx', import.meta.url), 'utf8');
+    expect(source).toMatch(/创建:[^\n]+selectedNode\.createdAt[^\n]+\s+\{selectedNode\.experiencedAt != null && <div>经历时间：\{new Date\(selectedNode\.experiencedAt\)\.toLocaleString\('zh-CN'\)\}<\/div>\}\s+<div>最后访问:[^\n]+selectedNode\.lastAccessedAt/);
+});
 
 it('剧场和普通聊天用各自的现在格式化同一条记忆，旧节点继续读取 createdAt', async () => {
     const today = new Date(2026, 10, 13, 12).getTime();

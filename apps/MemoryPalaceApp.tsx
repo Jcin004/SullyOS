@@ -6024,6 +6024,7 @@ create table if not exists memory_vectors (
                                 <div>重要性: {'★'.repeat(selectedNode.importance)}{'☆'.repeat(10 - selectedNode.importance)}</div>
                                 <div>情绪: {selectedNode.mood}</div>
                                 <div>创建: {new Date(selectedNode.createdAt).toLocaleString('zh-CN')}</div>
+                                {selectedNode.experiencedAt != null && <div>经历时间：{new Date(selectedNode.experiencedAt).toLocaleString('zh-CN')}</div>}
                                 <div>最后访问: {new Date(selectedNode.lastAccessedAt).toLocaleString('zh-CN')}</div>
                                 <div>访问次数: {selectedNode.accessCount}</div>
                                 {currentBox && <div>事件盒: {currentBox.name || '未命名'}</div>}

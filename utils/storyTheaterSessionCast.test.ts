@@ -19,7 +19,7 @@ vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
 
-it('剧场界面单次请求选角，换人后只整理出演者，失败重试和重写不重复写入', async () => {
+it('剧场单次请求选角，场外讨论和重写只存中央历史，恢复续写后沿用剧情时间', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
@@ -46,7 +46,11 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, b.id]]))
         .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。</story_text><scene_header><time>3天后</time></scene_header>', [[c.id]]))
         .mockResolvedValueOnce(reply('演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>'))
-        .mockResolvedValueOnce(reply('<story_text>另一个剧场。</story_text>', [[a.id]]));
+        .mockResolvedValueOnce(reply('<story_text>另一个剧场。</story_text>', [[a.id]]))
+        .mockResolvedValueOnce(reply('<out_of_story>可以把旧信留到下一幕揭晓。</out_of_story>'))
+        .mockResolvedValueOnce(reply('<out_of_story>这样能让悬念多留一幕。</out_of_story>'))
+        .mockResolvedValueOnce(reply('<out_of_story>也可以先让读者看见信封。</out_of_story>'))
+        .mockResolvedValueOnce(reply('<story_text>演员 c 把旧信放回抽屉。</story_text><scene_header><time>2天后</time></scene_header>', [[c.id]]));
     vi.stubGlobal('fetch', fetch);
     const container = document.createElement('div');
     document.body.append(container);
@@ -145,6 +149,57 @@ it('剧场界面单次请求选角，换人后只整理出演者，失败重试�
         expect(payload(5).map(row => row.content).join('\n')).toContain('第一幕暗号');
         expect(await contents(thread)).toHaveLength(4);
         expect(await contents(a.id)).toHaveLength(4);
+
+        const historyPrompt = preset.document.prompts.find(prompt => prompt.marker === 'history')!;
+        historyPrompt.enabled = false;
+        await render(entry.id);
+        await setInput('跳出剧情聊一下，什么时候揭晓旧信？');
+        await send(advance(), 7);
+        expect(checked()).toEqual([]);
+        expect(container.textContent).toContain('场外 · 你');
+        expect(container.textContent).toContain('场外 · AI');
+        expect(container.textContent).toContain('可以把旧信留到下一幕揭晓。');
+        expect(container.textContent).not.toContain('<out_of_story>');
+        await setInput('为什么？');
+        await send(advance(), 8);
+        expect(payload(7)).toContainEqual({ role: 'user', content: '[场外对话 · 用户]\n跳出剧情聊一下，什么时候揭晓旧信？' });
+        expect(payload(7)).toContainEqual({ role: 'assistant', content: '[场外对话 · AI]\n可以把旧信留到下一幕揭晓。' });
+        const actorHistory = await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)));
+        const archiveCalls = mocks.archive.mock.calls.length;
+        const recallCalls = vi.mocked(retrieveMemories).mock.calls.length;
+        await send(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!, 9);
+        expect(payload(8).some(row => row.content.includes('必须继续场外交流'))).toBe(true);
+        expect(payload(8).at(-1)).toEqual({ role: 'user', content: '为什么？' });
+        expect(vi.mocked(retrieveMemories)).toHaveBeenCalledTimes(recallCalls);
+        expect(container.textContent).toContain('也可以先让读者看见信封。');
+        expect(container.textContent).not.toContain('这样能让悬念多留一幕。');
+        const outOfStoryRows = (await DB.getMessagesByCharId(thread, true)).slice(4);
+        expect(outOfStoryRows.map(row => [row.role, row.content])).toEqual([
+            ['user', '跳出剧情聊一下，什么时候揭晓旧信？'],
+            ['assistant', '可以把旧信留到下一幕揭晓。'],
+            ['user', '为什么？'],
+            ['assistant', '也可以先让读者看见信封。'],
+        ]);
+        for (const row of outOfStoryRows) {
+            expect(row.metadata.theaterOutOfStory).toBe(true);
+            expect(row.metadata.theaterCastGroups).toBeUndefined();
+            expect(row.metadata.theaterMirrorIds).toBeUndefined();
+            expect(row.metadata.theaterTimelineTimestamp).toBeUndefined();
+        }
+        expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
+        expect(archiveCalls).toBe(4);
+        expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
+        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
+
+        historyPrompt.enabled = true;
+        await render('other-cast-session');
+        await render(entry.id);
+        await send(container.querySelector<HTMLButtonElement>('button[aria-label="继续当前剧情"]')!, 10);
+        expect(payload(9).some(row => row.content.includes('本轮使用剧情续写模式'))).toBe(true);
+        expect(lastReference(c.id)).toBe(at(15));
+        expect(await timeline(c.id)).toEqual([at(10), at(15), at(15), at(17)]);
+        expect(checked()).toEqual([c.name]);
+        await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls + 1));
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

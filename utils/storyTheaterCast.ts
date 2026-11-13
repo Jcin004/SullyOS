@@ -69,11 +69,17 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
 
 export function buildStoryCastInstruction(
     actors: readonly { id: string; name: string }[], limits: StoryCastLimits, proposals: string[][], prefill?: string,
+    storyOnly = false,
 ): string {
     const range = effectiveStoryCastLimits(new Set(actors.map(actor => actor.id)).size, limits);
-    if (!range) throw new Error('每轮出演范围无效或候选角色不足');
+    if (!range) return `当前出演范围不可用。只有用户明确发起或接续场外交流时，才按场外模式回答。\n${STORY_OUT_OF_STORY_RULE}`;
     return [
-        '### 本轮选角（先于正文，优先于预设中的输出顺序）',
+        '### 本轮回复模式（优先于预设中的输出顺序）',
+        ...(storyOnly ? ['本轮使用剧情续写模式。'] : [
+            '根据最新输入选择模式。用户明确跳出剧情与 AI 交流、讨论故事或设定，或在场外历史后接续该讨论时，使用场外模式。角色对白、剧情指令和明确要求继续剧情时，使用下方的剧情续写模式。每轮只用一种模式。',
+            STORY_OUT_OF_STORY_RULE,
+        ]),
+        '### 剧情续写',
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
         `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
         `先结合最新输入、场景、人物近况与各自未完的事，从候选中决定 ${range.minGroups}～${range.maxGroups} 组。所有组加起来共 ${range.minPeople}～${range.maxPeople} 位不同演员，每组至少一人，每位演员只能归入一组；无需凑满上限。`,
@@ -84,12 +90,21 @@ export function buildStoryCastInstruction(
 }
 
 export const STORY_CAST_ACTION_RULE = '名单里的每个人都要实际行动、与别人互动或推进私事。单人组可推进私事；多人组须实际互动。各组可在不同地点，也可在同一场景另一侧交谈。用户输入只是其中一侧；除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
+export const STORY_OUT_OF_STORY_RULE = '场外模式只输出 <out_of_story>你以 AI 本体身份回复用户的正文</out_of_story>。用普通对话回答，不扮演剧场角色、不推进剧情，不输出演员名单、场景条或其他预设区块。场外讨论是创作交流，不代表已经发生的剧情事实。';
 const castTag = /<\/?turn_cast\b/i;
+const outOfStoryTag = /<\/?out_of_story\b/i;
+
+export function parseOutOfStoryReply(text: string): string | undefined {
+    if (!outOfStoryTag.test(text)) return undefined;
+    const body = /^\s*<out_of_story>([\s\S]*?)<\/out_of_story>\s*$/i.exec(text)?.[1].trim();
+    if (!body || outOfStoryTag.test(body) || castTag.test(body)) throw new Error('场外回复格式无效，请重试。');
+    return body;
+}
 
 export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits): { groups: string[][]; body: string } {
     const invalid = () => new Error('本轮出演名单无效，未保存角色记忆。可点击推进重试。');
     const match = /^\s*<turn_cast>([\s\S]*?)<\/turn_cast>\s*([\s\S]+)$/i.exec(text);
-    if (!match || !match[2].trim() || castTag.test(match[2])) throw invalid();
+    if (!match || !match[2].trim() || castTag.test(match[2]) || outOfStoryTag.test(match[2])) throw invalid();
     let groups: unknown;
     try { groups = JSON.parse(match[1]); } catch { throw invalid(); }
     const allowed = new Set(candidateIds);
@@ -108,6 +123,6 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
 }
 
 export function assertStoryRerollBody(text: string): string {
-    if (castTag.test(text)) throw new Error('重写只需返回正文，原有出演名单和正文已保留。');
+    if (castTag.test(text) || outOfStoryTag.test(text)) throw new Error('重写只需返回正文，原有出演名单和正文已保留。');
     return text;
 }

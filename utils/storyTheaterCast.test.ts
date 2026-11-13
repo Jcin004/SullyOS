@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseStoryCastReply } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply } from './storyTheaterCast';
 
 function seededRandom(seed: number) {
     return () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
@@ -8,6 +8,18 @@ function seededRandom(seed: number) {
 describe('剧场选角协议', () => {
     const ids = ['a', 'b', 'c', 'd'];
     const limits = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 2, minPeople: 1, maxPeople: 2 });
+
+    it('单独识别场外正文并拒绝空回复、混合模式和跨模式重写', () => {
+        const discussion = '<out_of_story>  我们可以讨论一下设定。\n你想从哪里开始？ </out_of_story>';
+        const story = '<turn_cast>[["c"]]</turn_cast>她在修表。';
+        expect(parseOutOfStoryReply(discussion)).toBe('我们可以讨论一下设定。\n你想从哪里开始？');
+        expect(parseOutOfStoryReply(story)).toBeUndefined();
+        for (const invalid of ['<out_of_story> </out_of_story>', story + discussion, `<out_of_story>${story}</out_of_story>`, '<out_of_story>未闭合']) {
+            expect(() => parseOutOfStoryReply(invalid)).toThrow('场外回复格式无效');
+        }
+        expect(() => parseStoryCastReply(story + discussion, ids, limits)).toThrow('出演名单无效');
+        expect(() => assertStoryRerollBody(discussion)).toThrow('重写只需返回正文');
+    });
 
     it('随机建议可变化，降低近期熟面孔和固定搭档的权重', () => {
         const pairLimits = normalizeStoryCastLimits({ maxGroups: 1, minPeople: 2, maxPeople: 2 });

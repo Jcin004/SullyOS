@@ -45,7 +45,7 @@ export async function generateStoryArchiveSummary(title: string, messages: Messa
 
 function archiveRows(rows: Message[], entryId: string, archive: StoryTheaterArchive): Message[] {
     const messages = rows.filter(message => message.charId === storyTheaterThreadId(entryId)
-        && !message.groupId && message.metadata?.source === 'story_theater'
+        && !message.groupId && message.metadata?.source === 'story_theater' && !message.metadata.theaterOutOfStory
         && message.id >= archive.fromMessageId && message.id <= archive.toMessageId).sort((a, b) => a.id - b.id);
     if (!messages.length || messages.length !== archive.messageCount
         || messages[0].id !== archive.fromMessageId || messages[messages.length - 1].id !== archive.toMessageId) {
@@ -69,7 +69,7 @@ export async function archiveStoryManually(draft: StoryTheaterEntry, api: Pick<A
     try {
         const threadId = storyTheaterThreadId(draft.id);
         const pendingRows = (rows: Message[]) => rows.filter(row => row.charId === threadId && !row.groupId
-            && row.metadata?.source === 'story_theater' && !row.metadata.theaterArchived).sort((a, b) => a.id - b.id);
+            && row.metadata?.source === 'story_theater' && !row.metadata.theaterArchived && !row.metadata.theaterOutOfStory).sort((a, b) => a.id - b.id);
         const original = (await DB.getStoryTheaters()).find(item => item.id === draft.id);
         if (!original || original.writesToCharacterMemory) throw new Error('请先保存虚构剧情');
         const rows = pendingRows(await DB.getMessagesByCharId(threadId, true));
