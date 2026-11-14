@@ -1,4 +1,5 @@
 name: Build AutoCast Test APK
+# Rebuild feature-branch APK with the latest story theater changes.
 
 on:
   push:
