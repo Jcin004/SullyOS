@@ -856,18 +856,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ...(previousAxes.size ? [{ role: 'system' as const, content: `### 各角色最近有效私轴（按角色 ID）\n${JSON.stringify(Object.fromEntries(previousAxes))}` }] : []),
-                    { role: 'system' as const, content: rerollOutOfStory
+                    ...(rerollOutOfStory || castTurn ? [{ role: 'system' as const, content: rerollOutOfStory
                         ? `本轮是重写上一条场外回复，必须继续场外交流。\n${STORY_OUT_OF_STORY_RULE}`
                         : fixedCast
                         ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接按原预设生成完整剧情，最后更新私轴。\n${STORY_PRIVATE_AXES_RULE}\n${STORY_CAST_ACTION_RULE}${compiled.assistantPrefill ? `\n剧情正文以此开头：${compiled.assistantPrefill.content}` : ''}`
-                        : castTurn ? buildStoryCastInstruction(actors, castLimits, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening)
-                        : [
-                            isReroll || isContinueTurn || assistantOpening ? '本轮按原预设生成剧情正文。' : STORY_REPLY_MODE_RULE,
-                            compiled.assistantPrefill && `剧情正文沿用预设起始文本：\n${compiled.assistantPrefill.content}`,
-                        ].filter(Boolean).join('\n') },
+                        : buildStoryCastInstruction(actors, castLimits, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening) }] : []),
                     ];
-                    // 可切换场外的请求须保留自由输出起点。
-                    const nativePrefill = !castTurn && !rerollOutOfStory && (isReroll || isContinueTurn || assistantOpening)
+                    // 关闭出演模式：和官方原版一样，所有剧情请求都保留原生助手预填。
+                    const nativePrefill = !castTurn && !rerollOutOfStory
                         ? compiled.assistantPrefill : undefined;
                     const assembled = appendStoryUserTurn(payloadBeforeTurn, modelInput, nativePrefill, promptEntry.forceUserLastMessage === true);
                     const pendingIndex = nativePrefill && !promptEntry.forceUserLastMessage ? assembled.length - 2 : assembled.length - 1;
@@ -925,8 +921,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
             const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(body);
-            const rawContent = prefill && !body.startsWith(prefill) && !hasNativeOpening
-                ? `${prefill}${body}` : body;
+            // 自由续写按官方原版补回预填；出演模式才做防止重复场景标签的处理。
+            const needsPrefill = prefill && !body.startsWith(prefill)
+                && (!castTurn || !hasNativeOpening);
+            const rawContent = needsPrefill ? `${prefill}${body}` : body;
             // 演员可能隔几轮才回来，取各自最近一次的关系状态（含已归档正文）。
             const previousAssistantContent = [...history].reverse().filter(message => message.role === 'assistant' && !message.metadata?.theaterOutOfStory).map(message => message.content);
             const content = affinityEnabled && !outOfStory
