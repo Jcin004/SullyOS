@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { assertStoryRerollBody, buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply } from './storyTheaterCast';
 
-const axis = { doing: '修表', thinking: '还差一个零件', next: '找工具' };
+const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
 
 function seededRandom(seed: number) {
@@ -59,7 +59,7 @@ describe('剧场选角协议', () => {
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(singleGroup)}</turn_cast>${axes(pool)}正文`, pool, normalizeStoryCastLimits(undefined, pool.length)).groups).toEqual(singleGroup);
     });
 
-    it('接受跨组重复、可恢复的代码围栏，重写仍须遵守原名单和完整私轴', () => {
+    it('接受跨组重复、可恢复的代码围栏和重写名单', () => {
         const groups = [['a', 'b'], ['b'], ['a']];
         const range = normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 2, maxPeople: 2 });
         const fence = '```';
@@ -101,19 +101,45 @@ describe('剧场选角协议', () => {
         '<turn_cast>[["a"],[]]</turn_cast>正文',
         '<turn_cast>[["a"],["b"],["c"]]</turn_cast>正文',
         '<turn_cast>[["a","b","c"]]</turn_cast>正文',
-        '<turn_cast>[["a"]]</turn_cast>',
         '<turn_cast>[["a"]]</turn_cast>正文<turn_cast>[["b"]]</turn_cast>',
     ])('格式异常时仍保留正文：%s', text => {
         expect(parseStoryCastReply(text, ids, limits).body).toBeTruthy();
     });
 
-    it('出演协议先于私轴及原预设正文，保留预设起始文本', () => {
+    it('先输出出演名单、完整剧情，再结算短私轴', () => {
         const instruction = buildStoryCastInstruction([{ id: 'a', name: '角色A' }], limits, [['a']], '<scene_header>');
-        expect(instruction).toContain('先独立输出 <turn_cast>');
-        expect(instruction).toContain('接着独立输出 <private_axes>');
-        expect(instruction).toContain('再从原预设起始文本开始完整输出剧情正文');
-        expect(instruction).toContain('私轴关闭后，正文沿用预设起始文本');
+        const cast = instruction.indexOf('先独立输出 <turn_cast>');
+        const story = instruction.indexOf('然后从原预设起始文本开始完整输出剧情正文');
+        const axes = instruction.indexOf('最后输出 <private_axes>');
+        expect(cast).toBeGreaterThanOrEqual(0);
+        expect(story).toBeGreaterThan(cast);
+        expect(axes).toBeGreaterThan(story);
+        expect(instruction).toContain('每个值为一段简短文字');
+        expect(instruction).toContain('出演名单关闭后，正文沿用预设起始文本');
         expect(instruction).toContain('<scene_header>');
+    });
+
+    it('剧情末尾的私轴被提取，正文和时间原样保留', () => {
+        const text = '<turn_cast>[["a"]]</turn_cast><scene_header><time>2026-04-10 14:00</time></scene_header><story_text>修好了钟。</story_text>' + axes(['a']);
+        expect(parseStoryCastReply(text, ids, limits)).toEqual({
+            groups: [['a']], axes: { a: axis },
+            body: '<scene_header><time>2026-04-10 14:00</time></scene_header><story_text>修好了钟。</story_text>',
+        });
+    });
+
+    it('末尾私轴未写完时，只清除残缺的私轴，保留已生成的正文', () => {
+        const text = '<turn_cast>[["a"]]</turn_cast><scene_header><time>2026-04-10 14:00</time></scene_header><story_text>完整剧情。</story_text><private_axes>{"a":"明天';
+        expect(parseStoryCastReply(text, ids, limits)).toEqual({
+            groups: [['a']], axes: {},
+            body: '<scene_header><time>2026-04-10 14:00</time></scene_header><story_text>完整剧情。</story_text>',
+        });
+        expect(parseStoryCastReply('<turn_cast>[["a"]]</turn_cast><private_axes>{"a":"未完', ids, limits).body).toBe('');
+    });
+
+    it('旧三字段私轴仍可读取，并转换成一段文字', () => {
+        const oldAxis = { doing: '修表', thinking: '还差一个零件', next: '找工具' };
+        const text = '<turn_cast>[["a"]]</turn_cast><story_text>修表。</story_text><private_axes>' + JSON.stringify({ a: oldAxis }) + '</private_axes>';
+        expect(parseStoryCastReply(text, ids, limits).axes).toEqual({ a: '修表；还差一个零件；找工具' });
     });
 
     it('兼容 scene_header 中嵌套的出演名单，保留剧情时间和正文', () => {
