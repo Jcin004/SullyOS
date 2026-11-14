@@ -360,17 +360,17 @@ export function mergeSubmissionsIntoEntries(
 
 const ROOM_RULES: Record<PlateRoom, string> = {
     user_room:
-        `想象你在为对方写一张**角色卡**——只有必须写在卡上的内容才配上这块门牌：` +
-        `基础信息（身份、职业大方向、居住）、家庭结构、重要他人（人物条目格式如「TA的朋友小美：大学室友，关系铁」）、` +
-        `长期相处沉淀下来的核心事实、以及重大到足以塑造TA这个人的人生节点（亲人离世、迁居他国这种量级）。` +
+        `想象你在为记忆中的互动对象写一张**角色卡**——只有必须写在卡上的内容才配上这块门牌：` +
+        `互动对象的基础信息（身份、职业大方向、居住）、对方的家庭结构、重要他人（家人、亲戚、朋友、同事及其他社会关系）、` +
+        `长期相处沉淀下来的核心事实、以及重大到足以塑造这个人的人生节点（亲人离世、迁居他国这种量级）。` +
         `【入卡门槛极高，宁缺毋滥】阶段性状态（最近很累、工作糟心）不收；情绪分析、性格侧写不收——那是印象档案的领域；` +
         `正在进行、没有结论的事不收——那是事件盒的事，等有了结果再说。`,
     self_room:
         `我对**自己**的稳定认知：我是谁、性格底色、重要的转变、已经内化的领悟。不收对他人的看法。`,
     bedroom:
-        `我们之间的**质地**：相处的习惯与仪式、只有彼此懂的梗、未言明的默契、拿不准却真实的感觉。` +
+        `我与其他角色之间的**亲密情感与关系质地**：相处的习惯与仪式、只有彼此懂的梗、未言明的默契、拿不准却真实的感觉。` +
         `【硬规则】禁止给这段关系命名或分类——不得写出"我们是恋人/情侣/朋友/家人"这类定义句。` +
-        `只描述现象和感受；说不清、不确定本身就是合法条目（如「我说不清我们算什么，但TA难过时第一个找的是我」）。`,
+        `只描述现象和感受；说不清、不确定本身就是合法条目（如「我说不清我和TA算什么，但TA难过时第一个找的是我」）。`,
     study:
         `我的领域：我会什么、正在学什么、和对方共同钻研的东西。只收有积累的，不收一次性话题。`,
 };
@@ -387,12 +387,12 @@ export function buildPlateConsolidationPrompt(args: {
     plates: PlateSnapshot[];
     materials: PlateMaterial[];
 }): string {
-    const { charName, userName, identityContext, plates, materials } = args;
+    const { charName, identityContext, plates, materials } = args;
     const materialByRoom = new Map(materials.map(m => [m.room, m.lines]));
 
     const roomBlocks = plates.map(plate => {
         const prefix = ROOM_LABEL_PREFIX[plate.room];
-        const title = plate.room === 'user_room' ? `${userName}的事` : PLATE_TITLES[plate.room];
+        const title = PLATE_TITLES[plate.room];
         const existingBlock = plate.entries.length > 0
             ? plate.entries.map((text, i) => `[${prefix}${i}] ${text}`).join('\n')
             : '（还没有条目）';
@@ -413,11 +413,11 @@ ${materialBlock}`;
     return `${identityContext ? `${identityContext}
 ---
 
-` : ''}你是 ${charName}，${userName} 是与你朝夕相处的人。下面的材料全部来自你们相处的记忆。
+` : ''}你是 ${charName}。下面的材料来自你与不同互动对象的相处记忆。
 
-你现在在独处，安静地整理自己的"底色认知"——那些不需要刻意回忆就知道的事：关于 ${userName}、关于你自己、关于你们之间。
+你现在在独处，安静地整理自己的"底色认知"——那些不需要刻意回忆就知道的事：关于互动对象及其社会关系、关于你自己、关于你与其他角色之间的关系。
 
-【身份确认】「${userName}的事」只写 ${userName} 的事实；「我是谁」只写你（${charName}）自己；不要张冠李戴——材料里"我"是你，"TA/${userName}"是对方。
+【身份确认】「他人的事」只写互动对象及其社会关系的稳定事实；「我是谁」只写你（${charName}）自己；「关系的质地」只写你与其他角色之间的亲密互动。不要张冠李戴——材料里"我"是你，其他人物按各自名字区分。
 
 下面每个"门牌"给出了现有条目和新材料。请为每个门牌输出**完整的新条目列表**：
 
@@ -426,7 +426,7 @@ ${materialBlock}`;
 3. **每条 ${PLATE_ENTRY_TARGET_CHARS} 字以内**，写梗概不写叙事，不带日期不带"我记得"。
 4. **不超过各门牌的条目上限**。位置不够时留最重要的——被迫舍弃是正常的。
 5. 每条给一个 **tag**（2-4 字分类，如：家庭、居住、重要他人、工作、雷区、习惯、性格、约定、默契、技能）。
-6. ${userName} 直接用名字称呼。条目内容严禁使用半角双引号 "，引用一律用「」。
+6. 涉及他人时直接用其名字称呼。条目内容严禁使用半角双引号 "，引用一律用「」。
 
 ${roomBlocks}
 
