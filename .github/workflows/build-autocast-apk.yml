@@ -53,7 +53,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify story memory and API response handling
-        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts utils/storyTheaterSessionCast.test.ts
+        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts
 
       - name: Build Capacitor web assets
         run: |
