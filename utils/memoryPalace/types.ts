@@ -9,9 +9,9 @@
 
 export type MemoryRoom =
     | 'living_room'   // 客厅 — 日常闲聊、近期互动（海马体）
-    | 'bedroom'       // 卧室 — 亲密情感、深层羁绊（新皮层）
+    | 'bedroom'       // 卧室 — 角色与其他角色之间的亲密情感、深层羁绊（新皮层）
     | 'study'         // 书房 — 工作学习、技能成长（前额叶）
-    | 'user_room'     // 用户房间 — 用户个人信息、习惯（颞顶联合区）
+    | 'user_room'     // 他人的房间 — 互动对象的个人信息及社会关系（颞顶联合区）
     | 'self_room'     // 自我房间 — 角色自我认同、演变（默认模式网络）
     | 'attic'         // 阁楼 — 未消化的困惑、潜意识（杏仁核–海马体）
     | 'windowsill';   // 窗台 — 期盼、目标、憧憬（多巴胺奖赏系统）
@@ -24,9 +24,9 @@ export interface RoomConfig {
 
 export const ROOM_CONFIGS: Record<MemoryRoom, RoomConfig> = {
     living_room: { capacity: 200,  decayRate: 0.9972, description: '日常闲聊、近期互动' },
-    bedroom:     { capacity: null, decayRate: 0.9995, description: '亲密情感、深层羁绊' },
+    bedroom:     { capacity: null, decayRate: 0.9995, description: '角色与其他角色之间的亲密情感、深层羁绊' },
     study:       { capacity: null, decayRate: 0.9995, description: '工作学习、技能成长' },
-    user_room:   { capacity: null, decayRate: 0.9995, description: '用户个人信息、习惯' },
+    user_room:   { capacity: null, decayRate: 0.9995, description: '互动对象的个人信息及其社会关系' },
     self_room:   { capacity: null, decayRate: null,   description: '角色自我认同、演变' },
     attic:       { capacity: null, decayRate: null,   description: '未消化的困惑、潜意识' },
     windowsill:  { capacity: null, decayRate: null,   description: '期盼、目标、憧憬' },
@@ -42,20 +42,17 @@ export const ROOM_LABELS: Record<MemoryRoom, string> = {
     living_room: '客厅',
     bedroom:     '卧室',
     study:       '书房',
-    user_room:   '用户房间',
+    user_room:   '他人的房间',
     self_room:   '自我房间',
     attic:       '阁楼',
     windowsill:  '窗台',
 };
 
 /**
- * 获取房间的动态显示标签。
- * user_room 在有用户名时显示为"【用户名】的房间"，其余房间返回静态标签。
+ * 获取房间的显示标签。
+ * user_room 对外统一显示为「他人的房间」，内部标识保持不变。
  */
-export function getRoomLabel(room: MemoryRoom, userName?: string): string {
-    if (room === 'user_room' && userName) {
-        return `${userName}的房间`;
-    }
+export function getRoomLabel(room: MemoryRoom, _userName?: string): string {
     return ROOM_LABELS[room];
 }
 
@@ -252,9 +249,9 @@ export type TopicContinuity = 'continuous' | 'partial_shift' | 'discontinuous';
  * 对应人脑里"海马体情景记忆固化为新皮质语义知识"的那一步。
  *
  * 四个房间有门牌：
- * - user_room「TA的事」  — 用户的稳定事实（家庭、居住、重要他人、雷区）
+ * - user_room「他人的事」  — 互动对象的稳定事实（个人信息、家庭、居住、重要他人及社会关系）
  * - self_room「我是谁」  — 角色对自己的稳定认知
- * - bedroom  「我们之间」— 关系的质地。硬规则：只描述现象，禁止给关系命名
+ * - bedroom  「关系的质地」— 角色与其他角色之间的亲密关系质地。硬规则：只描述现象，禁止给关系命名
  * - study    「我的领域」— 会什么、在学什么
  *
  * 客厅天生短暂不配门牌；阁楼/窗台已有各自的生命周期机制（本质上就是它们的门牌）。
@@ -304,9 +301,9 @@ export const PLATE_ENTRY_TARGET_CHARS = 50;
 export const PLATE_ENTRY_HARD_MAX_CHARS = 90;
 
 export const PLATE_TITLES: Record<PlateRoom, string> = {
-    user_room: 'TA的事',
+    user_room: '他人的事',
     self_room: '我是谁',
-    bedroom:   '我们之间',
+    bedroom:   '关系的质地',
     study:     '我的领域',
 };
 
