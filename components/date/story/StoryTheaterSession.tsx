@@ -859,7 +859,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     { role: 'system' as const, content: rerollOutOfStory
                         ? `本轮是重写上一条场外回复，必须继续场外交流。\n${STORY_OUT_OF_STORY_RULE}`
                         : fixedCast
-                        ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接从私轴标签开始。\n${STORY_PRIVATE_AXES_RULE}\n${STORY_CAST_ACTION_RULE}${compiled.assistantPrefill ? `\n私轴关闭后正文以此开头：${compiled.assistantPrefill.content}` : ''}`
+                        ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接按原预设生成完整剧情，最后更新私轴。\n${STORY_PRIVATE_AXES_RULE}\n${STORY_CAST_ACTION_RULE}${compiled.assistantPrefill ? `\n剧情正文以此开头：${compiled.assistantPrefill.content}` : ''}`
                         : castTurn ? buildStoryCastInstruction(actors, castLimits, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening)
                         : [
                             isReroll || isContinueTurn || assistantOpening ? '本轮按原预设生成剧情正文。' : STORY_REPLY_MODE_RULE,
@@ -919,8 +919,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 : [];
             const mirrorActors = requestActors.filter(actor => mirrorRecipientIds.includes(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
+            // 不能将未完成的出演元数据与预设开头拼成一段假正文。
+            if (castTurn && !body.replace(/<[^>]*>/g, '').trim()) {
+                throw new Error('本轮未生成有效剧情正文，已保留用户输入，可重试。');
+            }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
-            const rawContent = prefill && !body.startsWith(prefill) ? `${prefill}${body}` : body;
+            const hasNativeOpening = /<(?:scene_header|story_text)\b/i.test(body);
+            const rawContent = prefill && !body.startsWith(prefill) && !hasNativeOpening
+                ? `${prefill}${body}` : body;
             // 演员可能隔几轮才回来，取各自最近一次的关系状态（含已归档正文）。
             const previousAssistantContent = [...history].reverse().filter(message => message.role === 'assistant' && !message.metadata?.theaterOutOfStory).map(message => message.content);
             const content = affinityEnabled && !outOfStory
@@ -1149,10 +1155,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     <h2 id='story-axis-title' className='text-base font-semibold'>{characters.find(actor => actor.id === axisViewer.actorId)?.name ?? '角色'}的本轮私轴</h2>
                     <button type='button' autoFocus onClick={() => setAxisViewer(null)} aria-label='关闭私轴' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
                 </div>
-                {displayedAxis ? <dl className='space-y-3 text-sm'>
-                    {([['doing', '正在做什么'], ['thinking', '正在想什么'], ['next', '接下来想做什么']] as const).map(([key, label]) =>
-                        <div key={key}><dt className='font-semibold'>{label}</dt><dd className='mt-1 whitespace-pre-wrap break-words text-slate-600'>{displayedAxis[key]}</dd></div>)}
-                </dl> : <p className='text-sm text-slate-500'>本轮没有有效的私轴记录。</p>}
+                {displayedAxis ? <p className='whitespace-pre-wrap break-words text-sm leading-6 text-slate-600'>{displayedAxis}</p>
+                    : <p className='text-sm text-slate-500'>本轮没有有效的私轴记录。</p>}
             </section>
         </div>}
         {editingMessage && <div className='fixed inset-0 z-[75] flex items-end overflow-y-auto overscroll-contain bg-slate-900/30' onClick={() => !mutatingMessage && setEditingMessage(null)}>
