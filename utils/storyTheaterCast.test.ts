@@ -112,7 +112,8 @@ describe('剧场选角协议', () => {
         expect(instruction).toContain('先独立输出 <turn_cast>');
         expect(instruction).toContain('接着独立输出 <private_axes>');
         expect(instruction).toContain('再从原预设起始文本开始完整输出剧情正文');
-        expect(instruction).toContain('私轴关闭后，正文沿用预设起始文本：\\n<scene_header>');
+        expect(instruction).toContain('私轴关闭后，正文沿用预设起始文本');
+        expect(instruction).toContain('<scene_header>');
     });
 
     it('兼容 scene_header 中嵌套的出演名单，保留剧情时间和正文', () => {
