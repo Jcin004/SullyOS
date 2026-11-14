@@ -93,7 +93,7 @@ export function buildStoryCastInstruction(
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
         `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
         `从候选中决定 ${range.minGroups}～${range.maxGroups} 个不同的组。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员，每组至少一人。同一角色可跨组，每组内只填一次。用户执笔的身份不进入名单。`,
-        '回复从 <turn_cast> 开始，内部为角色 ID 的 JSON 二维数组，紧接 </turn_cast>。',
+        '尽量输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast> 和 <private_axes>人物私轴 JSON</private_axes>，作为辅助信息；随后沿用原预设的剧情输出结构，不要把出演 JSON 放进 <scene_header> 等剧情标签中。',
         STORY_PRIVATE_AXES_RULE,
         STORY_CAST_ACTION_RULE,
         prefill ? `私轴关闭后，正文沿用预设起始文本：\n${prefill}` : '',
@@ -103,7 +103,7 @@ export function buildStoryCastInstruction(
 export const STORY_CAST_ACTION_RULE = '按互动联系分组。同一地点可以有多组，人物也可以跨地点互动。每组成员都要在正文实际出场，依据各自私轴和关系自然互动，例如交谈、行动、协作、打断、观察或相互影响。单人组可推进自己的事。除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读完剧情前文、角色设定、记忆及最近的私轴，再读用户本轮的完整输入。',
-    '名单之后输出 <private_axes>JSON</private_axes>，JSON 是以角色 ID 为键的对象。每位出演角色恰好一项，字段为 doing（正在做什么）、thinking（正在想什么）、next（接下来想做什么），三个值都是非空字符串。',
+    '尽量在正文前输出 <private_axes>JSON</private_axes>，JSON 以角色 ID 为键，字段为 doing（正在做什么）、thinking（正在想什么）、next（接下来想做什么）。',
     '延续每个人的活动、状态与未完成事项、当前关注与惦记、计划与未定选择。按经历、人格、关系、身体状态、时间和外界变化更新。用户的输入进入正在发生的生活；人物自行决定如何回应，原有事务可以继续、被打断、改变或结束。私轴可以保持稳定。',
     '关闭私轴标签后立即按原预设输出正文。直接输出标签与 JSON，不加代码围栏或说明。',
 ].join('\n');
@@ -149,48 +149,66 @@ export function parseOutOfStoryReply(text: string): string | undefined {
     return body;
 }
 
-export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits, fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
-    const invalid = () => new Error('本轮出演名单无效，未保存角色记忆。可点击推进重试。');
-    const response = unwrapProtocolBlock(unwrapFence(text));
-    const match = /^<turn_cast>([\s\S]*?)<\/turn_cast\s*>\s*/i.exec(response);
-    if (!match && !fixedCast) throw invalid();
-    let groups: unknown = fixedCast;
-    if (match) {
-        try { groups = JSON.parse(unwrapFence(match[1])); } catch { throw invalid(); }
-    }
-    const allowed = new Set(candidateIds);
-    const range = fixedCast ? undefined : effectiveStoryCastLimits(allowed.size, limits);
-    if (!Array.isArray(groups) || (!fixedCast && (!range || groups.length < range.minGroups || groups.length > range.maxGroups))) throw invalid();
-    const seen = new Set<string>();
-    const groupKeys = new Set<string>();
-    for (const group of groups) {
-        if (!Array.isArray(group) || !group.length || new Set(group).size !== group.length) throw invalid();
-        for (const id of group) {
-            if (typeof id !== 'string' || !allowed.has(id)) throw invalid();
-            seen.add(id);
-        }
+function sanitizeStoryCastGroups(value: unknown, allowed: ReadonlySet<string>): string[][] {
+    if (!Array.isArray(value)) return [];
+    const groups: string[][] = [], seen = new Set<string>();
+    for (const item of value) {
+        if (!Array.isArray(item)) continue;
+        const group = [...new Set(item.filter((id): id is string => typeof id === 'string' && allowed.has(id)))];
+        if (!group.length) continue;
         const key = groupKey(group);
-        if (groupKeys.has(key)) throw invalid();
-        groupKeys.add(key);
+        if (!seen.has(key)) { seen.add(key); groups.push(group); }
     }
-    if (range && (seen.size < range.minPeople || seen.size > range.maxPeople)) throw invalid();
-    if (fixedCast && (groupKeys.size !== fixedCast.length || fixedCast.some(group => !groupKeys.has(groupKey(group))))) throw invalid();
-    const remainder = unwrapProtocolBlock(response.slice(match?.[0].length ?? 0));
-    if (!remainder || castTag.test(remainder) || outOfStoryTag.test(remainder)) throw invalid();
-    const axesMatch = /^<private_axes>([\s\S]*?)<\/private_axes\s*>\s*/i.exec(remainder);
-    const invalidAxes = () => new Error('本轮人物私轴无效，每位出演者都需要三项内容。原记录已保留，可重试。');
-    if (!axesMatch) throw invalidAxes();
-    let raw: StoryPrivateAxes;
-    try { raw = JSON.parse(unwrapFence(axesMatch[1])); } catch { throw invalidAxes(); }
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).length !== seen.size) throw invalidAxes();
-    const axes = Object.fromEntries([...seen].map(id => {
-        const axis = Object.prototype.hasOwnProperty.call(raw, id) && readAxis(raw[id]);
-        if (!axis) throw invalidAxes();
-        return [id, axis];
-    }));
-    const body = remainder.slice(axesMatch[0].length).trim();
-    if (!body || axesTag.test(body)) throw invalid();
-    return { groups: fixedCast ?? groups, axes, body };
+    return groups;
+}
+function readJsonArrayAt(text: string, start: number): { value: unknown; end: number } | undefined {
+    if (text[start] !== '[') return;
+    let depth = 0, quoted = false, escaped = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (quoted) { if (escaped) escaped = false; else if (ch === '\\') escaped = true; else if (ch === '"') quoted = false; continue; }
+        if (ch === '"') quoted = true;
+        else if (ch === '[') depth++;
+        else if (ch === ']' && --depth === 0) {
+            try { return { value: JSON.parse(text.slice(start, i + 1)), end: i + 1 }; } catch { return; }
+        }
+    }
+}
+function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>): { groups: string[][]; fragment: string } | undefined {
+    const header = /<scene_header\b[^>]*>/i.exec(text);
+    if (!header) return;
+    let start = header.index + header[0].length;
+    while (/\s/.test(text[start] ?? '')) start++;
+    const parsed = readJsonArrayAt(text, start);
+    if (!parsed) return;
+    const groups = sanitizeStoryCastGroups(parsed.value, allowed);
+    return groups.length ? { groups, fragment: text.slice(start, parsed.end) } : undefined;
+}
+export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits, fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
+    void limits;
+    const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
+    const allowed = new Set(candidateIds);
+    const castMatches = [...response.matchAll(/<turn_cast\b[^>]*>([\s\S]*?)<\/turn_cast\s*>/gi)];
+    let groups = fixedCast ? sanitizeStoryCastGroups(fixedCast, allowed) : [];
+    if (!fixedCast) for (const match of castMatches) {
+        try { groups = sanitizeStoryCastGroups(JSON.parse(unwrapFence(match[1])), allowed); if (groups.length) break; } catch { /* 保留正文，继续尝试其他来源。 */ }
+    }
+    const legacy = !groups.length && !fixedCast ? readLegacySceneHeaderGroups(response, allowed) : undefined;
+    if (legacy) groups = legacy.groups;
+    const axes: StoryPrivateAxes = {};
+    if (groups.length) for (const match of response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)) {
+        try {
+            const raw = JSON.parse(unwrapFence(match[1])) as unknown;
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+            for (const id of storyCastIds(groups)) { const axis = readAxis((raw as Record<string, unknown>)[id]); if (axis && !axes[id]) axes[id] = axis; }
+        } catch { /* 私轴为可选数据。 */ }
+    }
+    let body = response;
+    for (const match of castMatches) body = body.replace(match[0], '');
+    for (const match of response.matchAll(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi)) body = body.replace(match[0], '');
+    if (legacy) body = body.replace(legacy.fragment, '');
+    body = body.trim();
+    return { groups, axes, body: body || response.trim() };
 }
 
 export function assertStoryRerollBody(text: string): string {
