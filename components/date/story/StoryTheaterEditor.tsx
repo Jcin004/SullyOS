@@ -160,10 +160,10 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                                 className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。同一人物可跨组，出演人数按整轮去重。</p>
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。每组是一条直接交流关系，例如 [A,B]、[A,C]、[A,D]；不是固定小队。人数整轮去重，背景角色仍可自然出场。</p>
                     {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
                         ? '请填写正整数，且每项最小值不能超过最大值。'
-                        : '当前候选或最多出演人数不足以满足最少组数或人数。请调整范围或增加候选。'}</p>}
+                        : '当前候选人数不足以构成所设数量的不同直接互动关系（通常每组至少两人）。请调整范围或增加候选。'}</p>}
                 </fieldset>}
             </section>
             <section className='pt-6 border-t border-slate-200'>

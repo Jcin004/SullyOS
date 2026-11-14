@@ -6,8 +6,13 @@ on:
     branches:
       - feat/real-story-raw-context
       - build/latest-sullyos-apk-20261115
+      - fix/story-interaction-groups-20261115
     paths:
       - .github/workflows/build-autocast-apk.yml
+      - utils/storyTheaterCast.ts
+      - utils/storyTheaterCast.test.ts
+      - components/date/story/StoryTheaterEditor.tsx
+      - components/date/story/StoryTheaterSession.tsx
   workflow_dispatch:
 
 permissions:
@@ -48,7 +53,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify story memory and API response handling
-        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts
+        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts utils/storyTheaterSessionCast.test.ts
 
       - name: Build Capacitor web assets
         run: |
@@ -73,14 +78,14 @@ jobs:
       - name: Prepare APK output
         run: |
           mkdir -p apk-output
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Latest-20261115.apk
-          sha256sum apk-output/SullyOS-Latest-20261115.apk
-          ls -lh apk-output/SullyOS-Latest-20261115.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Interaction-Groups-20261115.apk
+          sha256sum apk-output/SullyOS-Interaction-Groups-20261115.apk
+          ls -lh apk-output/SullyOS-Interaction-Groups-20261115.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-Latest-20261115-APK
-          path: apk-output/SullyOS-Latest-20261115.apk
+          name: SullyOS-Interaction-Groups-20261115-APK
+          path: apk-output/SullyOS-Interaction-Groups-20261115.apk
           if-no-files-found: error
           retention-days: 14

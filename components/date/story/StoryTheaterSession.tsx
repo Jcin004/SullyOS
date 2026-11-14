@@ -1039,7 +1039,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             </button>}
                         </div>)}
                     </div>
-                    {currentCast.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>{currentCast.map((group, index) => `第 ${index + 1} 组：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
+                    {currentCast.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>{currentCast.map((group, index) => `互动 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
                     {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
                     {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
                 </fieldset>

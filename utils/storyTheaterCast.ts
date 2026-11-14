@@ -3,7 +3,7 @@ import type { Message, StoryCastLimits } from '../types';
 export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolSize = Number.MAX_SAFE_INTEGER): StoryCastLimits {
     return {
         minGroups: value?.minGroups ?? 1,
-        maxGroups: value?.maxGroups ?? 4,
+        maxGroups: value?.maxGroups ?? Math.max(4, Math.min(12, poolSize * 2)),
         minPeople: value?.minPeople ?? 1,
         maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
@@ -15,13 +15,19 @@ export function validStoryCastLimits(limits: StoryCastLimits): boolean {
         && minGroups <= maxGroups && minPeople <= maxPeople;
 }
 
+// Groups represent actual interpersonal exchanges. A solo cast is kept only for one-person scenes.
+function maximumInteractionGroups(size: number): number {
+    if (size < 2) return size;
+    return size > 52 ? Number.MAX_SAFE_INTEGER : 2 ** size - size - 1;
+}
+
 function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
-    if (!validStoryCastLimits(limits)) return undefined;
+    if (!validStoryCastLimits(limits) || poolSize < 1) return undefined;
     const maxPeople = Math.min(poolSize, limits.maxPeople);
-    // An n-person cast has at most 2^n - 1 distinct nonempty groups.
-    const minPeople = Math.max(limits.minPeople, Math.ceil(Math.log2(limits.minGroups + 1)));
+    let minPeople = Math.max(limits.minPeople, poolSize > 1 ? 2 : 1);
+    while (minPeople <= maxPeople && maximumInteractionGroups(minPeople) < limits.minGroups) minPeople++;
     if (minPeople > maxPeople) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, 2 ** maxPeople - 1) };
+    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, maximumInteractionGroups(maxPeople)) };
 }
 
 const groupKey = (group: readonly string[]) => JSON.stringify([...group].sort());
@@ -39,39 +45,67 @@ export function canDrawStoryCast(poolSize: number, limits: StoryCastLimits): boo
 export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLimits, recent: readonly string[][][], random = Math.random): string[][] {
     const candidates = [...new Set(ids)];
     const range = effectiveStoryCastLimits(candidates.length, limits);
-    if (!range || range.minGroups > candidates.length + 1) return [];
+    if (!range) return [];
     const people = new Map<string, number>();
-    const groups = new Map<string, number>();
+    const recentGroups = new Map<string, number>();
     recent.slice(-6).reverse().forEach((turn, index) => {
         const weight = (6 - index) / 6;
         for (const id of storyCastIds(turn)) people.set(id, (people.get(id) ?? 0) + weight);
         for (const group of turn) {
             const key = groupKey(group);
-            groups.set(key, (groups.get(key) ?? 0) + weight);
+            recentGroups.set(key, (recentGroups.get(key) ?? 0) + weight);
         }
     });
     const pick = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     let best: string[][] = [];
     let bestScore = -1;
+
     for (let sample = 0; sample < 24; sample++) {
         const size = pick(range.minPeople, range.maxPeople);
-        // Suggestions are advisory. Prefer a compact sample even when the user allows many groups.
-        const count = pick(range.minGroups, Math.min(range.maxGroups, 2 ** size - 1, Math.max(range.minGroups, size + 1)));
-        const selected = candidates.map(id => ({ id, rank: -Math.log(1 - random()) * (1 + (people.get(id) ?? 0)) }))
+        if (maximumInteractionGroups(size) < range.minGroups) continue;
+        const count = pick(range.minGroups, Math.min(range.maxGroups, maximumInteractionGroups(size)));
+        const selected = candidates.map(id => ({ id, rank: -Math.log(Math.max(1e-12, 1 - random())) * (1 + (people.get(id) ?? 0)) }))
             .sort((a, b) => a.rank - b.rank).slice(0, size).map(row => row.id);
-        const proposed = selected.slice(0, count).map(id => [id]);
-        for (const id of selected.slice(count)) proposed[pick(0, proposed.length - 1)].push(id);
-        if (size > 1 && proposed.length > 1 && random() < 0.5) {
-            const overlap = selected.find(id => !proposed[0].includes(id));
-            if (overlap) proposed[0].push(overlap);
+
+        // Prefer distinct direct-contact links; use larger groups only when a shared exchange needs them.
+        // One actor may form several links, e.g. [A,B], [A,C], [A,D].
+        const options: string[][] = [];
+        if (size === 1) options.push(selected);
+        else for (let groupSize = 2; groupSize <= size && (groupSize === 2 || options.length < count); groupSize++) {
+            const add = (start: number, remaining: number, members: string[]) => {
+                if (remaining === 0) { options.push(members); return; }
+                for (let i = start; i <= size - remaining; i++) add(i + 1, remaining - 1, [...members, selected[i]]);
+            };
+            add(0, groupSize, []);
         }
-        const used = new Set(proposed.map(groupKey));
-        for (let mask = 1; proposed.length < count; mask++) {
-            const group = selected.filter((_, index) => Math.floor(mask / 2 ** index) % 2 === 1);
-            const key = groupKey(group);
-            if (!used.has(key)) { used.add(key); proposed.push(group); }
+        const used = new Set<string>(), uncovered = new Set(selected), proposed: string[][] = [];
+        const hub = selected[pick(0, size - 1)];
+        const hubBonus = random() < 0.6 ? 3 : 0.4;
+        for (let index = 0; index < count; index++) {
+            let chosen: string[] | undefined;
+            let chosenScore = -Infinity;
+            for (const option of options) {
+                const key = groupKey(option);
+                if (used.has(key)) continue;
+                const newlyCovered = option.filter(id => uncovered.has(id)).length;
+                const score = newlyCovered * 2.4 + (option.includes(hub) ? hubBonus : 0)
+                    - (option.length - 2) * 1.5 - (recentGroups.get(key) ?? 0) * 2.5 + random() * 2;
+                if (score > chosenScore) { chosen = option; chosenScore = score; }
+            }
+            if (!chosen) break;
+            proposed.push([...chosen]);
+            used.add(groupKey(chosen));
+            for (const id of chosen) uncovered.delete(id);
         }
-        const repetition = proposed.reduce((sum, group) => sum + (groups.get(groupKey(group)) ?? 0), 0);
+        // Everybody selected for this sample needs to participate in at least one exchange.
+        // When there are too few links for separate pairs, extend existing groups.
+        for (const id of uncovered) {
+            const shortest = proposed.reduce((bestIndex, group, index) =>
+                group.length < proposed[bestIndex].length ? index : bestIndex, 0);
+            proposed[shortest].push(id);
+        }
+        if (proposed.length !== count || new Set(proposed.map(groupKey)).size !== count) continue;
+        const repetition = proposed.reduce((sum, group) => sum + (recentGroups.get(groupKey(group)) ?? 0), 0);
         const score = random() / (1 + repetition / count);
         if (score > bestScore) { best = proposed; bestScore = score; }
     }
@@ -91,8 +125,8 @@ export function buildStoryCastInstruction(
         ]),
         '### 剧情续写',
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
-        `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
-        `从候选中决定 ${range.minGroups}～${range.maxGroups} 个不同的组。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员，每组至少一人。同一角色可跨组，每组内只填一次。用户执笔的身份不进入名单。`,
+        `可参考的互动关系（仅是变化建议；请根据当前剧情重新决定，绝不照搬或为了凑数硬写）：${JSON.stringify(proposals)}`,
+        `根据本轮实际要发生的直接交流，决定 ${range.minGroups}～${range.maxGroups} 条不同的互动关系（是允许范围，不是预定数量）。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员。${actors.length === 1 ? '候选仅一人，可记单人独立出场。' : '每条互动关系至少两人；不把单人独处算作互动分组。'}同一角色可跨任意多组，例如 [A,B] [A,C] [A,D] 代表 A 分别与 B、C、D 交流，不是三支小队。用户执笔的身份不进入名单。`,
         '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>；然后从原预设起始文本开始完整输出剧情正文；全部剧情区块结束后，最后输出 <private_axes>人物私轴 JSON</private_axes>。出演名单不得嵌入 <scene_header>、<story_text> 等原预设标签。',
         STORY_PRIVATE_AXES_RULE,
         STORY_CAST_ACTION_RULE,
@@ -100,7 +134,7 @@ export function buildStoryCastInstruction(
     ].filter(Boolean).join('\n');
 }
 
-export const STORY_CAST_ACTION_RULE = '按互动联系分组。同一地点可以有多组，人物也可以跨地点互动。每组成员都要在正文实际出场，依据各自私轴和关系自然互动，例如交谈、行动、协作、打断、观察或相互影响。单人组可推进自己的事。除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
+export const STORY_CAST_ACTION_RULE = '出演分组是一条条本轮实际发生的直接互动关系，不是固定小队、人物分配表或按地点划分的场景。每组成员必须在正文中与本组其他成员有明确的双向交流：对白有回应，或一人的动作引发另一人针对性的行动回应。多人组每个人都要进入这条交流链。仅仅同框、远远观察、被旁白提及、各做各事或单向影响都不算组内互动。同一人物可以跨多组，分别与不同的人交流；组数依剧情在设定范围内变化，避免固定搭档、固定三组或凑数。候选仅有一位演员时，允许以单人组记录独立出场。没有列在出演名单的背景人物与其他角色可随剧情自然加入，他们不需要私轴或角色记忆镜像；但背景人物的出现不能代替名单内角色彼此直接互动。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读取各角色最近的私轴，人物从自身经历、人格、关系和环境中展开本轮行动。',
     '本轮剧情全部写完后，最后输出 <private_axes>JSON</private_axes>。JSON 以本轮出演角色 ID 为键，每个值为一段简短文字。',
