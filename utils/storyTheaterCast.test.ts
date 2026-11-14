@@ -113,11 +113,28 @@ describe('剧场选角协议', () => {
         const instruction = buildStoryCastInstruction(actors, range, links);
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(links)}</turn_cast><story_text>正文</story_text>`, ids, range).groups).toEqual(links);
         expect(instruction).toContain('不是三支小队');
-        expect(instruction).toContain('双向交流');
-        expect(instruction).toContain('背景人物与其他角色可随剧情自然加入');
+        expect(instruction).toContain('无需拆成每一对组合');
+        expect(instruction).toContain('共同在场、氛围一致、话题相同，都不自动构成一个组');
+        expect(instruction).toContain('共同讨论');
+        expect(instruction).toContain('背景人物可以自然出现和参与剧情');
         expect(instruction).toContain('固定三组');
         expect(instruction).not.toContain('正文仅允许名单中的角色实际出场');
         expect(normalizeStoryCastLimits(undefined, 8).maxGroups).toBeGreaterThan(4);
+    });
+
+    it('随机建议包含同场多人共同讨论，也支持分组衔接与并行交谈', () => {
+        const people = ['a', 'b', 'c', 'd'];
+        const oneGroup = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 4, maxPeople: 4 }, 4);
+        expect(drawStoryCastGroups(people, oneGroup, [], seededRandom(23))).toEqual([people]);
+        const flexible = normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4);
+        const samples = Array.from({ length: 30 }, (_, i) => drawStoryCastGroups(people, flexible, [], seededRandom(i * 821 + 71)));
+        expect(samples.some(groups => groups.some(group => group.length >= 3))).toBe(true);
+        expect(samples.some(groups => groups.some(group => group.length === 2))).toBe(true);
+        expect(samples.some(groups => groups.length === 2 && groups[0].some(id => groups[1].includes(id)))).toBe(true);
+        const instruction = buildStoryCastInstruction(people.map(id => ({ id, name: id })), flexible, [['a', 'b'], ['b', 'c']]);
+        expect(instruction).toContain('A、B 交流后 B 转向 C');
+        expect(instruction).toContain('A、B 和 C、D 分别交流');
+        expect(instruction).toContain('一个 [A,B,C,D]');
     });
 
     it('随机建议只生成有交流对象的关系，组数不固定，关系可重叠', () => {

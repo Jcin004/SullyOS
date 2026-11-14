@@ -67,20 +67,46 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
         const selected = candidates.map(id => ({ id, rank: -Math.log(Math.max(1e-12, 1 - random())) * (1 + (people.get(id) ?? 0)) }))
             .sort((a, b) => a.rank - b.rank).slice(0, size).map(row => row.id);
 
-        // Prefer distinct direct-contact links; use larger groups only when a shared exchange needs them.
-        // One actor may form several links, e.g. [A,B], [A,C], [A,D].
+        // A group may be one shared multi-person conversation, a direct pair,
+        // or an overlapping exchange after attention moves to a different speaker.
+        // Offer all these structures; the story model decides which really occurs.
         const options: string[][] = [];
-        if (size === 1) options.push(selected);
-        else for (let groupSize = 2; groupSize <= size && (groupSize === 2 || options.length < count); groupSize++) {
-            const add = (start: number, remaining: number, members: string[]) => {
-                if (remaining === 0) { options.push(members); return; }
-                for (let i = start; i <= size - remaining; i++) add(i + 1, remaining - 1, [...members, selected[i]]);
-            };
-            add(0, groupSize, []);
+        const optionKeys = new Set<string>();
+        const addOption = (members: string[]) => {
+            if (members.length < 2 && size > 1) return;
+            const key = groupKey(members);
+            if (optionKeys.has(key)) return;
+            optionKeys.add(key);
+            options.push(members);
+        };
+        if (size === 1) addOption(selected);
+        else {
+            // Pairs: A-B and C-D in parallel, or A-B followed by B-C.
+            for (let i = 0; i < size; i++) for (let j = i + 1; j < size; j++) {
+                addOption([selected[i], selected[j]]);
+            }
+            // Multi-person shared discussion: A,B,C,D in the SAME interaction.
+            addOption(selected);
+            for (let n = 3; n <= Math.min(size, 6); n++) {
+                for (let start = 0; start < size; start++) {
+                    const rotated = [...selected.slice(start), ...selected.slice(0, start)];
+                    addOption(rotated.slice(0, n));
+                }
+            }
+            // Varied membership, without enumerating the entire exponential powerset.
+            for (let sampleOption = 0; sampleOption < Math.min(size * 5, 50); sampleOption++) {
+                const sampled = selected.map(id => ({ id, rank: random() }))
+                    .sort((a, b) => a.rank - b.rank).slice(0, pick(3, size)).map(item => item.id);
+                addOption(sampled);
+            }
         }
         const used = new Set<string>(), uncovered = new Set(selected), proposed: string[][] = [];
         const hub = selected[pick(0, size - 1)];
-        const hubBonus = random() < 0.6 ? 3 : 0.4;
+        const hubBonus = random() < 0.6 ? 2.2 : 0.2;
+        // A larger group is a valid single discussion, not an accidental overflow of pairs.
+        const preferredSize = count === 1 ? size : random() < 0.45
+            ? pick(Math.min(3, size), size)
+            : 2;
         for (let index = 0; index < count; index++) {
             let chosen: string[] | undefined;
             let chosenScore = -Infinity;
@@ -89,7 +115,8 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
                 if (used.has(key)) continue;
                 const newlyCovered = option.filter(id => uncovered.has(id)).length;
                 const score = newlyCovered * 2.4 + (option.includes(hub) ? hubBonus : 0)
-                    - (option.length - 2) * 1.5 - (recentGroups.get(key) ?? 0) * 2.5 + random() * 2;
+                    - Math.abs(option.length - preferredSize) * 1.4
+                    - (recentGroups.get(key) ?? 0) * 2.5 + random() * 2.6;
                 if (score > chosenScore) { chosen = option; chosenScore = score; }
             }
             if (!chosen) break;
@@ -127,6 +154,7 @@ export function buildStoryCastInstruction(
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
         `可参考的互动关系（仅是变化建议；请根据当前剧情重新决定，绝不照搬或为了凑数硬写）：${JSON.stringify(proposals)}`,
         `根据本轮实际要发生的直接交流，决定 ${range.minGroups}～${range.maxGroups} 条不同的互动关系（是允许范围，不是预定数量）。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员。${actors.length === 1 ? '候选仅一人，可记单人独立出场。' : '每条互动关系至少两人；不把单人独处算作互动分组。'}同一角色可跨任意多组，例如 [A,B] [A,C] [A,D] 代表 A 分别与 B、C、D 交流，不是三支小队。用户执笔的身份不进入名单。`,
+        '以直接参与的交流单元判定分组：A、B 对话，C 同场旁听，记 [A,B]；A、B 交流后 B 转向 C 交流，记 [A,B] [B,C]；A、B 和 C、D 分别交流，记 [A,B] [C,D]；A、B、C、D 围绕同一件事共同讨论、每个人都直接接话或回应，记一个 [A,B,C,D]。共同在场、氛围一致、话题相同，都不自动构成一个组；多人组也无需拆成每一对组合。',
         '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>；然后从原预设起始文本开始完整输出剧情正文；全部剧情区块结束后，最后输出 <private_axes>人物私轴 JSON</private_axes>。出演名单不得嵌入 <scene_header>、<story_text> 等原预设标签。',
         STORY_PRIVATE_AXES_RULE,
         STORY_CAST_ACTION_RULE,
@@ -134,7 +162,7 @@ export function buildStoryCastInstruction(
     ].filter(Boolean).join('\n');
 }
 
-export const STORY_CAST_ACTION_RULE = '出演分组是一条条本轮实际发生的直接互动关系，不是固定小队、人物分配表或按地点划分的场景。每组成员必须在正文中与本组其他成员有明确的双向交流：对白有回应，或一人的动作引发另一人针对性的行动回应。多人组每个人都要进入这条交流链。仅仅同框、远远观察、被旁白提及、各做各事或单向影响都不算组内互动。同一人物可以跨多组，分别与不同的人交流；组数依剧情在设定范围内变化，避免固定搭档、固定三组或凑数。候选仅有一位演员时，允许以单人组记录独立出场。没有列在出演名单的背景人物与其他角色可随剧情自然加入，他们不需要私轴或角色记忆镜像；但背景人物的出现不能代替名单内角色彼此直接互动。';
+export const STORY_CAST_ACTION_RULE = '分组记录本轮实际的直接交流结构，不按地点、场景、气氛或话题划分。两人对话是一个组；交流对象转移后可以形成重叠的另一个组；几人围绕同一件事展开同一段共同讨论，直接接话、回应或对彼此行动作出有针对性的反应，就是一个多人组。多人组每个人都必须实际参与这段共同交流，但无需与每位组员逐一单独对话。只有在同一个地方、听见同一话题、远远观察或各做各事，不算组内互动；未参与交流的旁观者无需因在场而被塞进组。演员可跨多组，顺序交流或同时交流都可以；分组数量依本轮真实互动变化，避免固定搭档、固定三组和凑数。候选只有一位演员时，允许单人组记录独立出场。未列入名单的背景人物可以自然出现和参与剧情，且不需要生成私轴或角色记忆镜像；但背景人物不能代替名单角色之间已预选的直接交流。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读取各角色最近的私轴，人物从自身经历、人格、关系和环境中展开本轮行动。',
     '本轮剧情全部写完后，最后输出 <private_axes>JSON</private_axes>。JSON 以本轮出演角色 ID 为键，每个值为一段简短文字。',
