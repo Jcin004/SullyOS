@@ -111,7 +111,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await send(advance(), 1);
         await send(advance(), 2);
         expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id, c.id]));
         for (const actor of actors) {
             expect(await contents(actor.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
         }
@@ -168,7 +168,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(lastReference(a.id)).toBe(at(10));
         expect(payload(5).map(row => row.content).join('\n')).toContain('第一幕暗号');
         expect(promptText(5)).not.toContain('共通文件夹 · 其他剧场原文');
-        expect(await contents(thread)).toHaveLength(4);
+        expect(await contents(thread)).toHaveLength(6);
         expect(await contents(a.id)).toHaveLength(4);
 
         const historyPrompt = preset.document.prompts.find(prompt => prompt.marker === 'history')!;
@@ -208,9 +208,9 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             expect(row.metadata.theaterTimelineTimestamp).toBeUndefined();
         }
         expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
-        expect(archiveCalls).toBe(7);
+        expect(archiveCalls).toBe(6);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
-        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
+        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15)]);
 
         historyPrompt.enabled = true;
         await render('other-cast-session');
