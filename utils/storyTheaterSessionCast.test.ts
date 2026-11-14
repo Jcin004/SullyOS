@@ -111,7 +111,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await send(advance(), 1);
         await send(advance(), 2);
         expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id, c.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
         for (const actor of actors) {
             expect(await contents(actor.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
         }
@@ -140,7 +140,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
 
         await setInput('我翻到另一页。');
         await send(advance(), 4);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id, c.id]));
         expect(checked()).toEqual([c.name]);
         expect(await contents(a.id)).toHaveLength(4);
         expect(await contents(b.id)).toHaveLength(4);
