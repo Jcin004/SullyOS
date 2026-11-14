@@ -40,6 +40,14 @@ describe('手动总结按页读取', () => {
         await expect(loadRangeMessagePage('range-large', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
     });
 
+    it('预览保留剧场来源和标题，完整原文读取保留其他元数据', async () => {
+        const metadata = { source: 'story_theater_memory', theaterTitle: '雨夜车站', theaterCentralId: 123 };
+        const id = await DB.saveMessage({ charId: 'range-theater', role: 'assistant', type: 'text', content: '剧场原文', metadata });
+        const page = await loadRangeMessagePage('range-theater');
+        expect(page.messages[0].metadata).toEqual({ source: 'story_theater_memory', theaterTitle: '雨夜车站' });
+        expect((await loadRangeMessageContents('range-theater', id, id))[0].metadata).toEqual(metadata);
+    });
+
     it('清理入口可选中空消息，手动总结仍跳过空消息', async () => {
         const empty = await DB.saveMessage({ charId: 'range-empty', role: 'user', type: 'text', content: '' });
         const text = await DB.saveMessage({ charId: 'range-empty', role: 'assistant', type: 'text', content: '正文' });

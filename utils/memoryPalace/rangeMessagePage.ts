@@ -60,8 +60,12 @@ export async function loadRangeMessagePage(charId: string, options: {
                 const content = rawContent.trim() || !options.includeEmpty ? rawContent : '[空消息]';
                 if (content.trim() && (!query || normalizeRangeSearchText(`${content} ${formatRangeTimestamp(message.timestamp)}`).includes(query))) {
                     if (messages.length === limit) { hasMore = true; return; }
-                    // 不把附件、metadata、完整正文留在 React 状态里。
-                    messages.push({ id: message.id, charId, role: message.role, type: message.type, timestamp: message.timestamp, content: content.slice(0, 160), metadata: { source: message.metadata?.source } });
+                    // 只保留列表显示所需的 metadata。
+                    messages.push({
+                        id: message.id, charId, role: message.role, type: message.type, timestamp: message.timestamp,
+                        content: content.slice(0, 160),
+                        metadata: { source: message.metadata?.source, theaterTitle: message.metadata?.theaterTitle },
+                    });
                 }
             }
             cursor.continue();
