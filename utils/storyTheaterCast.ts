@@ -93,7 +93,7 @@ export function buildStoryCastInstruction(
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
         `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
         `从候选中决定 ${range.minGroups}～${range.maxGroups} 个不同的组。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员，每组至少一人。同一角色可跨组，每组内只填一次。用户执笔的身份不进入名单。`,
-        '尽量输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast> 和 <private_axes>人物私轴 JSON</private_axes>，作为辅助信息；随后沿用原预设的剧情输出结构，不要把出演 JSON 放进 <scene_header> 等剧情标签中。',
+        '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>，接着独立输出 <private_axes>人物私轴 JSON</private_axes>；私轴标签关闭后，再从原预设起始文本开始完整输出剧情正文。出演标签不得嵌入 <scene_header>、<story_text> 等原预设标签。',
         STORY_PRIVATE_AXES_RULE,
         STORY_CAST_ACTION_RULE,
         prefill ? `私轴关闭后，正文沿用预设起始文本：\n${prefill}` : '',
@@ -103,7 +103,7 @@ export function buildStoryCastInstruction(
 export const STORY_CAST_ACTION_RULE = '按互动联系分组。同一地点可以有多组，人物也可以跨地点互动。每组成员都要在正文实际出场，依据各自私轴和关系自然互动，例如交谈、行动、协作、打断、观察或相互影响。单人组可推进自己的事。除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读完剧情前文、角色设定、记忆及最近的私轴，再读用户本轮的完整输入。',
-    '尽量在正文前输出 <private_axes>JSON</private_axes>，JSON 以角色 ID 为键，字段为 doing（正在做什么）、thinking（正在想什么）、next（接下来想做什么）。',
+    '出演名单关闭后输出 <private_axes>JSON</private_axes>，JSON 以角色 ID 为键，字段为 doing（正在做什么）、thinking（正在想什么）、next（接下来想做什么）。',
     '延续每个人的活动、状态与未完成事项、当前关注与惦记、计划与未定选择。按经历、人格、关系、身体状态、时间和外界变化更新。用户的输入进入正在发生的生活；人物自行决定如何回应，原有事务可以继续、被打断、改变或结束。私轴可以保持稳定。',
     '关闭私轴标签后立即按原预设输出正文。直接输出标签与 JSON，不加代码围栏或说明。',
 ].join('\n');
