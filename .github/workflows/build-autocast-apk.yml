@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feat/real-story-raw-context
+      - build/latest-sullyos-apk-20261115
     paths:
       - .github/workflows/build-autocast-apk.yml
   workflow_dispatch:
@@ -72,14 +73,14 @@ jobs:
       - name: Prepare APK output
         run: |
           mkdir -p apk-output
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-AutoCast-Test.apk
-          sha256sum apk-output/SullyOS-AutoCast-Test.apk
-          ls -lh apk-output/SullyOS-AutoCast-Test.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Latest-20261115.apk
+          sha256sum apk-output/SullyOS-Latest-20261115.apk
+          ls -lh apk-output/SullyOS-Latest-20261115.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-AutoCast-Test-APK
-          path: apk-output/SullyOS-AutoCast-Test.apk
+          name: SullyOS-Latest-20261115-APK
+          path: apk-output/SullyOS-Latest-20261115.apk
           if-no-files-found: error
           retention-days: 14

@@ -15,7 +15,7 @@ import { ContextBuilder } from '../context';
  * 旧条目不被重新输出即被淘汰；带 basedOn 引用的条目继承 firstLearnedAt
  * 与 sourceCount（"这条认知是什么时候得知的、被印证过几次"）。
  *
- * 卧室门牌「我们之间」硬规则：只写现象与质地，禁止给关系命名——
+ * 卧室门牌「关系的质地」硬规则：只写现象与质地，禁止给关系命名——
  * 定义只存在于质地的负空间里。prompt 层约束 + mergePlateEntries 兜底过滤。
  */
 
@@ -586,15 +586,14 @@ export function markPlateBootstrapDone(charId: string): void {
  * 注入框架是设计核心：这些是 constraint（认知底色，防说错话），
  * 不是 topic（不要老念叨）——对应人脑"背景知识常在但低激活"的状态。
  */
-export function formatRoomPlatesSection(plates: RoomPlate[], userName?: string): string {
-    const userLabel = userName || '用户';
+export function formatRoomPlatesSection(plates: RoomPlate[], _userName?: string): string {
     const byRoom = new Map(plates.map(p => [p.room, p]));
     const sections: string[] = [];
 
     for (const room of PLATE_ROOMS) {
         const plate = byRoom.get(room);
         if (!plate || plate.entries.length === 0) continue;
-        const title = room === 'user_room' ? `关于${userLabel}` : PLATE_TITLES[room];
+        const title = PLATE_TITLES[room];
         const suffix = room === 'bedroom' ? '（没有名字，也不需要名字——只有质地）' : '';
         sections.push(
             `**${title}**${suffix}\n` +

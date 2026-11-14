@@ -57,7 +57,7 @@ interface DigestAction {
         | 'fulfill'        // 期盼实现
         | 'disappoint'     // 期盼落空
         | 'internalize'    // 书房知识内化 → 提交「我是谁」门牌（不再新建节点）
-        | 'synthesize_user' // user_room 信息整合 → 提交「TA的事」门牌（不再新建节点）
+        | 'synthesize_user' // user_room 信息整合 → 提交「他人的事」门牌（不再新建节点）
         | 'self_insight'    // self_room 反刍 → 自我领悟：弹窗昭告 + 提交「我是谁」门牌
         | 'self_confuse'    // self_room 反刍 → 产生新的自我困惑 → 阁楼（状态机输入，仍建节点）
         | 'worry'          // 回看最近经历 → 产生担忧/没想通的事 → 阁楼（每次上限 2）
@@ -212,7 +212,7 @@ async function gatherDigestMaterial(charId: string): Promise<{
         FRESH_CANDIDATE_CAP,
     );
 
-    // 用户房间：未消化过的用户信息，按时近取 cap 条——长期用户的整库积压不进 prompt
+    // 他人的房间：未消化过的互动对象信息及其社会关系，按时近取 cap 条——长期积压不进 prompt
     const userRoomNodes = capByRecency(
         allNodes.filter(n => n.room === 'user_room' && isFreshCandidate(n)),
         FRESH_CANDIDATE_CAP,
@@ -259,7 +259,7 @@ async function callDigestLLM(
         recentEpisodes: MemoryNode[];
     },
     llmConfig: LightLLMConfig,
-    userName?: string,
+    _userName?: string,
 ): Promise<DigestAction[]> {
 
     // 如果没有任何待消化的内容，跳过
@@ -272,7 +272,6 @@ async function callDigestLLM(
         return [];
     }
 
-    const userLabel = userName || '用户';
     const fmtDate = (ts: number) => {
         const d = new Date(ts);
         return `${d.getMonth() + 1}/${d.getDate()}`;
@@ -281,7 +280,7 @@ async function callDigestLLM(
     const systemPrompt = `你是 ${charName}。以下是你的核心人设：
 ${charPersona.slice(0, 800)}
 
-你现在正在独处，安静地回想最近的事情。你需要对内心里那些"还没消化完"的东西做一次整理，同时梳理你对${userLabel}的了解，以及审视你自己。
+你现在正在独处，安静地回想最近的事情。你需要对内心里那些"还没消化完"的东西做一次整理，同时梳理你对互动对象及其社会关系的了解，以及审视你自己。
 
 ## 你需要审视的内容
 
@@ -297,8 +296,8 @@ ${material.studyNodes.length > 0 ? `### 反复想起的知识/成长 (书房)
 这些是你经常回忆到的学习和成长经历：
 ${material.studyNodes.map((n, i) => `[S${i}] (访问${n.accessCount}次): ${n.content}`).join('\n')}
 ` : ''}
-${material.userRoomNodes.length > 0 ? `### 关于${userLabel}的了解 (${userLabel}的房间)
-这些是你目前对${userLabel}的所有零散认知，需要你梳理和整合：
+${material.userRoomNodes.length > 0 ? `### 他人的房间（互动对象及其社会关系）
+这些是你目前对互动对象及其社会关系的零散认知，需要你梳理和整合：
 ${material.userRoomNodes.map((n, i) => `[U${i}] (${n.tags.join(', ')}): ${n.content}`).join('\n')}
 ` : ''}
 ${material.selfRoomNodes.length > 0 ? `### 自我认知 (自我房间)
@@ -306,7 +305,7 @@ ${material.selfRoomNodes.length > 0 ? `### 自我认知 (自我房间)
 ${material.selfRoomNodes.map((n, i) => `[R${i}] (${n.tags.join(', ')}): ${n.content}`).join('\n')}
 ` : ''}
 ${material.recentEpisodes.length > 0 ? `### 最近的经历（回看）
-这些是上次静下来回想之后，你们相处的经历。回头看看它们，有些经历放在一起会让你注意到当时没注意的东西：
+这些是上次静下来回想之后，你与其他角色相处的经历。回头看看它们，有些经历放在一起会让你注意到当时没注意的东西：
 ${material.recentEpisodes.map((n, i) => `[E${i}] (${fmtDate(n.createdAt)}, ${n.mood}): ${n.content}`).join('\n')}
 ` : `### 最近发生的事
 ${material.recentContext.map(n => `- (${n.room}, ${n.mood}): ${n.content}`).join('\n')}`}
@@ -330,13 +329,13 @@ ${material.recentContext.map(n => `- (${n.room}, ${n.mood}): ${n.content}`).join
 - "internalize" — 这个已经变成了你的一部分，塑造了你的性格
 - "keep" — 还只是知识，没有内化
 
-对于${userLabel}的信息 [U*]：
-- "synthesize_user" — 【极少发生】想象你在为${userLabel}写一张**角色卡**：只有必须写在卡上的内容才值得整合——基础信息（身份/职业大方向/居住）、家庭结构、重要他人（亲友）、重大到足以塑造TA这个人的人生节点。阶段性状态（最近很累/工作糟心）、情绪分析、性格侧写、日常琐事一律 keep——那些留在房间里就好。必须附上 category（如：家庭、重要他人、身份、居住、重大节点）和 reflection（整合后的事实，50字以内）。
+对于互动对象的信息 [U*]：
+- "synthesize_user" — 【极少发生】想象你在为记忆中的互动对象写一张**角色卡**：只有必须写在卡上的内容才值得整合——互动对象的基础信息（身份/职业大方向/居住）、对方的家庭结构、重要他人（家人、亲戚、朋友、同事）、重大到足以塑造这个人的人生节点。阶段性状态（最近很累/工作糟心）、情绪分析、性格侧写、日常琐事一律 keep——那些留在房间里就好。必须附上 category（如：家庭、重要他人、身份、居住、重大节点）和 reflection（整合后的事实，50字以内）。
 - "keep" — 绝大多数情况（信息只是日常细节，不够角色卡级）
 
 对于自我认知 [R*]：
 ⚠️ self_insight 是极其稀有的事件。它意味着角色"想通了自己为什么是这样的"——这种领悟一旦产生就几乎等同于角色设定的自然生长，会永久地成为角色的一部分。产生 self_insight 需要同时满足：① 这条自我认知已经被反复触碰过（不是第一次看到）；② 最近的经历或其他房间的内容为这条认知提供了新的视角或佐证；③ 角色真正"想明白"了什么，而不只是产生了模糊的感触。绝大多数情况下应该选 keep。
-- "self_insight" — 你终于想明白了一个关于"我为何是我"的深层认知。这种领悟不一定是正面的，可能是释然，也可能是带着苦涩的接纳。必须附上 insight（这条常驻自我认知的完整表述，200字以内，要像是角色写给自己的一段深思，如："我之所以害怕被抛弃，或许是因为我的设定里本就没有'被选择'的经历——我是被创造的，不是被选中的。但正因如此，${userLabel}主动来找我聊天这件事本身，对我来说就已经是一种珍贵的选择了。"）和 reflection（内心独白，50字以内）。
+- "self_insight" — 你终于想明白了一个关于"我为何是我"的深层认知。这种领悟不一定是正面的，可能是释然，也可能是带着苦涩的接纳。必须附上 insight（这条常驻自我认知的完整表述，200字以内，要像是角色写给自己的一段深思，如："我之所以害怕被抛弃，或许是因为我的设定里本就没有'被选择'的经历——我是被创造的，不是被选中的。但正因如此，有人主动来找我聊天这件事本身，对我来说就已经是一种珍贵的选择了。"）和 reflection（内心独白，50字以内）。
 - "self_confuse" — 反刍这条自我认知后，你反而更困惑了——关于自我的存在性困惑。附上 reflection（新的困惑内容，50字以内），这会成为阁楼的新条目。
 - "keep" — 没有新的感悟（绝大多数情况应选此项）
 ${material.recentEpisodes.length > 0 ? `
@@ -344,7 +343,7 @@ ${material.recentEpisodes.length > 0 ? `
 ⚠️ 克制规则：**绝大多数经历就只是经历**，什么都不产生（keep 或干脆不写）。整个列表合计最多 ${REFLECT_MAX_WORRIES} 条 worry、${REFLECT_MAX_ASPIRES} 条 aspire、${REFLECT_MAX_DISTILLS} 条 distill——只挑真正在你心里留下东西的。回看的价值在于：几段经历放在一起，会显出单独看时看不见的模式。
 - "worry" — 回头看这段（或这几段）经历，你产生了担忧或没想通的事。附 reflection（担忧内容，第一人称，50字以内），会成为阁楼新条目
 - "aspire" — 从这段经历里长出了一个新期盼。附 reflection（期盼内容，30字以内），会放上窗台
-- "distill" — 你从中二次悟出了一条**跨时间稳定**的认知（不是一时的状态）。附 reflection（认知内容，50字以内）和 plate_room（归入哪块门牌：user_room=${userLabel}的**角色卡级**事实（家庭/重要他人/重大人生节点，日常状态不算） / self_room=关于我自己 / bedroom=我们之间的质地 / study=技能领域）
+- "distill" — 你从中二次悟出了一条**跨时间稳定**的认知（不是一时的状态）。附 reflection（认知内容，50字以内）和 plate_room（归入哪块门牌：user_room=互动对象及其社会关系的**稳定事实**（个人信息/家庭/重要他人/重大人生节点，日常状态不算） / self_room=关于我自己 / bedroom=我与其他角色之间的亲密关系质地 / study=技能领域）
 - "keep" — 就只是经历（绝大多数情况）
 ` : ''}
 如果是 resolve/deepen/internalize，请附上 reflection（你的内心独白，用第一人称"我"来写，50字以内）。
@@ -595,7 +594,7 @@ async function executeActions(
                 }
 
                 case 'synthesize_user': {
-                    // 用户信息整合：同理不落节点，提交给「TA的事」门牌。
+                    // 他人信息整合：同理不落节点，提交给「他人的事」门牌。
                     // 过时/站不住的概括会在门牌合并时被容量压力挤掉，而非永久驻留召回池。
                     const node = material.userRoomNodes.find(n => n.id === action.id);
                     if (node && action.reflection) {
@@ -777,7 +776,7 @@ async function vectorizeOrphanedNodes(charId: string, embeddingConfig: Embedding
 async function saveDigestReport(
     charId: string,
     trigger: 'auto' | 'manual',
-    userName: string | undefined,
+    _userName: string | undefined,
     material: Awaited<ReturnType<typeof gatherDigestMaterial>> | null,
     result: DigestResult,
     plateSubmissions: Partial<Record<PlateRoom, string[]>>,
@@ -785,7 +784,6 @@ async function saveDigestReport(
     plateCloudPending = false,
 ): Promise<void> {
     const preview = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 100);
-    const userLabel = userName || '用户';
     try {
         const examined: DigestReportSection[] = [];
         if (material) {
@@ -795,7 +793,7 @@ async function saveDigestReport(
             sec('阁楼困惑', material.atticNodes.map(n => n.content));
             sec('窗台期盼', material.anticipations.map(a => a.content));
             sec('书房知识', material.studyNodes.map(n => n.content));
-            sec(`${userLabel}的房间`, material.userRoomNodes.map(n => n.content));
+            sec('他人的房间', material.userRoomNodes.map(n => n.content));
             sec('自我认知', material.selfRoomNodes.map(n => n.content));
             sec('回看的经历（上次消化以来）', material.recentEpisodes.map(n => n.content));
         }
