@@ -110,22 +110,22 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await setInput('我在窗边坐下。');
         await send(advance(), 1);
         await send(advance(), 2);
-        expect(await contents(thread)).toEqual(['我在窗边坐下。']);
-        expect(await contents(a.id)).toEqual([]);
-        expect(await contents(b.id)).toEqual([]);
-        expect(await contents(c.id)).toEqual([]);
+        expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
+        for (const actor of actors) {
+            expect(await contents(actor.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+        }
         expect(checked()).toEqual([]);
-        expect(mocks.archive).not.toHaveBeenCalled();
-        expect(mocks.toast).toHaveBeenLastCalledWith(expect.stringContaining('出演名单无效'), 'error');
+        expect(mocks.toast.mock.calls.some(([message]) => String(message).includes('出演名单无效'))).toBe(false);
 
         await send(advance(), 3);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id]));
         expect(checked()).toEqual([a.name, b.name]);
-        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
-        expect(await timeline(a.id)).toEqual([at(10), at(13)]);
-        expect(await timeline(b.id)).toEqual([at(11), at(13)]);
+        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>', '我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
+        expect(await timeline(a.id)).toEqual([at(10), at(10), at(10), at(13)]);
+        expect(await timeline(b.id)).toEqual([at(11), at(10), at(10), at(13)]);
         expect(await contents(b.id)).toEqual(await contents(a.id));
-        expect(await contents(c.id)).toEqual([]);
+        expect(await contents(c.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
         expect(payload(2).at(-1)?.role).toBe('user');
         expect(payload(2).map(row => row.content).join('\n')).toContain('本轮随机建议组合');
         expect(promptText(2)).toContain('私轴关闭后，正文沿用预设起始文本');
@@ -142,9 +142,9 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await send(advance(), 4);
         await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
         expect(checked()).toEqual([c.name]);
-        expect(await contents(a.id)).toHaveLength(2);
-        expect(await contents(b.id)).toHaveLength(2);
-        expect(await timeline(c.id)).toEqual([at(10), at(13)]);
+        expect(await contents(a.id)).toHaveLength(4);
+        expect(await contents(b.id)).toHaveLength(4);
+        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(13)]);
         expect(lastReference(a.id)).toBe(at(13));
         expect(payload(3).map(row => row.content).join('\n').match(/第一幕暗号/g)).toHaveLength(1);
         expect(promptText(3)).toContain('各角色最近有效私轴');
@@ -153,11 +153,11 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await vi.waitFor(async () => { await flush(); expect(reroll.disabled).toBe(false); });
         await send(reroll, 5);
         expect(checked()).toEqual([c.name]);
-        expect(await contents(c.id)).toEqual(['我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>']);
-        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
+        expect(await contents(c.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>', '我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>']);
+        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15)]);
         expect(lastReference(c.id)).toBe(at(10));
-        expect(await contents(thread)).toHaveLength(4);
-        expect(mocks.archive).toHaveBeenCalledTimes(3);
+        expect(await contents(thread)).toHaveLength(6);
+        expect(mocks.archive).toHaveBeenCalledTimes(6);
         expect(payload(4).map(row => row.content).join('\n')).toContain('沿用已确定的出演分组');
         expect(payload(4).map(row => row.content).join('\n')).not.toContain('本轮随机建议组合');
         expect(promptText(4)).not.toContain(`"${c.id}":{"doing":"整理旧线索"`);
@@ -194,7 +194,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(vi.mocked(retrieveMemories)).toHaveBeenCalledTimes(recallCalls);
         expect(container.textContent).toContain('也可以先让读者看见信封。');
         expect(container.textContent).not.toContain('这样能让悬念多留一幕。');
-        const outOfStoryRows = (await DB.getMessagesByCharId(thread, true)).slice(4);
+        const outOfStoryRows = (await DB.getMessagesByCharId(thread, true)).slice(6);
         expect(outOfStoryRows.map(row => [row.role, row.content])).toEqual([
             ['user', '跳出剧情聊一下，什么时候揭晓旧信？'],
             ['assistant', '可以把旧信留到下一幕揭晓。'],
@@ -208,7 +208,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             expect(row.metadata.theaterTimelineTimestamp).toBeUndefined();
         }
         expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
-        expect(archiveCalls).toBe(4);
+        expect(archiveCalls).toBe(7);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
         expect(await timeline(c.id)).toEqual([at(10), at(15)]);
 
@@ -219,7 +219,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(payload(9).some(row => row.content.includes('本轮使用剧情续写模式'))).toBe(true);
         expect(lastReference(c.id)).toBe(at(15));
         expect(promptText(9)).toContain(`"${c.id}":{"doing":"收拾旧信"`);
-        expect(await timeline(c.id)).toEqual([at(10), at(15), at(15), at(17)]);
+        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15), at(15), at(17)]);
         expect(checked()).toEqual([c.name]);
         await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls + 1));
 
