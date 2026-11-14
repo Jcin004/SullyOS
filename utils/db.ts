@@ -1043,9 +1043,10 @@ export const DB = {
       pending: Message | undefined,
       groups: string[][],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
+      mirrorRecipientIds?: readonly string[],
   ): Promise<void> => {
     const db = await openDB();
-    const actorIds = [...new Set(groups.flat())];
+    const actorIds = [...new Set(mirrorRecipientIds ?? groups.flat())];
     return new Promise((resolve, reject) => {
         const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
