@@ -290,12 +290,20 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         }
         expect(promptText(17)).not.toContain('自由第一轮');
         expect(promptText(17)).toContain('自由第二轮');
-        expect(promptText(17)).not.toMatch(/<turn_cast>|<private_axes>|本轮随机建议组合/);
+        expect(promptText(17)).not.toMatch(/<turn_cast>|<private_axes>|本轮随机建议组合|根据最新输入选择回复模式/);
         expect(promptText(17)).toContain('演员设定c');
+        for (const [index, input] of ['自由第一轮', '自由第二轮', '自由第三轮'].entries()) {
+            expect(payload(15 + index).slice(-2)).toEqual([
+                { role: 'user', content: input },
+                { role: 'assistant', content: '<story_text>' },
+            ]);
+        }
         expect(await Promise.all(actors.map(actor => contents(actor.id)))).toEqual(beforeFree);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveBeforeFree);
         const freeRows = await DB.getMessagesByCharId(storyTheaterThreadId(freeEntry.id), true);
         expect(freeRows).toHaveLength(6);
+        expect(freeRows.filter(row => row.role === 'assistant').map(row => row.content))
+            .toEqual(Array(3).fill('<story_text>自由生成的正文。'));
         expect(freeRows.every(row => !row.metadata.theaterMirrorIds && !row.metadata.theaterCastGroups && !row.metadata.theaterPrivateAxes)).toBe(true);
         expect(freeRows.slice(0, 4).every(row => row.metadata.theaterArchived)).toBe(true);
         expect(freeRows.slice(4).every(row => !row.metadata.theaterArchived)).toBe(true);
