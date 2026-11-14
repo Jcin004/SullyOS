@@ -924,7 +924,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 throw new Error('本轮未生成有效剧情正文，已保留用户输入，可重试。');
             }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
-            const hasNativeOpening = /<(?:scene_header|story_text)\b/i.test(body);
+            const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(body);
             const rawContent = prefill && !body.startsWith(prefill) && !hasNativeOpening
                 ? `${prefill}${body}` : body;
             // 演员可能隔几轮才回来，取各自最近一次的关系状态（含已归档正文）。
