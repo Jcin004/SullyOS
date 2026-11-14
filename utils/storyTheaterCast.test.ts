@@ -20,7 +20,7 @@ describe('剧场选角协议', () => {
         for (const invalid of ['<out_of_story> </out_of_story>', story + discussion, `<out_of_story>${story}</out_of_story>`, '<out_of_story>未闭合']) {
             expect(() => parseOutOfStoryReply(invalid)).toThrow('场外回复格式无效');
         }
-        expect(() => parseStoryCastReply(story + discussion, ids, limits)).toThrow('出演名单无效');
+        expect(parseStoryCastReply(story + discussion, ids, limits)).toEqual({ groups: [['c']], axes: {}, body: '她在修表。' + discussion });
         expect(() => assertStoryRerollBody(discussion)).toThrow('本轮只需返回正文');
     });
 
@@ -71,9 +71,9 @@ describe('剧场选角协议', () => {
         ]) expect(parseStoryCastReply(output, ids, range)).toEqual({ groups, axes: { a: axis, b: axis }, body: '正文' });
         expect(drawStoryCastGroups(['a', 'b'], range, [], seededRandom(3))).toHaveLength(3);
         expect(parseStoryCastReply(axes(['a', 'b']) + '正文', ids, range, groups).groups).toEqual(groups);
-        expect(() => parseStoryCastReply(axes(['a']) + '正文', ids, range, groups)).toThrow('人物私轴无效');
-        expect(() => parseStoryCastReply(axes(['a', 'c']) + '正文', ids, range, groups)).toThrow('人物私轴无效');
-        expect(() => parseStoryCastReply('<turn_cast>[["a","b"]]</turn_cast>' + axes(['a', 'b']) + '正文', ids, range, groups)).toThrow('出演名单无效');
+        expect(parseStoryCastReply(axes(['a']) + '正文', ids, range, groups).axes).toEqual({ a: axis });
+        expect(parseStoryCastReply(axes(['a', 'c']) + '正文', ids, range, groups).axes).toEqual({ a: axis });
+        expect(parseStoryCastReply('<turn_cast>[["a","b"]]</turn_cast>' + axes(['a', 'b']) + '正文', ids, range, groups).groups).toEqual(groups);
     });
 
     it.each([
@@ -89,7 +89,7 @@ describe('剧场选角协议', () => {
         const range = normalizeStoryCastLimits(partial);
         expect(canDrawStoryCast(ids.length, range)).toBe(false);
         expect(drawStoryCastGroups(ids, range, [])).toEqual([]);
-        expect(() => parseStoryCastReply('<turn_cast>[["a"]]</turn_cast>正文', ids, range)).toThrow('出演名单无效');
+        expect(parseStoryCastReply('<turn_cast>[["a"]]</turn_cast>正文', ids, range).groups).toEqual([['a']]);
     });
 
     it.each([
@@ -103,7 +103,12 @@ describe('剧场选角协议', () => {
         '<turn_cast>[["a","b","c"]]</turn_cast>正文',
         '<turn_cast>[["a"]]</turn_cast>',
         '<turn_cast>[["a"]]</turn_cast>正文<turn_cast>[["b"]]</turn_cast>',
-    ])('拒绝无效输出：%s', text => {
-        expect(() => parseStoryCastReply(text, ids, limits)).toThrow('出演名单无效');
+    ])('格式异常时仍保留正文：%s', text => {
+        expect(parseStoryCastReply(text, ids, limits).body).toBeTruthy();
+    });
+
+    it('读取 scene_header 中的旧式演员数组', () => {
+        const text = '<scene_header>[["a","b"]]<time>2026-04-10</time></scene_header><story_text>正文</story_text>';
+        expect(parseStoryCastReply(text, ids, limits).groups).toEqual([['a','b']]);
     });
 });
