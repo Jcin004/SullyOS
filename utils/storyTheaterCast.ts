@@ -93,19 +93,19 @@ export function buildStoryCastInstruction(
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
         `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
         `从候选中决定 ${range.minGroups}～${range.maxGroups} 个不同的组。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员，每组至少一人。同一角色可跨组，每组内只填一次。用户执笔的身份不进入名单。`,
-        '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>，接着独立输出 <private_axes>人物私轴 JSON</private_axes>；私轴标签关闭后，再从原预设起始文本开始完整输出剧情正文。出演标签不得嵌入 <scene_header>、<story_text> 等原预设标签。',
+        '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>；然后从原预设起始文本开始完整输出剧情正文；全部剧情区块结束后，最后输出 <private_axes>人物私轴 JSON</private_axes>。出演名单不得嵌入 <scene_header>、<story_text> 等原预设标签。',
         STORY_PRIVATE_AXES_RULE,
         STORY_CAST_ACTION_RULE,
-        prefill ? `私轴关闭后，正文沿用预设起始文本：\n${prefill}` : '',
+        prefill ? `出演名单关闭后，正文沿用预设起始文本：\n${prefill}` : '',
     ].filter(Boolean).join('\n');
 }
 
 export const STORY_CAST_ACTION_RULE = '按互动联系分组。同一地点可以有多组，人物也可以跨地点互动。每组成员都要在正文实际出场，依据各自私轴和关系自然互动，例如交谈、行动、协作、打断、观察或相互影响。单人组可推进自己的事。除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
 export const STORY_PRIVATE_AXES_RULE = [
-    '读完剧情前文、角色设定、记忆及最近的私轴，再读用户本轮的完整输入。',
-    '出演名单关闭后输出 <private_axes>JSON</private_axes>，JSON 以角色 ID 为键，字段为 doing（正在做什么）、thinking（正在想什么）、next（接下来想做什么）。',
-    '延续每个人的活动、状态与未完成事项、当前关注与惦记、计划与未定选择。按经历、人格、关系、身体状态、时间和外界变化更新。用户的输入进入正在发生的生活；人物自行决定如何回应，原有事务可以继续、被打断、改变或结束。私轴可以保持稳定。',
-    '关闭私轴标签后立即按原预设输出正文。直接输出标签与 JSON，不加代码围栏或说明。',
+    '读取各角色最近的私轴，人物从自身经历、人格、关系和环境中展开本轮行动。',
+    '本轮剧情全部写完后，最后输出 <private_axes>JSON</private_axes>。JSON 以本轮出演角色 ID 为键，每个值为一段简短文字。',
+    '人物私轴：人物自己的生活琐事、想法思考、外界影响和选择行为。每轮剧情结束后更新，延续到下一轮。',
+    '私轴记录剧情结尾仍在继续的事情或念头；直接输出标签与 JSON，不加代码围栏或说明。',
 ].join('\n');
 export const STORY_OUT_OF_STORY_RULE = '场外模式只输出 <out_of_story>你以 AI 本体身份回复用户的正文</out_of_story>。用普通对话回答，不扮演剧场角色、不推进剧情，不输出演员名单、场景条或其他预设区块。场外讨论是创作交流，不代表已经发生的剧情事实。';
 export const STORY_REPLY_MODE_RULE = `根据最新输入选择回复模式。用户明确跳出剧情与 AI 交流、讨论故事或设定，或接续场外讨论时，使用场外模式。角色对白、剧情指令或要求继续剧情时，按原预设生成正文。每轮只用一种模式。\n${STORY_OUT_OF_STORY_RULE}`;
@@ -118,16 +118,18 @@ const unwrapProtocolBlock = (text: string) => text.replace(
     '$1\n',
 );
 
-export interface StoryPrivateAxis { doing: string; thinking: string; next: string }
+export type StoryPrivateAxis = string;
 type StoryPrivateAxes = Record<string, StoryPrivateAxis>;
 
 function readAxis(value: unknown): StoryPrivateAxis | undefined {
-    if (!value || typeof value !== 'object') return;
-    const { doing, thinking, next } = value as Partial<StoryPrivateAxis>;
-    if (typeof doing === 'string' && doing.trim() && typeof thinking === 'string' && thinking.trim()
-        && typeof next === 'string' && next.trim()) {
-        return { doing: doing.trim(), thinking: thinking.trim(), next: next.trim() };
-    }
+    if (typeof value === 'string') return value.trim() || undefined;
+    // 已保存的旧三字段私轴仍可承接到下一轮。
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const { doing, thinking, next } = value as { doing?: unknown; thinking?: unknown; next?: unknown };
+    const legacy = [doing, thinking, next]
+        .filter((part): part is string => typeof part === 'string' && !!part.trim())
+        .map(part => part.trim());
+    return legacy.length ? legacy.join('；') : undefined;
 }
 
 export function storyPrivateAxesFromMessage(reply: Message, rowsById: ReadonlyMap<number, Message>): StoryPrivateAxes {
@@ -207,8 +209,9 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     for (const match of castMatches) body = body.replace(match[0], '');
     for (const match of response.matchAll(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi)) body = body.replace(match[0], '');
     if (legacy) body = body.replace(legacy.fragment, '');
-    body = body.trim();
-    return { groups, axes, body: body || response.trim() };
+    // 输出在末尾私轴处截断时，仍保留已经完成的剧情正文。
+    body = body.replace(/<private_axes\b[^>]*>[\s\S]*$/i, '').trim();
+    return { groups, axes, body };
 }
 
 export function assertStoryRerollBody(text: string): string {
