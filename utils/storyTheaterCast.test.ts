@@ -107,6 +107,22 @@ describe('剧场选角协议', () => {
         expect(parseStoryCastReply(text, ids, limits).body).toBeTruthy();
     });
 
+    it('出演协议先于私轴及原预设正文，保留预设起始文本', () => {
+        const instruction = buildStoryCastInstruction([{ id: 'a', name: '角色A' }], limits, [['a']], '<scene_header>');
+        expect(instruction).toContain('先独立输出 <turn_cast>');
+        expect(instruction).toContain('接着独立输出 <private_axes>');
+        expect(instruction).toContain('再从原预设起始文本开始完整输出剧情正文');
+        expect(instruction).toContain('私轴关闭后，正文沿用预设起始文本：\\n<scene_header>');
+    });
+
+    it('兼容 scene_header 中嵌套的出演名单，保留剧情时间和正文', () => {
+        const text = '<scene_header><turn_cast>[["a","b"],["c"]]</turn_cast><time>2026-04-10 14:00</time></scene_header><story_text>完整剧情正文。</story_text>';
+        expect(parseStoryCastReply(text, ids, limits)).toEqual({
+            groups: [['a', 'b'], ['c']], axes: {},
+            body: '<scene_header><time>2026-04-10 14:00</time></scene_header><story_text>完整剧情正文。</story_text>',
+        });
+    });
+
     it('读取 scene_header 中的旧式演员数组', () => {
         const text = '<scene_header>[["a","b"]]<time>2026-04-10</time></scene_header><story_text>正文</story_text>';
         expect(parseStoryCastReply(text, ids, limits).groups).toEqual([['a','b']]);
