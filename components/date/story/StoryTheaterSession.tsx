@@ -914,6 +914,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     : { groups: [], body: assertStoryRerollBody(generated), axes: undefined };
             const castIds = new Set(storyCastIds(groups));
             const castActors = requestActors.filter(actor => castIds.has(actor.id));
+            const mirrorRecipientIds = castTurn && !outOfStory
+                ? (groups.length ? storyCastIds(groups) : requestActors.map(actor => actor.id))
+                : [];
+            const mirrorActors = requestActors.filter(actor => mirrorRecipientIds.includes(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
             const rawContent = prefill && !body.startsWith(prefill) ? `${prefill}${body}` : body;
@@ -932,11 +936,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
-                ...(axes ? {
-                    theaterCastGroups: groups,
+                ...(groups.length ? { theaterCastGroups: groups } : {}),
+                ...(axes && Object.keys(axes).length ? {
                     theaterPrivateAxes: axes,
                     theaterPrivateAxesInputRevision: turnInput?.metadata?.theaterInputRevision,
-                } : !outOfStory ? { theaterFreeStory: true } : {}),
+                } : {}),
+                ...(!castTurn && !outOfStory ? { theaterFreeStory: true } : {}),
             };
             if (isReroll && rerollTarget) {
                 if (cannotRerollStoryReply(rerollTarget, promptEntry)) throw new Error('这条回复已进入记忆归档，请刷新后查看');
@@ -951,7 +956,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
                 }, turnInput, groups, entry.writesToCharacterMemory && castTurn && !outOfStory
                     ? (id, original) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
-                    : undefined);
+                    : undefined,
+                    entry.writesToCharacterMemory && castTurn && !outOfStory ? mirrorRecipientIds : undefined);
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -959,7 +965,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await loadMessages();
             if (outOfStory) return;
             if (entry.writesToCharacterMemory) {
-                if (!isReroll && castTurn) void applyActorMemoryPipeline(castActors);
+                if (!isReroll && castTurn) void applyActorMemoryPipeline(mirrorActors);
                 if (!isReroll && !castTurn) await archiveIfNeeded();
             } else void archiveIfNeeded();
         } catch (error: any) {
