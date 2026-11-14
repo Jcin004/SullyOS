@@ -25,9 +25,9 @@ const ROOM_ICON: Record<PlateRoom, React.ReactNode> = {
 };
 
 const ROOM_HINT: Record<PlateRoom, string> = {
-    user_room: '关于TA的稳定事实：家庭、居住、重要他人、雷区',
+    user_room: '互动对象及其社会关系的稳定事实：个人信息、家庭、亲友、同事',
     self_room: '角色对自己的稳定认知',
-    bedroom:   '关系的质地——只有现象，没有定义',
+    bedroom:   '角色与其他角色之间的亲密情感与关系质地——只记录现象，不定义关系',
     study:     '会什么、在学什么',
 };
 
@@ -68,7 +68,7 @@ interface RoomPlatePanelProps {
     userName?: string;
 }
 
-const RoomPlatePanel: React.FC<RoomPlatePanelProps> = ({ charId, userName }) => {
+const RoomPlatePanel: React.FC<RoomPlatePanelProps> = ({ charId }) => {
     const [plates, setPlates] = useState<Map<PlateRoom, RoomPlate>>(new Map());
     const [loading, setLoading] = useState(true);
     const [editing, setEditing] = useState<{ room: PlateRoom; entryId: string; draft: string } | null>(null);
@@ -243,7 +243,7 @@ const RoomPlatePanel: React.FC<RoomPlatePanelProps> = ({ charId, userName }) => 
                 const plate = plates.get(room);
                 const entries = plate?.entries || [];
                 if (entries.length === 0 && totalEntries === 0) return null;
-                const title = room === 'user_room' && userName ? `关于${userName}` : PLATE_TITLES[room];
+                const title = PLATE_TITLES[room];
                 return (
                     <React.Fragment key={room}>
                         {roomIdx > 0 && totalEntries > 0 && <SectionDivider />}

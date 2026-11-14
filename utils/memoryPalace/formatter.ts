@@ -221,7 +221,7 @@ export async function expandAndFormat(
         console.log(`📌 [MemoryPalace] 便利贴置顶 ${pinnedNodes.length} 条`);
     }
 
-    // 按房间分组（保持房间显示顺序：卧室 > 客厅 > 书房 > 用户房间 > 自我房间 > 阁楼 > 窗台）
+    // 按房间分组（保持房间显示顺序：卧室 > 客厅 > 书房 > 他人的房间 > 自我房间 > 阁楼 > 窗台）
     const byRoom = new Map<string, RenderItem[]>();
     for (const it of finalItems) {
         const arr = byRoom.get(it.room) || [];
