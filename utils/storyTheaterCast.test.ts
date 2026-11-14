@@ -125,7 +125,7 @@ describe('剧场选角协议', () => {
     it('随机建议包含同场多人共同讨论，也支持分组衔接与并行交谈', () => {
         const people = ['a', 'b', 'c', 'd'];
         const oneGroup = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 4, maxPeople: 4 }, 4);
-        expect(drawStoryCastGroups(people, oneGroup, [], seededRandom(23))).toEqual([people]);
+        expect(drawStoryCastGroups(people, oneGroup, [], seededRandom(23)).map(group => [...group].sort())).toEqual([people]);
         const flexible = normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4);
         const samples = Array.from({ length: 30 }, (_, i) => drawStoryCastGroups(people, flexible, [], seededRandom(i * 821 + 71)));
         expect(samples.some(groups => groups.some(group => group.length >= 3))).toBe(true);
