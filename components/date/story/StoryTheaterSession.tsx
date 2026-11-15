@@ -831,7 +831,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 books: selectedBooks, userName: promptIdentityName, charName: requestActorNames.join('、'),
                 history: [...(hasPresetHistory ? historyMessages : []), pendingTurn],
                 render: slots => {
-                    const storyTheaterMode = castTurn ? 'story' as const : rerollOutOfStory ? 'out_of_story' as const : undefined;
+                    const storyTheaterMode = !castEnabled ? undefined : castTurn ? 'story' as const : rerollOutOfStory ? 'out_of_story' as const : undefined;
                     const storyTheaterValues = storyTheaterMode ? buildStoryTheaterPromptValues({
                         actors: requestActors.map(({ id, name }) => ({ id, name })),
                         limits: castLimits,
