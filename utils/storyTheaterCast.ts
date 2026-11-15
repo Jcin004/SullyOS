@@ -335,7 +335,9 @@ export function drawStoryInteractionPlan(
     const pairWeight = (a: string, b: string) => {
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
-        const missed = latestMissed.get(key) > (latestActual.get(key) ?? -1) ? missedPairs.get(key) ?? 0 : 0;
+        const lastMissed = latestMissed.get(key) ?? -1;
+        const lastActual = latestActual.get(key) ?? -1;
+        const missed = lastMissed > lastActual ? missedPairs.get(key) ?? 0 : 0;
         return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9));
     };
     const selected: string[][] = [];
