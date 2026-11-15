@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertStoryRerollBody, buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply } from './storyTheaterCast';
 
 const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
@@ -39,7 +39,7 @@ describe('剧场选角协议', () => {
     it('完整保留正文协议并剥离名单，人数和组数允许不取上限', () => {
         expect(parseStoryCastReply(`<turn_cast>[["c"]]</turn_cast>\n${axes(['c'])}<story_text>她在修表。</story_text>`, ids, limits))
             .toEqual({ groups: [['c']], axes: { c: axis }, body: '<story_text>她在修表。</story_text>' });
-        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2, minPeople: 2, maxPeople: 2 }))).toBe(false); // 两人只有一条不重复的互动关系
+        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2, minPeople: 2, maxPeople: 2 }))).toBe(true); // 两名单人思考组也可以独立成立
     });
 
     it('允许超过五位演员和四个分组，整轮上限以候选池为准', () => {
@@ -53,7 +53,7 @@ describe('剧场选角协议', () => {
             expect(cast.length).toBeGreaterThanOrEqual(6);
             expect(cast.length).toBeLessThanOrEqual(7);
             expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(groups)}</turn_cast>${axes(cast)}正文`, pool, range).groups).toEqual(groups);
-            expect(buildStoryCastInstruction(actors, range, groups)).toContain('整轮去重后共 6～7 位演员');
+            expect(buildStoryTheaterPromptValues({ actors, limits: range, proposals: groups, modeState: '剧情续写' }).theater_cast_data).toContain('出演人数范围：6～7');
         }
         const singleGroup = [pool];
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(singleGroup)}</turn_cast>${axes(pool)}正文`, pool, normalizeStoryCastLimits(undefined, pool.length)).groups).toEqual(singleGroup);
@@ -69,7 +69,9 @@ describe('剧场选角协议', () => {
             `\uFEFF${fence}xml\n${protocol}\n正文\n${fence}`,
             `${fence}xml\n${protocol}\n${fence}\n正文`,
         ]) expect(parseStoryCastReply(output, ids, range)).toEqual({ groups, axes: { a: axis, b: axis }, body: '正文' });
-        expect(drawStoryCastGroups(['a', 'b'], range, [], seededRandom(3))).toEqual([]); // 旧名单仍可读，新的互动关系不会凑三个单人组
+        const soloAndPair = drawStoryCastGroups(['a', 'b'], range, [], seededRandom(3));
+        expect(soloAndPair).toHaveLength(3);
+        expect(soloAndPair.filter(group => group.length === 1)).toHaveLength(2);
         expect(parseStoryCastReply(axes(['a', 'b']) + '正文', ids, range, groups).groups).toEqual(groups);
         expect(parseStoryCastReply(axes(['a']) + '正文', ids, range, groups).axes).toEqual({ a: axis });
         expect(parseStoryCastReply(axes(['a', 'c']) + '正文', ids, range, groups).axes).toEqual({ a: axis });
@@ -106,19 +108,20 @@ describe('剧场选角协议', () => {
         expect(parseStoryCastReply(text, ids, limits).body).toBeTruthy();
     });
 
-    it('互动关系允许一人连接多位对象，不是互斥队伍，背景人物可自由加入正文', () => {
+    it('动态数据只提供候选、建议、范围和历史私轴，不再在代码中生成提示词', () => {
         const links = [['a', 'b'], ['a', 'c'], ['a', 'd']];
         const actors = ids.map(id => ({ id, name: id.toUpperCase() }));
-        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 9, minPeople: 2, maxPeople: 4 }, 4);
-        const instruction = buildStoryCastInstruction(actors, range, links);
+        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 9, minPeople: 1, maxPeople: 4 }, 4);
+        const values = buildStoryTheaterPromptValues({
+            actors, limits: range, proposals: links, modeState: '剧情续写',
+            previousAxes: { a: '仍在找丢失的铅笔盒。' }, prefill: '<scene_header>',
+        });
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(links)}</turn_cast><story_text>正文</story_text>`, ids, range).groups).toEqual(links);
-        expect(instruction).toContain('不是三支小队');
-        expect(instruction).toContain('无需拆成每一对组合');
-        expect(instruction).toContain('共同在场、氛围一致、话题相同，都不自动构成一个组');
-        expect(instruction).toContain('共同讨论');
-        expect(instruction).toContain('背景人物可以自然出现和参与剧情');
-        expect(instruction).toContain('固定三组');
-        expect(instruction).not.toContain('正文仅允许名单中的角色实际出场');
+        expect(values.theater_mode_state).toBe('剧情续写');
+        expect(values.theater_cast_data).toContain(JSON.stringify(links));
+        expect(values.theater_cast_data).toContain('候选角色（ID、姓名）');
+        expect(values.theater_previous_axes).toContain('仍在找丢失的铅笔盒');
+        expect(values.theater_prefill).toContain('<scene_header>');
         expect(normalizeStoryCastLimits(undefined, 8).maxGroups).toBeGreaterThan(4);
     });
 
@@ -131,10 +134,9 @@ describe('剧场选角协议', () => {
         expect(samples.some(groups => groups.some(group => group.length >= 3))).toBe(true);
         expect(samples.some(groups => groups.some(group => group.length === 2))).toBe(true);
         expect(samples.some(groups => groups.length === 2 && groups[0].some(id => groups[1].includes(id)))).toBe(true);
-        const instruction = buildStoryCastInstruction(people.map(id => ({ id, name: id })), flexible, [['a', 'b'], ['b', 'c']]);
-        expect(instruction).toContain('A、B 交流后 B 转向 C');
-        expect(instruction).toContain('A、B 和 C、D 分别交流');
-        expect(instruction).toContain('一个 [A,B,C,D]');
+        expect(samples.some(groups => groups.some(group => group.length === 1))).toBe(true);
+        const values = buildStoryTheaterPromptValues({ actors: people.map(id => ({ id, name: id })), limits: flexible, proposals: [['a', 'b'], ['b', 'c']], modeState: '按最新输入判断' });
+        expect(values.theater_cast_data).toContain('参考分组');
     });
 
     it('随机建议只生成有交流对象的关系，组数不固定，关系可重叠', () => {
@@ -148,24 +150,11 @@ describe('剧场选角协议', () => {
             expect(groups.length).toBeGreaterThanOrEqual(1);
             expect(groups.length).toBeLessThanOrEqual(10);
             expect(new Set(groups.map(group => JSON.stringify([...group].sort()))).size).toBe(groups.length);
-            expect(groups.every(group => group.length >= 2)).toBe(true);
+            expect(groups.every(group => group.length >= 1)).toBe(true);
             expect(new Set(groups.flat()).size).toBeGreaterThanOrEqual(2);
         }
         expect(canDrawStoryCast(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
         expect(drawStoryCastGroups(['a'], normalizeStoryCastLimits(undefined, 1), [])).toEqual([['a']]);
-    });
-
-    it('先输出出演名单、完整剧情，再结算短私轴', () => {
-        const instruction = buildStoryCastInstruction([{ id: 'a', name: '角色A' }], limits, [['a']], '<scene_header>');
-        const cast = instruction.indexOf('先独立输出 <turn_cast>');
-        const story = instruction.indexOf('然后从原预设起始文本开始完整输出剧情正文');
-        const axes = instruction.indexOf('最后输出 <private_axes>');
-        expect(cast).toBeGreaterThanOrEqual(0);
-        expect(story).toBeGreaterThan(cast);
-        expect(axes).toBeGreaterThan(story);
-        expect(instruction).toContain('每个值为一段简短文字');
-        expect(instruction).toContain('出演名单关闭后，正文沿用预设起始文本');
-        expect(instruction).toContain('<scene_header>');
     });
 
     it('剧情末尾的私轴被提取，正文和时间原样保留', () => {
