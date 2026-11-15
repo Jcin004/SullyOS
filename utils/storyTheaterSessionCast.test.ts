@@ -128,8 +128,9 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(await contents(b.id)).toEqual(await contents(a.id));
         expect(await contents(c.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
         expect(payload(2).at(-1)?.role).toBe('user');
-        expect(payload(2).map(row => row.content).join('\n')).toContain('本轮随机建议组合');
-        expect(promptText(2)).toContain('出演名单关闭后，正文沿用预设起始文本');
+        expect(promptText(2)).toContain('候选角色（ID、姓名）');
+        expect(promptText(2)).toContain('参考分组');
+        expect(promptText(2)).toContain('剧情正文起始文本');
         expect(payload(2).map(row => row.content).join('\n').match(/城南钟楼已经停摆/g)).toHaveLength(1);
         expect(container.textContent).toContain('第一幕暗号');
         expect(container.textContent).not.toContain('<turn_cast>');
@@ -148,7 +149,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(13)]);
         expect(lastReference(a.id)).toBe(at(13));
         expect(payload(3).map(row => row.content).join('\n').match(/第一幕暗号/g)).toHaveLength(1);
-        expect(promptText(3)).toContain('各角色最近有效私轴');
+        expect(promptText(3)).toContain('整理旧线索');
 
         const reroll = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!;
         await vi.waitFor(async () => { await flush(); expect(reroll.disabled).toBe(false); });
@@ -159,8 +160,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(lastReference(c.id)).toBe(at(10));
         expect(await contents(thread)).toHaveLength(6);
         expect(mocks.archive).toHaveBeenCalledTimes(6);
-        expect(payload(4).map(row => row.content).join('\n')).toContain('沿用已确定的出演分组');
-        expect(payload(4).map(row => row.content).join('\n')).not.toContain('本轮随机建议组合');
+        expect(promptText(4)).toContain('已确定分组');
+        expect(promptText(4)).not.toContain('参考分组');
         expect(promptText(4)).not.toContain(`"${c.id}":"整理旧线索"`);
 
         await render('other-cast-session');
@@ -190,7 +191,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         const archiveCalls = mocks.archive.mock.calls.length;
         const recallCalls = vi.mocked(retrieveMemories).mock.calls.length;
         await send(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!, 9);
-        expect(payload(8).some(row => row.content.includes('必须继续场外交流'))).toBe(true);
+        expect(promptText(8)).toContain('本轮模式：场外重写');
         expect(payload(8).at(-1)).toEqual({ role: 'user', content: '为什么？' });
         expect(vi.mocked(retrieveMemories)).toHaveBeenCalledTimes(recallCalls);
         expect(container.textContent).toContain('也可以先让读者看见信封。');
@@ -217,7 +218,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await render('other-cast-session');
         await render(entry.id);
         await send(container.querySelector<HTMLButtonElement>('button[aria-label="继续当前剧情"]')!, 10);
-        expect(payload(9).some(row => row.content.includes('本轮使用剧情续写模式'))).toBe(true);
+        expect(promptText(9)).toContain('本轮模式：剧情续写');
         expect(lastReference(c.id)).toBe(at(15));
         expect(promptText(9)).toContain(`"${c.id}":"收拾旧信"`);
         expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15), at(15), at(17)]);
