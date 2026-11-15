@@ -532,21 +532,59 @@ export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
 const STORY_THEATER_SECTION_START = 'nmj-v67-section-theater-start';
 const STORY_THEATER_SECTION_END = 'nmj-v67-section-theater-end';
 
-/** 给旧预设补入可编辑的出演模式区，不覆盖用户已有的提示词。 */
+const LEGACY_THEATER_PROMPT_CONTENT: Record<string, string> = {
+    'nmj-v67-theater-cast': '根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。',
+    'nmj-v67-theater-output': '剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}',
+};
+
+/** 给旧预设补入最新版出演协议；只迁移未被用户改写的旧默认提示词。 */
 export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocument): StoryTheaterPresetDocument => {
-    if (document.prompts.some(prompt => prompt.id === STORY_THEATER_SECTION_START)
-        && document.prompts.some(prompt => prompt.id === STORY_THEATER_SECTION_END)) return document;
     const defaults = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt =>
         prompt.id === STORY_THEATER_SECTION_START
         || prompt.id === STORY_THEATER_SECTION_END
         || prompt.id.startsWith('nmj-v67-theater-'),
     );
-    const existing = new Set(document.prompts.map(prompt => prompt.id));
+    const defaultIds = new Set(defaults.map(prompt => prompt.id));
+    const startIndex = document.prompts.findIndex(prompt => prompt.id === STORY_THEATER_SECTION_START);
+    const endIndex = document.prompts.findIndex(prompt => prompt.id === STORY_THEATER_SECTION_END);
+    if (startIndex >= 0 && endIndex > startIndex) {
+        const existingBlock = document.prompts.slice(startIndex + 1, endIndex);
+        const existingById = new Map(existingBlock.map(prompt => [prompt.id, prompt]));
+        const theaterDefaults = defaults.filter(prompt => prompt.id.startsWith('nmj-v67-theater-'));
+        const migrated = theaterDefaults.map(prompt => {
+            const existing = existingById.get(prompt.id);
+            if (!existing) return { ...prompt };
+            const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[prompt.id];
+            return legacyContent && existing.content === legacyContent
+                ? { ...prompt, ...existing, content: prompt.content, scope: prompt.scope }
+                : existing;
+        });
+        const customPrompts = existingBlock.filter(prompt => !defaultIds.has(prompt.id));
+        return {
+            ...document,
+            prompts: [
+                ...document.prompts.slice(0, startIndex + 1),
+                ...migrated,
+                ...customPrompts,
+                ...document.prompts.slice(endIndex),
+            ],
+        };
+    }
+
+    const existing = new Map(document.prompts.map(prompt => [prompt.id, prompt]));
     const additions = defaults.filter(prompt => !existing.has(prompt.id)).map(prompt => ({ ...prompt }));
-    if (!additions.length) return document;
-    const storyStart = document.prompts.findIndex(prompt => prompt.id === 'nmj-v64-section-story-start');
-    const insertAt = storyStart >= 0 ? storyStart : document.prompts.length;
-    return { ...document, prompts: [...document.prompts.slice(0, insertAt), ...additions, ...document.prompts.slice(insertAt)] };
+    const migrated = document.prompts.map(prompt => {
+        const current = existing.get(prompt.id);
+        const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[prompt.id];
+        const latest = defaults.find(item => item.id === prompt.id);
+        return current && latest && legacyContent && current.content === legacyContent
+            ? { ...current, content: latest.content, scope: latest.scope }
+            : prompt;
+    });
+    if (!additions.length && migrated.every((prompt, index) => prompt === document.prompts[index])) return document;
+    const storyStart = migrated.findIndex(prompt => prompt.id === 'nmj-v64-section-story-start');
+    const insertAt = storyStart >= 0 ? storyStart : migrated.length;
+    return { ...document, prompts: [...migrated.slice(0, insertAt), ...additions, ...migrated.slice(insertAt)] };
 };
 
 export const withBuiltInStoryPresets = (presets: StoryTheaterPreset[]): StoryTheaterPreset[] => [
