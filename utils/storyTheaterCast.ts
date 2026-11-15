@@ -348,7 +348,7 @@ export function buildStoryTheaterPromptValues(input: {
     prefill?: string;
     modeState: string;
 }): Record<string, string> {
-    const nameById = new Map([...(input.candidateActors ?? []), ...input.actors].map(actor => [actor.id, actor.name]));
+    const nameById = new Map<string, string>([...(input.candidateActors ?? []), ...input.actors].map(actor => [actor.id, actor.name] as const));
     const namedGroups = (groups: readonly string[][]) => groups.map(group => group.map(id => ({ id, name: nameById.get(id) ?? id })));
     const castData = JSON.stringify(input.actors.map(({ id, name }) => ({ id, name })));
     const previous = (input.previousInteractions ?? []).slice(-6).map(turn => ({
