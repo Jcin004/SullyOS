@@ -102,6 +102,18 @@ describe('剧情自定义大区', () => {
         expect(promptOrder.indexOf('custom-theater-note')).toBeGreaterThan(promptOrder.indexOf('nmj-v67-theater-cast'));
         expect(promptOrder.indexOf('custom-theater-note')).toBeLessThan(promptOrder.indexOf('nmj-v67-theater-continuity'));
 
+        const previousCastEcho = '按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}\n在 <turn_cast> 中原样输出名单里的角色 ID 一维 JSON 数组。';
+        const previousOutputEcho = '剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}';
+        const previousProtocol = {
+            ...BUILTIN_NIGHT_SCREENING_PRESET.document,
+            prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id === 'nmj-v67-theater-cast'
+                ? { ...prompt, content: previousCastEcho }
+                : prompt.id === 'nmj-v67-theater-output' ? { ...prompt, content: previousOutputEcho } : prompt),
+        };
+        const migratedProtocol = parseStoryTheaterPreset(JSON.stringify(previousProtocol), 'previous-code-cast.json');
+        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content).not.toContain('<turn_cast>');
+        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')?.content).not.toContain('<turn_cast>');
+
         const edited = {
             ...legacy,
             prompts: legacy.prompts.map(prompt => prompt.id === 'nmj-v67-theater-cast'
