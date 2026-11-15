@@ -1034,31 +1034,33 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     <span className='shrink-0 text-[9px] font-bold text-slate-400' title={displayedTokenInfo.exact ? '本轮实际使用的完整上下文' : '按本轮完整上下文估算'}>{displayedTokenInfo.count > 0 ? `${(displayedTokenInfo.count / 1000).toFixed(displayedTokenInfo.count >= 10000 ? 0 : 1)}k` : '—'}</span>
                     <CaretDown size={13} className='shrink-0 text-slate-400 transition-transform group-open:rotate-180' />
                 </summary>
-                <div className='mx-5 mb-3 pt-3 border-t border-slate-200 grid grid-cols-2 gap-x-6 gap-y-3 text-[10px]'>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>你</span><span className='block mt-1 truncate text-slate-600'>{mask.selection.type === 'user' ? '本人' : mask.name}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='block mt-1 truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='block mt-1 truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>完整上下文</span><span className='block mt-1 truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${sending ? '本轮' : '上轮'}${displayedTokenInfo.exact ? '使用' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计全部内容'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
-                    <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
-                </div>
-                <fieldset className='mx-5 mb-3 rounded-xl border border-slate-200 px-3 pb-2'>
-                    <legend className='px-1 text-[10px] font-semibold text-slate-600'>本轮出演名单</legend>
-                    <div className='flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600'>
-                        {actors.map(actor => <div key={actor.id} className='inline-flex items-center gap-1'>
-                            <label className='inline-flex items-center gap-1'><input type='checkbox' checked={currentCastIds.has(actor.id)} disabled />{actor.name}</label>
-                            {latestReply && currentCastIds.has(actor.id) && <button type='button' aria-label={`查看${actor.name}的私轴`}
-                                onClick={() => setAxisViewer({ messageId: latestReply.id, actorId: actor.id })}
-                                className='grid h-9 w-9 place-items-center rounded-full bg-violet-100 text-violet-700'>
-                                {actor.avatar ? <TokenImg value={actor.avatar} alt='' className='h-7 w-7 rounded-full object-cover' /> : actor.name.slice(0, 1)}
-                            </button>}
-                        </div>)}
+                <div className='max-h-[33svh] overflow-y-auto overscroll-y-contain'>
+                    <div className='mx-5 mb-3 pt-3 border-t border-slate-200 grid grid-cols-2 gap-x-6 gap-y-3 text-[10px]'>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>你</span><span className='block mt-1 truncate text-slate-600'>{mask.selection.type === 'user' ? '本人' : mask.name}</span></div>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='block mt-1 truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='block mt-1 truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>完整上下文</span><span className='block mt-1 truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${sending ? '本轮' : '上轮'}${displayedTokenInfo.exact ? '使用' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计全部内容'}</span></div>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
+                        <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
                     </div>
-                    {currentTendencies.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>交流倾向：{currentTendencies.map((group, index) => `关注 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
-                    {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
-                    {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
-                    {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
-                </fieldset>
+                    <fieldset className='mx-5 mb-3 rounded-xl border border-slate-200 px-3 pb-2'>
+                        <legend className='px-1 text-[10px] font-semibold text-slate-600'>本轮出演名单</legend>
+                        <div className='flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600'>
+                            {actors.map(actor => <div key={actor.id} className='inline-flex items-center gap-1'>
+                                <label className='inline-flex items-center gap-1'><input type='checkbox' checked={currentCastIds.has(actor.id)} disabled />{actor.name}</label>
+                                {latestReply && currentCastIds.has(actor.id) && <button type='button' aria-label={`查看${actor.name}的私轴`}
+                                    onClick={() => setAxisViewer({ messageId: latestReply.id, actorId: actor.id })}
+                                    className='grid h-9 w-9 place-items-center rounded-full bg-violet-100 text-violet-700'>
+                                    {actor.avatar ? <TokenImg value={actor.avatar} alt='' className='h-7 w-7 rounded-full object-cover' /> : actor.name.slice(0, 1)}
+                                </button>}
+                            </div>)}
+                        </div>
+                        {currentTendencies.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>交流倾向：{currentTendencies.map((group, index) => `关注 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
+                        {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
+                        {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
+                        {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
+                    </fieldset>
+                </div>
             </details>
         </header>
 
