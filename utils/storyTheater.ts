@@ -625,7 +625,7 @@ const STORY_PRESET_GROUP_SPECS = [
     { key: 'startup', label: '顶部启动框架', description: '破甲、虚构框架、续航与主叙事底座', start: 'nmj-v64-section-startup-start', end: 'nmj-v64-section-startup-end' },
     { key: 'input', label: '输入处理', description: '长片意识、转述、回放与即时接戏', start: 'nmj-v64-section-input-start', end: 'nmj-v64-section-input-end' },
     { key: 'sources', label: '角色与世界', description: '角色卡、世界书、你的身份、场景、示例与历史', start: 'nmj-v64-section-sources-start', end: 'nmj-v64-section-sources-end', protected: true },
-    { key: 'theater', label: '出演模式', description: '本轮名单、分组、人物连续性与私轴协议', start: 'nmj-v67-section-theater-start', end: 'nmj-v67-section-theater-end' },
+    { key: 'theater', label: '出演模式', description: '出演名单、交流倾向、实际互动、人物连续性与私轴协议', start: 'nmj-v67-section-theater-start', end: 'nmj-v67-section-theater-end' },
     { key: 'story', label: '人物与剧情', description: '人物发动机、证据门、推进、对白与纠偏', start: 'nmj-v64-section-story-start', end: 'nmj-v64-section-story-end' },
     { key: 'tone', label: '文风与张力', description: '文风、场景张力、亲密镜头与叠加仲裁', start: 'nmj-v64-section-style-start', end: 'nmj-v64-section-arbitration-end' },
     { key: 'camera', label: '镜头与关系', description: '人称、执笔权与多角色 U→C 关系温度', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
