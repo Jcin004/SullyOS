@@ -34,7 +34,7 @@ describe('剧情自定义大区', () => {
             storyTheaterMode: 'story',
             storyTheaterValues: {
                 theater_mode_state: '剧情续写',
-                theater_cast_data: '候选角色（ID、姓名）：[["a","角色A"]]',
+                theater_cast_data: '[{"id":"a","name":"角色A"}]',
                 theater_prefill: '<scene_header>',
                 theater_previous_axes: '{"a":"继续整理行李"}',
             },
