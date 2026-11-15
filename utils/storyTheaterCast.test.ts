@@ -242,6 +242,12 @@ describe('交流倾向随机调度', () => {
             interactions: [['a', 'b'], ['b', 'c']], axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
         });
         expect(parseStoryTheaterReply('<story_text>没有交流。</story_text>', roster).interactions).toEqual([]);
+        const background = parseStoryTheaterReply(
+            '<interaction_result>[["a","d"]]</interaction_result>' + axes(['a', 'b']),
+            ['a', 'b', 'c', 'd'], ['a', 'b'],
+        );
+        expect(background.interactions).toEqual([['a', 'd']]);
+        expect(Object.keys(background.axes)).toEqual(['a', 'b']);
         expect(() => assertStoryRerollBody('<interaction_result>[]</interaction_result>正文')).toThrow('本轮只需返回正文');
     });
 
@@ -250,16 +256,17 @@ describe('交流倾向随机调度', () => {
             role: 'assistant',
             metadata: {
                 theaterCastIds: ['a', 'b', 'c'],
+                theaterCandidateIds: ['a', 'b', 'c', 'd'],
                 theaterInteractionTendencies: [['a', 'b'], ['a', 'c']],
-                theaterInteractionGroups: [['a', 'c']],
+                theaterInteractionGroups: [['a', 'd']],
             },
         } as any;
         expect(storyCastIdsFromMessage(message)).toEqual(['a', 'b', 'c']);
-        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([['a', 'c']]);
+        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([['a', 'd']]);
         expect(storyInteractionHistoryFromMessage(message)).toEqual({
             castIds: ['a', 'b', 'c'],
             tendencies: [['a', 'b'], ['a', 'c']],
-            actual: [['a', 'c']],
+            actual: [['a', 'd']],
             legacyTendencies: [],
         });
         const legacy = {
