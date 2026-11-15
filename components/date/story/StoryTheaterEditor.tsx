@@ -136,7 +136,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>02 / Cast</div><h2 className='mt-1 text-lg font-semibold'>让谁参与</h2>
-                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮由 AI 从候选池选出演员；你选择的身份始终由你执笔。</p>
+                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮由代码随机确定出演名单与交流倾向，AI 根据人物状态自然发展互动；你选择的身份始终由你执笔。</p>
                 <button disabled={maskLocked || draft.writesToCharacterMemory} onClick={() => onOpenMaskBox(draft)} className='mt-4 w-full p-4 rounded-2xl bg-slate-900 text-white flex items-center gap-3 text-left disabled:cursor-not-allowed'>
                     {resolvedMask.avatar ? <TokenImg value={resolvedMask.avatar} alt='' className='w-11 h-11 rounded-full object-cover' /> : <span className='w-11 h-11 rounded-full bg-white/10 grid place-items-center'><UserCircle size={24} /></span>}
                     <span className='min-w-0 flex-1'><span className='block text-[9px] uppercase tracking-[.18em] text-violet-200'>你</span><strong className='block mt-1 text-sm truncate'>{resolvedMask.selection.type === 'user' ? '本人' : resolvedMask.name}</strong><span className='block mt-1 text-[9px] text-slate-300 truncate'>{resolvedMask.selection.type === 'user' ? '以真实的自己进入剧场' : resolvedMask.selection.type === 'character' ? '扮演已有角色' : '扮演原创人物'}</span></span>
@@ -152,18 +152,18 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
-                            ['minGroups', '最少组数'], ['maxGroups', '最多组数'],
-                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'],
+                            ['minGroups', '最少交流倾向组数'], ['maxGroups', '最多交流倾向组数'],
+                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'], 
                         ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
                             {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
                                 onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}
                                 className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。每组是一条直接交流关系，例如 [A,B]、[A,C]、[A,D]；不是固定小队。人数整轮去重，背景角色仍可自然出场。</p>
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。代码先随机抽出演名单，再根据近期互动历史抽取交流倾向。倾向会影响注意力，不强制对话；角色可以独立行动和思考，背景角色仍可自然出场。</p>
                     {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
                         ? '请填写正整数，且每项最小值不能超过最大值。'
-                        : '当前候选人数不足以构成所设数量的不同直接互动关系（通常每组至少两人）。请调整范围或增加候选。'}</p>}
+                        : '当前候选人数不足以构成所设数量的交流倾向组。请调整范围或增加候选。'}</p>}
                 </fieldset>}
             </section>
             <section className='pt-6 border-t border-slate-200'>
