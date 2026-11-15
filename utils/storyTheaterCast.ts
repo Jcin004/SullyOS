@@ -212,12 +212,11 @@ const groupPairs = (group: readonly string[]): StoryPair[] => {
 
 function maximumTendencyGroups(size: number): number {
     if (size < 1) return 0;
-    if (size === 1) return 1;
-    if (size <= 10) return 2 ** size - size - 1;
+    if (size <= 10) return 2 ** size - 1;
     const choose2 = size * (size - 1) / 2;
     const choose3 = size * (size - 1) * (size - 2) / 6;
     const choose4 = size * (size - 1) * (size - 2) * (size - 3) / 24;
-    return choose2 + choose3 + choose4;
+    return size + choose2 + choose3 + choose4;
 }
 
 function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
@@ -337,7 +336,7 @@ export function drawStoryInteractionPlan(
     if (castIds.length === 1) return { castIds, tendencies: [[castIds[0]]] };
     const options: string[][] = [];
     const maxGroupSize = castIds.length <= 10 ? castIds.length : 4;
-    for (let groupSize = 2; groupSize <= maxGroupSize; groupSize++) {
+    for (let groupSize = 1; groupSize <= maxGroupSize; groupSize++) {
         options.push(...combinations(castIds, groupSize));
     }
     const maxGroups = Math.min(range.maxGroups, options.length);
@@ -356,8 +355,11 @@ export function drawStoryInteractionPlan(
     for (let index = 0; index < groupCount; index++) {
         const next = weightedChoice(remaining, group => {
             const pairs = groupPairs(group);
-            const average = pairs.reduce((sum, [a, b]) => sum + pairWeight(a, b), 0) / Math.max(1, pairs.length);
-            const sizeBias = group.length === 2 ? 1 : 0.38 ** (group.length - 2);
+            // 单人组是独立注意力方向，不代表一段互动；保留较低但非零的抽取权重。
+            const average = pairs.length
+                ? pairs.reduce((sum, [a, b]) => sum + pairWeight(a, b), 0) / pairs.length
+                : 0.72;
+            const sizeBias = group.length === 1 ? 0.28 : group.length === 2 ? 1 : 0.38 ** (group.length - 2);
             return average * sizeBias;
         }, random);
         if (!next) break;
