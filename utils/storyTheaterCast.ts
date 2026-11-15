@@ -41,6 +41,8 @@ export interface StoryInteractionHistoryEntry {
     castIds: string[];
     tendencies: string[][];
     actual: string[][];
+    /** 旧版只有预选分组，作为较弱的模型搭档惯性信号，不计作已发生互动。 */
+    legacyTendencies?: string[][];
 }
 
 export interface StoryInteractionPlan {
@@ -94,10 +96,12 @@ export const storyInteractionHistoryFromMessage = (message?: Message): StoryInte
     const castIds = storyCastIdsFromMessage(message);
     if (!castIds.length) return undefined;
     const allowed = new Set(castIds);
+    const hasActualInteractionField = Array.isArray(message.metadata?.theaterInteractionGroups);
     return {
         castIds,
         tendencies: cleanInteractionGroups(message.metadata?.theaterInteractionTendencies, allowed),
         actual: cleanInteractionGroups(message.metadata?.theaterInteractionGroups, allowed, 2),
+        legacyTendencies: hasActualInteractionField ? [] : cleanInteractionGroups(storyCastFromMessage(message), allowed, 2),
     };
 };
 
@@ -296,6 +300,7 @@ export function drawStoryInteractionPlan(
     if (!range) return { castIds: [], tendencies: [] };
     const appearances = new Map<string, number>();
     const actualPairs = new Map<string, number>();
+    const legacyPairs = new Map<string, number>();
     const missedPairs = new Map<string, number>();
     const latestActual = new Map<string, number>();
     const latestMissed = new Map<string, number>();
@@ -306,6 +311,10 @@ export function drawStoryInteractionPlan(
         for (const key of actual) {
             actualPairs.set(key, (actualPairs.get(key) ?? 0) + decay);
             latestActual.set(key, index);
+        }
+        for (const [a, b] of (turn.legacyTendencies ?? []).flatMap(groupPairs)) {
+            const key = pairKey(a, b);
+            legacyPairs.set(key, (legacyPairs.get(key) ?? 0) + decay);
         }
         for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
             const key = pairKey(a, b);
@@ -335,10 +344,11 @@ export function drawStoryInteractionPlan(
     const pairWeight = (a: string, b: string) => {
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
+        const legacy = legacyPairs.get(key) ?? 0;
         const lastMissed = latestMissed.get(key) ?? -1;
         const lastActual = latestActual.get(key) ?? -1;
         const missed = lastMissed > lastActual ? missedPairs.get(key) ?? 0 : 0;
-        return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9));
+        return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9 + legacy * 0.3));
     };
     const selected: string[][] = [];
     const remaining = [...options];
