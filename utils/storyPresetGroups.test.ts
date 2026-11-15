@@ -71,8 +71,8 @@ describe('剧情自定义大区', () => {
         expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v3-people-have-engines')).toBe(true);
     });
     it('升级已有出演区：迁移旧默认规则、补入交流倾向，并保留用户改写的内容', () => {
-        const oldCast = '根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\\n{{theater_cast_data}}\\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。';
-        const oldOutput = '剧情模式按顺序输出：\\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\\n2. 从预设起始文本开始的完整剧情正文。\\n3. <private_axes>JSON 对象</private_axes>。\\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\\n场外模式只输出 <out_of_story>正文</out_of_story>。\\n剧情正文起始文本（仅剧情模式使用）：\\n{{theater_prefill}}';
+        const oldCast = '根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。';
+        const oldOutput = '剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}';
         const legacy = {
             ...BUILTIN_NIGHT_SCREENING_PRESET.document,
             prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts
