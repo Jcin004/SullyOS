@@ -4,7 +4,7 @@ export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolS
     return {
         minGroups: value?.minGroups ?? 1,
         maxGroups: value?.maxGroups ?? Math.max(4, Math.min(12, poolSize * 2)),
-        minPeople: value?.minPeople ?? 1,
+        minPeople: value?.minPeople ?? (poolSize > 1 ? 2 : 1),
         maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
 }
@@ -311,7 +311,7 @@ export function drawStoryInteractionPlan(
         options.push(...combinations(castIds, groupSize));
     }
     const maxGroups = Math.min(range.maxGroups, options.length);
-    const groupCount = pickInt(range.minGroups, maxGroups);
+    const groupCount = pickInt(range.minGroups, Math.min(maxGroups, options.length));
     const pairWeight = (a: string, b: string) => {
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
