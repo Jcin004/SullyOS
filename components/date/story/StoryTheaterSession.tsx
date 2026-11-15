@@ -54,7 +54,7 @@ import {
     type StoryApiMessage,
     type StoryGenerationSettings,
 } from '../../../utils/storyTheater';
-import { assertStoryRerollBody, buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, STORY_CAST_ACTION_RULE, STORY_OUT_OF_STORY_RULE, STORY_PRIVATE_AXES_RULE, STORY_REPLY_MODE_RULE, storyCastFromMessage, storyCastIds, storyPrivateAxesFromMessage, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, storyCastFromMessage, storyCastIds, storyPrivateAxesFromMessage, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -831,9 +831,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 books: selectedBooks, userName: promptIdentityName, charName: requestActorNames.join('、'),
                 history: [...(hasPresetHistory ? historyMessages : []), pendingTurn],
                 render: slots => {
+                    const storyTheaterMode = castTurn ? 'story' as const : rerollOutOfStory ? 'out_of_story' as const : undefined;
+                    const storyTheaterValues = storyTheaterMode ? buildStoryTheaterPromptValues({
+                        actors: requestActors.map(({ id, name }) => ({ id, name })),
+                        limits: castLimits,
+                        proposals: fixedCast ? [] : proposals,
+                        fixedCast,
+                        previousAxes: Object.fromEntries(previousAxes),
+                        modeState: rerollOutOfStory ? '场外重写' : (isContinueTurn || assistantOpening || fixedCast ? '剧情续写' : '按最新输入判断'),
+                        prefill: storyTheaterMode === 'story' ? effectivePreset.document.assistantPrefill : '',
+                    }) : undefined;
                     compiled = compileStoryPreset({
                         preset: effectivePreset, userName: promptIdentityName, characterNames: requestActorNames,
-                        historyMessages,
+                        historyMessages, storyTheaterMode, storyTheaterValues,
                         slots: {
                             actors: actorContext,
                             persona: [buildTheaterPersona(mask), maskMemoryContext].filter(Boolean).join('\n\n'),
@@ -855,12 +865,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
-                    ...(previousAxes.size ? [{ role: 'system' as const, content: `### 各角色最近有效私轴（按角色 ID）\n${JSON.stringify(Object.fromEntries(previousAxes))}` }] : []),
-                    ...(rerollOutOfStory || castTurn ? [{ role: 'system' as const, content: rerollOutOfStory
-                        ? `本轮是重写上一条场外回复，必须继续场外交流。\n${STORY_OUT_OF_STORY_RULE}`
-                        : fixedCast
-                        ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接按原预设生成完整剧情，最后更新私轴。\n${STORY_PRIVATE_AXES_RULE}\n${STORY_CAST_ACTION_RULE}${compiled.assistantPrefill ? `\n剧情正文以此开头：${compiled.assistantPrefill.content}` : ''}`
-                        : buildStoryCastInstruction(actors, castLimits, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening) }] : []),
                     ];
                     // 关闭出演模式：和官方原版一样，所有剧情请求都保留原生助手预填。
                     const nativePrefill = !castTurn && !rerollOutOfStory
