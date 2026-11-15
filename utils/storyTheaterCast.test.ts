@@ -55,6 +55,7 @@ describe('剧场选角协议', () => {
             expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(groups)}</turn_cast>${axes(cast)}正文`, pool, range).groups).toEqual(groups);
             const promptValues = buildStoryTheaterPromptValues({ actors, candidateActors: actors, limits: range, proposals: groups, modeState: '剧情续写' });
             expect(promptValues.theater_cast_data).toContain('"id":"a"');
+            expect(promptValues.theater_candidate_data).toContain('"id":"a"');
             expect(promptValues.theater_interaction_tendencies).toContain('"id":"a"');
         }
         const singleGroup = [pool];
@@ -121,6 +122,7 @@ describe('剧场选角协议', () => {
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(links)}</turn_cast><story_text>正文</story_text>`, ids, range).groups).toEqual(links);
         expect(values.theater_mode_state).toBe('剧情续写');
         expect(values.theater_cast_data).toContain('"id":"a"');
+        expect(values.theater_candidate_data).toContain('"id":"a"');
         expect(values.theater_interaction_tendencies).toContain('"id":"a"');
         expect(values.theater_previous_axes).toContain('仍在找丢失的铅笔盒');
         expect(values.theater_prefill).toContain('<scene_header>');
