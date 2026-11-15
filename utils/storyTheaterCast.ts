@@ -253,20 +253,30 @@ function weightedChoice<T>(items: readonly T[], weightOf: (item: T) => number, r
 }
 
 export function collectUnrealizedStoryTendencies(history: readonly StoryInteractionHistoryEntry[], limit = 8): string[][] {
-    const pending = new Map<string, { pair: string[]; score: number }>();
     const recent = history.slice(-8);
-    [...recent].reverse().forEach((turn, index) => {
-        const decay = (8 - index) / 8;
+    const latestActual = new Map<string, number>();
+    const missedEvents = new Map<string, { pair: string[]; index: number; score: number }[]>();
+    recent.forEach((turn, index) => {
+        const decay = (index + 1) / Math.max(1, recent.length);
         const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
+        for (const key of actual) latestActual.set(key, index);
         for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
             const key = pairKey(a, b);
             if (actual.has(key)) continue;
-            const item = pending.get(key) ?? { pair: [a, b], score: 0 };
-            item.score += decay;
-            pending.set(key, item);
+            const events = missedEvents.get(key) ?? [];
+            events.push({ pair: [a, b], index, score: decay });
+            missedEvents.set(key, events);
         }
     });
-    return [...pending.values()].sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit)).map(item => item.pair);
+    return [...missedEvents.entries()]
+        .map(([key, events]) => ({
+            pair: events[events.length - 1].pair,
+            score: events.filter(event => event.index > (latestActual.get(key) ?? -1)).reduce((sum, event) => sum + event.score, 0),
+        }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Math.max(0, limit))
+        .map(item => item.pair);
 }
 
 /**
@@ -285,14 +295,22 @@ export function drawStoryInteractionPlan(
     const appearances = new Map<string, number>();
     const actualPairs = new Map<string, number>();
     const missedPairs = new Map<string, number>();
-    [...history.slice(-8)].reverse().forEach((turn, index) => {
-        const decay = (8 - index) / 8;
+    const latestActual = new Map<string, number>();
+    const latestMissed = new Map<string, number>();
+    history.slice(-8).forEach((turn, index, recent) => {
+        const decay = (index + 1) / Math.max(1, recent.length);
         for (const id of turn.castIds) appearances.set(id, (appearances.get(id) ?? 0) + decay);
         const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
-        for (const key of actual) actualPairs.set(key, (actualPairs.get(key) ?? 0) + decay);
+        for (const key of actual) {
+            actualPairs.set(key, (actualPairs.get(key) ?? 0) + decay);
+            latestActual.set(key, index);
+        }
         for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
             const key = pairKey(a, b);
-            if (!actual.has(key)) missedPairs.set(key, (missedPairs.get(key) ?? 0) + decay);
+            if (!actual.has(key)) {
+                missedPairs.set(key, (missedPairs.get(key) ?? 0) + decay);
+                latestMissed.set(key, index);
+            }
         }
     });
 
@@ -315,7 +333,7 @@ export function drawStoryInteractionPlan(
     const pairWeight = (a: string, b: string) => {
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
-        const missed = missedPairs.get(key) ?? 0;
+        const missed = latestMissed.get(key) > (latestActual.get(key) ?? -1) ? missedPairs.get(key) ?? 0 : 0;
         return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9));
     };
     const selected: string[][] = [];
