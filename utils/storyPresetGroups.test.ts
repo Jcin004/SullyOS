@@ -65,7 +65,7 @@ describe('剧情自定义大区', () => {
         const imported = parseStoryTheaterPreset(JSON.stringify(legacy), 'legacy.json');
         expect(getStoryPresetPromptGroups(imported.document).some(group => group.key === 'theater')).toBe(true);
         expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v67-theater-cast')).toBe(true);
-        expect(imported.document.prompts.some(prompt => prompt.content.includes('每个人都有自己的发动机'))).toBe(true);
+        expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v3-people-have-engines')).toBe(true);
     });
 
     it('保留内置区的保护规则，不允许把系统连接位移出或将普通条目移入', () => {
