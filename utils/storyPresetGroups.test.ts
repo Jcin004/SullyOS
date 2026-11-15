@@ -51,7 +51,7 @@ describe('剧情自定义大区', () => {
         expect(contents.join('\n')).toContain('剧情续写');
         expect(contents.join('\n')).toContain('继续整理行李');
         expect(contents.join('\n')).toContain('<interaction_result>');
-        expect(contents.join('\n')).toContain('{{theater_interaction_tendencies}}');
+        expect(contents.join('\n')).toContain('本轮交流倾向：');
         expect(contents.join('\n')).toContain('<scene_header>');
         const outOfStory = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: [],
