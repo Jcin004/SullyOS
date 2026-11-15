@@ -202,7 +202,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n优先留意交流倾向中的人物，利用自然出现的言行、共同事务和话题创造接触机会。适当降低近期反复搭档的注意力权重。让角色自行决定是否开口、回应、加入或离开，保留独立行动与单人思考。单人组表示独立关注，不安排对话。"
+                        "content": "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n每组中的人物是本轮优先留意的交流对象；多人组关注共同讨论，重叠组允许交流对象转移。优先留意这些人物，利用自然出现的言行、共同事务和话题创造接触机会。适当降低近期反复搭档的注意力权重。让角色自行决定是否开口、回应、加入或离开，保留独立行动与单人思考。单人组表示独立关注，不安排对话。"
                     },
                     {
                         "id": "nmj-v67-theater-continuity",
