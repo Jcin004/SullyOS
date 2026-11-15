@@ -1041,12 +1041,12 @@ export const DB = {
   commitStoryTheaterTurn: async (
       reply: Omit<Message, 'id'>,
       pending: Message | undefined,
-      groups: string[][],
+      castIds: string[],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
       mirrorRecipientIds?: readonly string[],
   ): Promise<void> => {
     const db = await openDB();
-    const actorIds = [...new Set(mirrorRecipientIds ?? groups.flat())];
+    const actorIds = [...new Set(mirrorRecipientIds ?? castIds)];
     return new Promise((resolve, reject) => {
         const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
@@ -1078,7 +1078,10 @@ export const DB = {
             }
             const finish = () => store.put({ ...original, metadata: {
                 ...original.metadata,
-                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : groups.length ? { theaterCastGroups: groups } : {}),
+                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : castIds.length ? {
+                    theaterCastIds: reply.metadata?.theaterCastIds ?? castIds,
+                    ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
+                } : {}),
                 ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
                 ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
             } });
