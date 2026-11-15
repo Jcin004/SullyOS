@@ -25,7 +25,7 @@ describe('剧情自定义大区', () => {
         const group = getStoryPresetPromptGroups(document).find(item => item.key === 'theater');
         expect(group?.label).toBe('出演模式');
         const scoped = document.prompts.filter(prompt => prompt.scope);
-        expect(scoped.length).toBe(6);
+        expect(scoped.length).toBe(7);
         const off = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: ['角色'], slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
         expect(off.messages.map(row => row.content).join('\n')).not.toContain('根据用户最新输入选择剧情模式');
         const on = compileStoryPreset({
@@ -45,9 +45,10 @@ describe('剧情自定义大区', () => {
         const tendencyIndex = contents.findIndex(value => value.includes('本轮交流倾向：'));
         const continuityIndex = contents.findIndex(value => value.includes('保持人物的时间、位置'));
         const outputIndex = contents.findIndex(value => value.includes('剧情模式按顺序输出'));
+        const recordIndex = contents.findIndex(value => value.includes('在剧情正文结束后、私轴之前输出'));
         const axesIndex = contents.findIndex(value => value.includes('读取并承接各角色最近的私轴'));
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, axesIndex].every(index => index >= 0)).toBe(true);
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, axesIndex])].sort((a, b) => a - b));
+        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex].every(index => index >= 0)).toBe(true);
+        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex])].sort((a, b) => a - b));
         expect(contents.join('\n')).toContain('剧情续写');
         expect(contents.join('\n')).toContain('继续整理行李');
         expect(contents.join('\n')).toContain('<interaction_result>');
@@ -61,6 +62,7 @@ describe('剧情自定义大区', () => {
         });
         expect(outOfStory.messages.map(row => row.content).join('\n')).toContain('场外模式只输出');
         expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('按代码预先确定的出演名单');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('在剧情正文结束后、私轴之前输出');
     });
 
     it('旧预设在解析时补入出演模式区，不覆盖已有提示词', () => {
@@ -89,7 +91,7 @@ describe('剧情自定义大区', () => {
         const cast = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')!;
         const output = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')!;
         expect(cast.content).toContain('按代码预先确定的出演名单');
-        expect(output.content).toContain('<interaction_result>');
+        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('<interaction_result>');
         expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')).toBe(true);
         const promptOrder = imported.document.prompts.map(prompt => prompt.id);
         expect(promptOrder.indexOf('custom-theater-note')).toBeGreaterThan(promptOrder.indexOf('nmj-v67-theater-cast'));
