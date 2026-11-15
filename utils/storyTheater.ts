@@ -544,7 +544,6 @@ export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocu
         || prompt.id === STORY_THEATER_SECTION_END
         || prompt.id.startsWith('nmj-v67-theater-'),
     );
-    const defaultIds = new Set(defaults.map(prompt => prompt.id));
     const startIndex = document.prompts.findIndex(prompt => prompt.id === STORY_THEATER_SECTION_START);
     const endIndex = document.prompts.findIndex(prompt => prompt.id === STORY_THEATER_SECTION_END);
     if (startIndex >= 0 && endIndex > startIndex) {
