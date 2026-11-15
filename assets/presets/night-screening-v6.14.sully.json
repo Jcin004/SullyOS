@@ -174,6 +174,60 @@
                         "content":  ""
                     },
                     {
+                        "id": "nmj-v67-section-theater-start",
+                        "name": "🧩↓出演模式｜回复／分组／连续性／输出",
+                        "enabled": false,
+                        "role": "system",
+                        "content": ""
+                    },
+                    {
+                        "id": "nmj-v67-theater-mode",
+                        "name": "🎭出演模式｜回复模式",
+                        "enabled": true,
+                        "role": "system",
+                        "scope": "story_theater",
+                        "content": "根据用户最新输入选择剧情模式或场外模式。用户要求继续、推进剧情或给出角色行动时，执行剧情模式；用户明确讨论设定、写作或退出剧情时，执行场外模式。每轮只执行一种模式。\n本轮模式：{{theater_mode_state}}\n场外模式时，不执行出演、正文和私轴协议。"
+                    },
+                    {
+                        "id": "nmj-v67-theater-cast",
+                        "name": "🎭出演模式｜本轮名单与分组",
+                        "enabled": true,
+                        "role": "system",
+                        "scope": "story_theater_story",
+                        "content": "根据候选角色与当前剧情，决定本轮出演名单和分组。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。"
+                    },
+                    {
+                        "id": "nmj-v67-theater-continuity",
+                        "name": "🎭出演模式｜人物连续性",
+                        "enabled": true,
+                        "role": "system",
+                        "scope": "story_theater_story",
+                        "content": "保持人物的时间、位置、动作和身体状态连续。人物加入、离开或转向另一段交流时，写出动作与空间衔接。让未列入名单的背景角色按剧情自然出场。"
+                    },
+                    {
+                        "id": "nmj-v67-theater-output",
+                        "name": "🎭出演模式｜输出顺序",
+                        "enabled": true,
+                        "role": "system",
+                        "scope": "story_theater",
+                        "content": "剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}"
+                    },
+                    {
+                        "id": "nmj-v67-theater-private-axes",
+                        "name": "🎭出演模式｜私轴更新",
+                        "enabled": true,
+                        "role": "system",
+                        "scope": "story_theater_story",
+                        "content": "读取并承接各角色最近的私轴：\n{{theater_previous_axes}}\n剧情结束后，为本轮出演名单中的每位角色更新一条简短私轴，记录角色自己的生活事务、思考、外界影响和行动。保留仍在继续的事项和念头。使用 JSON 对象，以角色 ID 为键，值为简短文字，放在 <private_axes> 中。直接输出标签与 JSON，不加代码围栏或说明。"
+                    },
+                    {
+                        "id": "nmj-v67-section-theater-end",
+                        "name": "🧩↑出演模式｜结束",
+                        "enabled": false,
+                        "role": "system",
+                        "content": ""
+                    },
+                    {
                         "id":  "nmj-v64-section-story-start",
                         "name":  "🧩↓人物与剧情｜人物／证据／推进／可玩性／对白／纠偏／自填",
                         "enabled":  false,
