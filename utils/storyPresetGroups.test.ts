@@ -35,6 +35,7 @@ describe('剧情自定义大区', () => {
             storyTheaterValues: {
                 theater_mode_state: '剧情续写',
                 theater_cast_data: '[{"id":"a","name":"角色A"}]',
+                theater_candidate_data: '[{"id":"a","name":"角色A"},{"id":"b","name":"背景角色B"}]',
                 theater_prefill: '<scene_header>',
                 theater_previous_axes: '{"a":"继续整理行李"}',
             },
@@ -53,6 +54,7 @@ describe('剧情自定义大区', () => {
         expect(contents.join('\n')).toContain('继续整理行李');
         expect(contents.join('\n')).toContain('<interaction_result>');
         expect(contents.join('\n')).toContain('本轮交流倾向：');
+        expect(contents.join('\n')).toContain('背景角色B');
         expect(contents.join('\n')).toContain('<scene_header>');
         const outOfStory = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: [],
