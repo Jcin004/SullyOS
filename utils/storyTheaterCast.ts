@@ -221,7 +221,9 @@ function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): 
     let minPeople = Math.max(1, limits.minPeople);
     while (minPeople <= maxPeople && maximumTendencyGroups(minPeople) < limits.minGroups) minPeople++;
     if (minPeople > maxPeople) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, maximumTendencyGroups(maxPeople)) };
+    const maxGroups = Math.min(limits.maxGroups, maximumTendencyGroups(maxPeople));
+    if (limits.minGroups > maxGroups) return undefined;
+    return { ...limits, minPeople, maxPeople, maxGroups };
 }
 
 export function canDrawStoryInteractionPlan(poolSize: number, limits: StoryCastLimits): boolean {
