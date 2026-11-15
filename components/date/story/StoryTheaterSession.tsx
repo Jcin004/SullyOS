@@ -707,10 +707,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const fixedMessage = isReroll ? latest : retry ? latest : undefined;
             const rerollOutOfStory = isReroll && latest.metadata?.theaterOutOfStory === true;
             // 重试与重写沿用原轮预先抽出的出演名单和交流倾向。
-            const fixedCastIds = rerollOutOfStory || (!isReroll && !castEnabled)
+            const reuseFixedPlan = isReroll || retry;
+            const fixedCastIds = rerollOutOfStory || (!reuseFixedPlan && !castEnabled)
                 ? undefined : storyCastIdsFromMessage(fixedMessage);
             const fixedTendencies = fixedMessage ? storyInteractionTendenciesFromMessage(fixedMessage) : [];
-            const castTurn = !rerollOutOfStory && (isReroll ? Boolean(fixedCastIds?.length) : castEnabled);
+            const castTurn = !rerollOutOfStory && (reuseFixedPlan ? Boolean(fixedCastIds?.length) || castEnabled : castEnabled);
             const interactionHistory: StoryInteractionHistoryEntry[] = before
                 .filter(message => message.role === 'assistant' && !message.metadata?.theaterOutOfStory)
                 .map(storyInteractionHistoryFromMessage)
@@ -837,7 +838,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 books: selectedBooks, userName: promptIdentityName, charName: requestActorNames.join('、'),
                 history: [...(hasPresetHistory ? historyMessages : []), pendingTurn],
                 render: slots => {
-                    const storyTheaterMode = !castEnabled ? undefined : castTurn ? 'story' as const : rerollOutOfStory ? 'out_of_story' as const : undefined;
+                    const storyTheaterMode = castTurn ? 'story' as const : rerollOutOfStory ? 'out_of_story' as const : undefined;
                     const storyTheaterValues = storyTheaterMode ? buildStoryTheaterPromptValues({
                         actors: requestActors.map(({ id, name }) => ({ id, name })),
                         candidateActors: actors.map(({ id, name }) => ({ id, name })),
