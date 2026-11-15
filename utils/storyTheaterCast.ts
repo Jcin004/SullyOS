@@ -101,7 +101,7 @@ export const storyInteractionHistoryFromMessage = (message?: Message): StoryInte
     return {
         castIds,
         tendencies: cleanInteractionGroups(message.metadata?.theaterInteractionTendencies, allowed),
-        actual: cleanInteractionGroups(message.metadata?.theaterInteractionGroups, allowed, 2),
+        actual: storyActualInteractionGroupsFromMessage(message),
         legacyTendencies: hasActualInteractionField ? [] : cleanInteractionGroups(storyCastFromMessage(message), allowed, 2),
     };
 };
