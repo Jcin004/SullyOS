@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import { DB } from '../../../utils/db';
 import { storyTheaterThreadId } from '../../../utils/storyTheater';
-import { canDrawStoryCast, normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
+import { canDrawStoryInteractionPlan, normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
 import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
@@ -62,7 +62,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
     const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
     const validCastLimits = validStoryCastLimits(castLimits);
     const castEnabled = draft.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryCast(actors.length, castLimits);
+    const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
