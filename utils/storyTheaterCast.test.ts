@@ -208,12 +208,19 @@ describe('交流倾向随机调度', () => {
             people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(7 + index * 31),
         ));
         expect(plans.every(plan => plan.castIds.length === 4 && plan.tendencies.length === 3)).toBe(true);
-        expect(plans.every(plan => plan.tendencies.every(group => group.length >= 2))).toBe(true);
+        expect(plans.every(plan => plan.tendencies.every(group => group.length >= 1))).toBe(true);
+        expect(plans.some(plan => plan.tendencies.some(group => group.length === 1))).toBe(true);
         expect(plans.some(plan => plan.tendencies.some(group => group.length > 2))).toBe(true);
         expect(canDrawStoryInteractionPlan(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
-        expect(canDrawStoryInteractionPlan(2, normalizeStoryCastLimits({ minGroups: 2, maxGroups: 4, minPeople: 1, maxPeople: 2 }, 2))).toBe(false);
+        expect(canDrawStoryInteractionPlan(2, normalizeStoryCastLimits({ minGroups: 2, maxGroups: 4, minPeople: 1, maxPeople: 2 }, 2))).toBe(true);
         expect(drawStoryInteractionPlan(['solo'], normalizeStoryCastLimits(undefined, 1), [], seededRandom(1)))
             .toEqual({ castIds: ['solo'], tendencies: [['solo']] });
+        const twoPersonPlan = drawStoryInteractionPlan(
+            ['a', 'b'], normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3, minPeople: 2, maxPeople: 2 }, 2), [], seededRandom(17),
+        );
+        expect(twoPersonPlan.castIds).toHaveLength(2);
+        expect(twoPersonPlan.tendencies).toHaveLength(2);
+        expect(twoPersonPlan.tendencies.every(group => group.length >= 1 && group.length <= 2)).toBe(true);
     });
 
     it('近期真实互动降低旧搭档权重，未实现倾向会暂时获得探索加成', () => {
