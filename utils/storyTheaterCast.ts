@@ -384,6 +384,7 @@ export function buildStoryTheaterPromptValues(input: {
     const nameById = new Map<string, string>([...(input.candidateActors ?? []), ...input.actors].map(actor => [actor.id, actor.name] as const));
     const namedGroups = (groups: readonly string[][]) => groups.map(group => group.map(id => ({ id, name: nameById.get(id) ?? id })));
     const castData = JSON.stringify(input.actors.map(({ id, name }) => ({ id, name })));
+    const candidateData = JSON.stringify((input.candidateActors ?? input.actors).map(({ id, name }) => ({ id, name })));
     const previous = (input.previousInteractions ?? []).slice(-6).map(turn => ({
         cast: turn.castIds.map(id => ({ id, name: nameById.get(id) ?? id })),
         actual: namedGroups(turn.actual),
@@ -391,6 +392,7 @@ export function buildStoryTheaterPromptValues(input: {
     return {
         theater_mode_state: input.modeState,
         theater_cast_data: castData,
+        theater_candidate_data: candidateData,
         theater_interaction_tendencies: JSON.stringify(namedGroups(input.proposals)),
         theater_previous_interactions: JSON.stringify(previous),
         theater_unrealized_tendencies: JSON.stringify(namedGroups(input.unrealizedTendencies ?? [])),
