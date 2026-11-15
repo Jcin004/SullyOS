@@ -751,7 +751,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             charId: threadId, role: 'user', type: 'text', content: text,
                             metadata: {
                                 source: 'story_theater', theaterId: entry.id,
-                                ...(castTurn ? { theaterCastIds: selectedCastIds, theaterInteractionTendencies: interactionTendencies } : {}),
+                                ...(castTurn ? { theaterCastIds: selectedCastIds, theaterCandidateIds: actors.map(actor => actor.id), theaterInteractionTendencies: interactionTendencies } : {}),
                                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                                 ...(isContinueTurn ? { theaterContinue: true } : {}),
                             },
@@ -919,7 +919,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const { interactions, body, axes } = outOfStory
                 ? { interactions: [], body: outOfStoryBody, axes: undefined }
                 : castTurn
-                    ? parseStoryTheaterReply(generated, selectedCastIds)
+                    ? parseStoryTheaterReply(generated, actors.map(actor => actor.id), selectedCastIds)
                     : { interactions: [], body: assertStoryRerollBody(generated), axes: undefined };
             const castActors = requestActors;
             const mirrorRecipientIds = castTurn && !outOfStory ? selectedCastIds : [];
@@ -952,6 +952,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
                     theaterCastIds: selectedCastIds,
+                    theaterCandidateIds: actors.map(actor => actor.id),
                     theaterInteractionTendencies: interactionTendencies,
                     theaterInteractionGroups: interactions,
                 } : {}),
