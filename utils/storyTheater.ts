@@ -308,6 +308,7 @@ const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPreset
             section: { id: String(prompt.section.id), name: String(prompt.section.name || '自定义分组'), edge: prompt.section.edge },
         } : {}),
         ...(NATIVE_MARKERS.includes(prompt?.marker) ? { marker: prompt.marker } : {}),
+        ...(prompt?.scope === 'story_theater' || prompt?.scope === 'story_theater_story' ? { scope: prompt.scope } : {}),
     }));
     if (prompts.length === 0) throw new Error('预设中没有提示词条目');
     return {
@@ -528,6 +529,26 @@ export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
     updatedAt: 0,
 };
 
+const STORY_THEATER_SECTION_START = 'nmj-v67-section-theater-start';
+const STORY_THEATER_SECTION_END = 'nmj-v67-section-theater-end';
+
+/** 给旧预设补入可编辑的出演模式区，不覆盖用户已有的提示词。 */
+export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocument): StoryTheaterPresetDocument => {
+    if (document.prompts.some(prompt => prompt.id === STORY_THEATER_SECTION_START)
+        && document.prompts.some(prompt => prompt.id === STORY_THEATER_SECTION_END)) return document;
+    const defaults = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt =>
+        prompt.id === STORY_THEATER_SECTION_START
+        || prompt.id === STORY_THEATER_SECTION_END
+        || prompt.id.startsWith('nmj-v67-theater-'),
+    );
+    const existing = new Set(document.prompts.map(prompt => prompt.id));
+    const additions = defaults.filter(prompt => !existing.has(prompt.id)).map(prompt => ({ ...prompt }));
+    if (!additions.length) return document;
+    const storyStart = document.prompts.findIndex(prompt => prompt.id === 'nmj-v64-section-story-start');
+    const insertAt = storyStart >= 0 ? storyStart : document.prompts.length;
+    return { ...document, prompts: [...document.prompts.slice(0, insertAt), ...additions, ...document.prompts.slice(insertAt)] };
+};
+
 export const withBuiltInStoryPresets = (presets: StoryTheaterPreset[]): StoryTheaterPreset[] => [
     BUILTIN_NIGHT_SCREENING_PRESET,
     ...presets.filter(preset => !preset.id.startsWith('builtin-night-screening')),
@@ -541,15 +562,15 @@ export const resolveStoryPresetDocument = (
     preset: StoryTheaterPreset,
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
-    if (!override) return preset.document;
-    if (!preset.builtIn) return override;
+    if (!override) return ensureStoryTheaterPromptSection(preset.document);
+    if (!preset.builtIn) return ensureStoryTheaterPromptSection(override);
     const enabledById = new Map(override.prompts.map(prompt => [prompt.id, prompt.enabled]));
-    return {
+    return ensureStoryTheaterPromptSection({
         ...preset.document,
         prompts: preset.document.prompts.map(prompt => enabledById.has(prompt.id)
             ? { ...prompt, enabled: enabledById.get(prompt.id) === true }
             : prompt),
-    };
+    });
 };
 
 export const parseStoryTheaterPreset = (rawText: string, sourceFileName: string, now: number = Date.now()): StoryTheaterPreset => {
@@ -558,29 +579,30 @@ export const parseStoryTheaterPreset = (rawText: string, sourceFileName: string,
     try { data = JSON.parse(rawText); } catch { throw new Error('不是有效的 JSON 预设'); }
     const fileBase = sourceFileName.replace(/\.json$/i, '').trim() || '导入预设';
     if (data.schema !== 'sullyos.story-preset') throw new Error('只接受糯米机剧情预设（schema: sullyos.story-preset）');
-    const document = normalizeDocument(data, fileBase);
+    const document = ensureStoryTheaterPromptSection(normalizeDocument(data, fileBase));
     return { id: makeStoryTheaterId(), name: document.name, sourceFileName, format: 'sullyos-story-preset', document, createdAt: now, updatedAt: now };
 };
 
-export const createBlankStoryPreset = (name = '新剧情预设', now = Date.now()): StoryTheaterPreset => ({
-    id: makeStoryTheaterId(), name, format: 'sullyos-story-preset', createdAt: now, updatedAt: now,
-    document: {
-        schema: 'sullyos.story-preset', version: 1, name,
+export const createBlankStoryPreset = (name = '新剧情预设', now = Date.now()): StoryTheaterPreset => {
+    const document = ensureStoryTheaterPromptSection({
+        schema: 'sullyos.story-preset' as const, version: 1 as const, name,
         generation: { temperature: 0.9, topP: 1, frequencyPenalty: 0, presencePenalty: 0, maxTokens: 8000 },
         prompts: [
-            { id: makeStoryTheaterId(), name: '主叙事规则', enabled: true, role: 'system', content: '直接续写连续的第三人称故事，让人物保持独立动机与知识边界。' },
-            { id: makeStoryTheaterId(), name: '世界书 · 角色设定前', enabled: true, role: 'system', content: '', marker: 'world_before' },
-            { id: makeStoryTheaterId(), name: '角色资料', enabled: true, role: 'system', content: '', marker: 'characters' },
-            { id: makeStoryTheaterId(), name: '世界书', enabled: true, role: 'system', content: '', marker: 'world_after' },
-            { id: makeStoryTheaterId(), name: '剧情设定', enabled: true, role: 'system', content: '', marker: 'scenario' },
-            { id: makeStoryTheaterId(), name: '聊天历史', enabled: true, role: 'system', content: '', marker: 'history' },
+            { id: makeStoryTheaterId(), name: '主叙事规则', enabled: true, role: 'system' as const, content: '直接续写连续的第三人称故事，让人物保持独立动机与知识边界。' },
+            { id: makeStoryTheaterId(), name: '世界书 · 角色设定前', enabled: true, role: 'system' as const, content: '', marker: 'world_before' as const },
+            { id: makeStoryTheaterId(), name: '角色资料', enabled: true, role: 'system' as const, content: '', marker: 'characters' as const },
+            { id: makeStoryTheaterId(), name: '世界书', enabled: true, role: 'system' as const, content: '', marker: 'world_after' as const },
+            { id: makeStoryTheaterId(), name: '剧情设定', enabled: true, role: 'system' as const, content: '', marker: 'scenario' as const },
+            { id: makeStoryTheaterId(), name: '聊天历史', enabled: true, role: 'system' as const, content: '', marker: 'history' as const },
         ],
-    },
-});
+    });
+    return { id: makeStoryTheaterId(), name, format: 'sullyos-story-preset', createdAt: now, updatedAt: now, document };
+};
 
 export const duplicateStoryPreset = (preset: StoryTheaterPreset, now = Date.now()): StoryTheaterPreset => {
     const name = `${preset.name} · 副本`;
-    return { ...preset, id: makeStoryTheaterId(), name, builtIn: false, sourceFileName: undefined, document: { ...preset.document, name, prompts: preset.document.prompts.map(prompt => ({ ...prompt })) }, createdAt: now, updatedAt: now };
+    const document = ensureStoryTheaterPromptSection(preset.document);
+    return { ...preset, id: makeStoryTheaterId(), name, builtIn: false, sourceFileName: undefined, document: { ...document, name, prompts: document.prompts.map(prompt => ({ ...prompt })) }, createdAt: now, updatedAt: now };
 };
 
 export const getPresetPromptStats = (preset?: StoryTheaterPreset | null): { total: number; enabled: number; scripts: number } => {
@@ -603,6 +625,7 @@ const STORY_PRESET_GROUP_SPECS = [
     { key: 'startup', label: '顶部启动框架', description: '破甲、虚构框架、续航与主叙事底座', start: 'nmj-v64-section-startup-start', end: 'nmj-v64-section-startup-end' },
     { key: 'input', label: '输入处理', description: '长片意识、转述、回放与即时接戏', start: 'nmj-v64-section-input-start', end: 'nmj-v64-section-input-end' },
     { key: 'sources', label: '角色与世界', description: '角色卡、世界书、你的身份、场景、示例与历史', start: 'nmj-v64-section-sources-start', end: 'nmj-v64-section-sources-end', protected: true },
+    { key: 'theater', label: '出演模式', description: '本轮名单、分组、人物连续性与私轴协议', start: 'nmj-v67-section-theater-start', end: 'nmj-v67-section-theater-end' },
     { key: 'story', label: '人物与剧情', description: '人物发动机、证据门、推进、对白与纠偏', start: 'nmj-v64-section-story-start', end: 'nmj-v64-section-story-end' },
     { key: 'tone', label: '文风与张力', description: '文风、场景张力、亲密镜头与叠加仲裁', start: 'nmj-v64-section-style-start', end: 'nmj-v64-section-arbitration-end' },
     { key: 'camera', label: '镜头与关系', description: '人称、执笔权与多角色 U→C 关系温度', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
@@ -611,7 +634,7 @@ const STORY_PRESET_GROUP_SPECS = [
     { key: 'exit', label: '出口与收尾', description: '出口检查、核心续写与定义增强', start: 'nmj-v64-section-exit-start', end: 'enhanceDefinitions' },
 ] as const;
 
-export const isStoryPresetSectionMarker = (prompt: StoryTheaterPresetPrompt): boolean => Boolean(prompt.section) || /^nmj-v6[45]-section-.+-(start|end)$/.test(prompt.id);
+export const isStoryPresetSectionMarker = (prompt: StoryTheaterPresetPrompt): boolean => Boolean(prompt.section) || /^nmj-v6\d-section-.+-(start|end)$/.test(prompt.id);
 
 export const isProtectedStoryPrompt = (prompt: StoryTheaterPresetPrompt): boolean => Boolean(
     prompt.marker || prompt.id === 'nmj-v64-section-sources-start' || prompt.id === 'nmj-v64-section-sources-end'
@@ -711,6 +734,9 @@ const macroReplace = (text: string, userName: string, characterNames: string[]):
     .replace(/\{\{user\}\}/gi, userName || '你')
     .replace(/\{\{char\}\}/gi, characterNames.join('、') || '角色')
     .replace(/\{\{group\}\}/gi, characterNames.join('、') || '角色');
+
+const theaterMacroReplace = (text: string, values: Record<string, string> = {}): string => text
+    .replace(/\{\{theater_[a-z0-9_]+\}\}/gi, token => values[token.slice(2, -2)] ?? '');
 
 export const STORY_MINI_THEATER_PROMPT_IDS = [
     'nmj-v3-theater-ai',
@@ -1026,9 +1052,11 @@ export const compileStoryPreset = (input: {
     historyMessages?: StoryApiMessage[];
     userName: string;
     characterNames: string[];
+    storyTheaterMode?: 'story' | 'out_of_story';
+    storyTheaterValues?: Record<string, string>;
 }): { messages: StoryApiMessage[]; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage; scenarioMessage?: StoryApiMessage } => {
     const { preset, slots, userName, characterNames } = input;
-    const document = (preset || BUILTIN_NIGHT_SCREENING_PRESET).document;
+    const document = ensureStoryTheaterPromptSection((preset || BUILTIN_NIGHT_SCREENING_PRESET).document);
     const messages: StoryApiMessage[] = [];
     let scenarioMessage: StoryApiMessage | undefined;
 
@@ -1060,6 +1088,8 @@ export const compileStoryPreset = (input: {
             injectedMarkers.add('world_before');
         }
         if (!prompt.enabled || prompt.section) continue;
+        if (prompt.scope === 'story_theater' && !input.storyTheaterMode) continue;
+        if (prompt.scope === 'story_theater_story' && input.storyTheaterMode !== 'story') continue;
         let raw = prompt.content;
         if (prompt.marker) {
             if (injectedMarkers.has(prompt.marker)) continue;
@@ -1071,7 +1101,7 @@ export const compileStoryPreset = (input: {
             raw = slotForMarker(prompt.marker, slots);
         }
         if (!raw.trim()) continue;
-        const content = macroReplace(raw, userName, characterNames).trim();
+        const content = macroReplace(theaterMacroReplace(raw, input.storyTheaterValues), userName, characterNames).trim();
         if (!content) continue;
         const message = { role: prompt.role, content };
         messages.push(message);
