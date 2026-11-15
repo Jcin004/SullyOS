@@ -88,7 +88,8 @@ export const storyInteractionTendenciesFromMessage = (message?: Message): string
 
 export const storyActualInteractionGroupsFromMessage = (message?: Message): string[][] => {
     const castIds = storyCastIdsFromMessage(message);
-    return cleanInteractionGroups(message?.metadata?.theaterInteractionGroups, new Set(castIds), 2);
+    const candidateIds = uniqueIds(message?.metadata?.theaterCandidateIds);
+    return cleanInteractionGroups(message?.metadata?.theaterInteractionGroups, new Set(candidateIds.length ? candidateIds : castIds), 2);
 };
 
 export const storyInteractionHistoryFromMessage = (message?: Message): StoryInteractionHistoryEntry | undefined => {
@@ -504,13 +505,13 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     return { groups, axes, body };
 }
 
-export function parseStoryTheaterReply(text: string, castIds: readonly string[]): {
+export function parseStoryTheaterReply(text: string, candidateIds: readonly string[], axisIds: readonly string[] = candidateIds): {
     interactions: string[][];
     axes: StoryPrivateAxes;
     body: string;
 } {
     const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
-    const allowed = new Set(castIds);
+    const allowed = new Set(candidateIds);
     const interactions: string[][] = [];
     const seen = new Set<string>();
     for (const match of response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)) {
@@ -527,7 +528,7 @@ export function parseStoryTheaterReply(text: string, castIds: readonly string[])
         try {
             const raw = JSON.parse(unwrapFence(match[1])) as unknown;
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-            for (const id of castIds) {
+            for (const id of axisIds) {
                 const axis = readAxis((raw as Record<string, unknown>)[id]);
                 if (axis && !axes[id]) axes[id] = axis;
             }
