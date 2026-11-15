@@ -89,7 +89,6 @@ describe('剧情自定义大区', () => {
         };
         const imported = parseStoryTheaterPreset(JSON.stringify(legacy), 'older-theater.json');
         const cast = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')!;
-        const output = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')!;
         expect(cast.content).toContain('按代码预先确定的出演名单');
         expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('<interaction_result>');
         expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')).toBe(true);
