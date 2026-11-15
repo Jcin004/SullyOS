@@ -13,6 +13,7 @@ import {
     isProtectedStoryPrompt,
     isStoryPresetSectionMarker,
     makeStoryTheaterId,
+    ensureStoryTheaterPromptSection,
 } from '../../../utils/storyTheater';
 
 interface Props {
@@ -90,7 +91,7 @@ const STORY_GENERATION_FIELDS = [
 const StoryPresetMaker: React.FC<Props> = ({ preset, onBack, onSave, onOpenCopy, onDelete }) => {
     const [draft, setDraft] = useState<StoryTheaterPreset>(() => ({
         ...preset,
-        document: { ...preset.document, generation: { ...preset.document.generation }, prompts: preset.document.prompts.map(item => ({ ...item })) },
+        document: { ...ensureStoryTheaterPromptSection(preset.document), generation: { ...preset.document.generation }, prompts: ensureStoryTheaterPromptSection(preset.document).prompts.map(item => ({ ...item })) },
     }));
     const [mode, setMode] = useState<'simple' | 'pro'>('simple');
     const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
@@ -138,7 +139,7 @@ const StoryPresetMaker: React.FC<Props> = ({ preset, onBack, onSave, onOpenCopy,
     };
     const addPrompt = () => {
         if (!activeGroup || activeGroup.protected || readOnly) return;
-        const next: StoryTheaterPresetPrompt = { id: makeStoryTheaterId(), name: '新提示词', enabled: true, role: 'system', content: '' };
+        const next: StoryTheaterPresetPrompt = { id: makeStoryTheaterId(), name: '新提示词', enabled: true, role: 'system', content: '', ...(activeGroup.key === 'theater' ? { scope: 'story_theater_story' as const } : {}) };
         const prompts = [...draft.document.prompts];
         const last = prompts[activeGroup.endIndex];
         const insertAt = last && isStoryPresetSectionMarker(last) ? activeGroup.endIndex : activeGroup.endIndex + 1;
@@ -199,7 +200,7 @@ const StoryPresetMaker: React.FC<Props> = ({ preset, onBack, onSave, onOpenCopy,
             <div className='mt-5 border-y border-slate-200 divide-y divide-slate-200'>
                 {activePrompts.map((prompt, index) => { const locked = activeGroup.protected || isProtectedStoryPrompt(prompt); return <div key={prompt.id} className={`flex items-center gap-2 py-3 ${selectedId === prompt.id ? 'text-violet-700' : ''}`}>
                     <button disabled={readOnly || locked} onClick={() => patchPrompt(prompt.id, { enabled: !prompt.enabled })} className={`w-9 shrink-0 text-[9px] font-bold disabled:opacity-50 ${prompt.enabled ? 'text-emerald-600' : 'text-slate-300'}`}>{prompt.enabled ? 'ON' : 'OFF'}</button>
-                    <button onClick={() => setSelectedId(prompt.id)} className='min-w-0 flex-1 text-left'><span className='block text-xs font-semibold truncate'>{index + 1}. {prompt.name}</span><span className='block mt-1 text-[9px] text-slate-400'>{locked ? '系统连接位 · 内容锁定' : STORY_ROLE_LABELS[prompt.role]}</span></button>
+                    <button onClick={() => setSelectedId(prompt.id)} className='min-w-0 flex-1 text-left'><span className='block text-xs font-semibold truncate'>{index + 1}. {prompt.name}</span><span className='block mt-1 text-[9px] text-slate-400'>{locked ? '系统连接位 · 内容锁定' : prompt.scope ? '出演模式动态提示词' : STORY_ROLE_LABELS[prompt.role]}</span></button>
                     {!readOnly && <span className='flex shrink-0'><button disabled={index === 0} onClick={() => movePrompt(prompt.id, -1)} className='p-1.5 text-slate-400 disabled:opacity-20'><ArrowUp size={14} /></button><button disabled={index === activePrompts.length - 1} onClick={() => movePrompt(prompt.id, 1)} className='p-1.5 text-slate-400 disabled:opacity-20'><ArrowDown size={14} /></button>{!locked && <button onClick={() => removePrompt(prompt.id)} className='p-1.5 text-rose-400'><Trash size={14} /></button>}</span>}
                 </div>; })}
             </div>
@@ -207,7 +208,7 @@ const StoryPresetMaker: React.FC<Props> = ({ preset, onBack, onSave, onOpenCopy,
             {selected && <div className='mt-7 pt-6 border-t border-slate-200'>
                 {activeGroup.protected || isProtectedStoryPrompt(selected) ? <div className='py-8 text-center'><LockSimple size={28} className='mx-auto text-amber-400' /><div className='mt-2 text-xs font-bold'>系统连接内容已锁定</div><p className='mt-1 text-[10px] text-slate-400'>你仍可以在上方调整它与其他连接位的顺序。</p></div> : <>
                     <div className='grid grid-cols-2 gap-3'><label><span className='text-[10px] text-slate-500'>名称</span><input disabled={readOnly} value={selected.name} onChange={event => patchPrompt(selected.id, { name: event.target.value })} className='mt-1 w-full px-3 py-2.5 rounded-xl bg-white border border-slate-200 text-xs' /></label><label><span className='text-[10px] text-slate-500'>消息位置</span><select disabled={readOnly} value={selected.role} onChange={event => patchPrompt(selected.id, { role: event.target.value as StoryTheaterPresetPrompt['role'] })} className='mt-1 w-full px-3 py-2.5 rounded-xl bg-white border border-slate-200 text-xs'><option value='system'>规则</option><option value='user'>你</option><option value='assistant'>正文</option></select></label></div>
-                    <textarea disabled={readOnly} value={selected.content} onChange={event => patchPrompt(selected.id, { content: event.target.value })} className='mt-3 w-full min-h-64 p-4 rounded-2xl bg-white border border-slate-200 font-mono text-[11px] leading-6 resize-y' placeholder='支持 {{user}} / {{char}} / {{group}}' />
+                    <textarea disabled={readOnly} value={selected.content} onChange={event => patchPrompt(selected.id, { content: event.target.value })} className='mt-3 w-full min-h-64 p-4 rounded-2xl bg-white border border-slate-200 font-mono text-[11px] leading-6 resize-y' placeholder='支持 {{user}} / {{char}} / {{group}} / {{theater_mode_state}} / {{theater_cast_data}} / {{theater_prefill}} / {{theater_previous_axes}}' />
                     {!readOnly && <label className='mt-3 block text-xs text-slate-500'>移动到分组<select aria-label='移动到分组' value='' onChange={event => { const target = event.target.value; if (!target) return; replaceDocument(moveStoryPresetPromptToGroup(draft.document, selected.id, target)); setActiveGroupKey(target); }} className='mt-2 w-full p-3 rounded-xl bg-white border border-slate-200'><option value=''>选择目标分组</option>{groups.filter(group => !group.protected && group.key !== activeGroup.key).map(group => <option key={group.key} value={group.key}>{group.label}</option>)}</select></label>}
                 </>}
             </div>}
