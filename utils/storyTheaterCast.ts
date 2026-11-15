@@ -3,7 +3,7 @@ import type { Message, StoryCastLimits } from '../types';
 export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolSize = Number.MAX_SAFE_INTEGER): StoryCastLimits {
     return {
         minGroups: value?.minGroups ?? 1,
-        maxGroups: value?.maxGroups ?? Math.max(4, Math.min(12, poolSize * 2)),
+        maxGroups: value?.maxGroups ?? Math.max(1, Math.min(12, maximumTendencyGroups(poolSize))),
         minPeople: value?.minPeople ?? (poolSize > 1 ? 2 : 1),
         maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
