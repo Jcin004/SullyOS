@@ -260,6 +260,17 @@ describe('交流倾向随机调度', () => {
             castIds: ['a', 'b', 'c'],
             tendencies: [['a', 'b'], ['a', 'c']],
             actual: [['a', 'c']],
+            legacyTendencies: [],
+        });
+        const legacy = {
+            role: 'assistant',
+            metadata: { theaterCastGroups: [['a', 'b'], ['b', 'c']] },
+        } as any;
+        expect(storyInteractionHistoryFromMessage(legacy)).toEqual({
+            castIds: ['a', 'b', 'c'],
+            tendencies: [],
+            actual: [],
+            legacyTendencies: [['a', 'b'], ['b', 'c']],
         });
     });
 });
