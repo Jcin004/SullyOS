@@ -549,7 +549,7 @@ export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocu
     if (startIndex >= 0 && endIndex > startIndex) {
         const existingBlock = document.prompts.slice(startIndex + 1, endIndex);
         const theaterDefaults = defaults.filter(prompt => prompt.id.startsWith('nmj-v67-theater-'));
-        const defaultOrder = new Map(theaterDefaults.map((prompt, index) => [prompt.id, index]));
+        const defaultOrder = new Map<string, number>(theaterDefaults.map((prompt, index) => [prompt.id, index] as const));
         const mergedBlock = existingBlock.map(existing => {
             const latest = theaterDefaults.find(prompt => prompt.id === existing.id);
             const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[existing.id];
