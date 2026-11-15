@@ -10,4 +10,4 @@
 
 剧情重写排除本剧情在角色时间线中的镜像，避免旧版本通过角色近期原文回流。生成成功后在一次事务中原位更新中央正文和镜像；请求失败、并发修改或删除时保留原状态。重写不会额外发起第二次模型请求。
 
-出演模式的动态提示词可使用 `{{theater_cast_data}}`、`{{theater_interaction_tendencies}}`、`{{theater_previous_interactions}}`、`{{theater_unrealized_tendencies}}`、`{{theater_previous_axes}}` 和 `{{theater_prefill}}`。代码先抽取出演名单，再根据近期实际互动与未实现倾向加权抽取交流关注组；剧情结束后读取 `<interaction_result>`，将实际交流与预先倾向分开保存。未发生的交流不会计为完成，也不会额外调用模型。
+出演模式的动态提示词可使用 `{{theater_cast_data}}`、`{{theater_candidate_data}}`、`{{theater_interaction_tendencies}}`、`{{theater_previous_interactions}}`、`{{theater_unrealized_tendencies}}`、`{{theater_previous_axes}}` 和 `{{theater_prefill}}`。代码先抽取出演名单，再根据近期实际互动与未实现倾向加权抽取交流关注组；剧情结束后读取 `<interaction_result>`，将实际交流与预先倾向分开保存。未发生的交流不会计为完成，也不会额外调用模型。
