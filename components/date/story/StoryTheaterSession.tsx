@@ -706,7 +706,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 && (castEnabled || !Object.keys(latest.metadata?.theaterMirrorIds || {}).length);
             const fixedMessage = isReroll ? latest : retry ? latest : undefined;
             const rerollOutOfStory = isReroll && latest.metadata?.theaterOutOfStory === true;
-            const existingRecipientIds = Object.keys(fixedMessage?.metadata?.theaterMirrorIds || {});
             // 重试与重写沿用原轮预先抽出的出演名单和交流倾向。
             const fixedCastIds = rerollOutOfStory || (!isReroll && !castEnabled)
                 ? undefined : storyCastIdsFromMessage(fixedMessage);
@@ -819,9 +818,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ].filter(Boolean).join('\n\n');
             const miniTheaterReminder = buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, requestActorNames);
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
-            const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn && !fixedCast) : '';
+            const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn && !fixedCastIds?.length) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
-            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn && !fixedCast);
+            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn && !fixedCastIds?.length);
             const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
             const hasPresetHistory = effectivePreset.document.prompts.some(prompt => prompt.enabled && prompt.marker === 'history');
             const historyRows = hasPresetHistory ? visibleHistory
