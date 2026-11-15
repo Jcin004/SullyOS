@@ -713,7 +713,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const fixedTendencies = fixedMessage ? storyInteractionTendenciesFromMessage(fixedMessage) : [];
             const castTurn = !rerollOutOfStory && (reuseFixedPlan ? Boolean(fixedCastIds?.length) || castEnabled : castEnabled);
             const interactionHistory: StoryInteractionHistoryEntry[] = before
-                .filter(message => message.role === 'assistant' && !message.metadata?.theaterOutOfStory)
+                .filter(message => message.role === 'assistant' && message.id !== rerollTarget?.id && !message.metadata?.theaterOutOfStory)
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
             const generatedPlan = castTurn && !fixedCastIds?.length
