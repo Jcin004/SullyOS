@@ -211,6 +211,13 @@ describe('交流倾向随机调度', () => {
         expect(plans.every(plan => plan.tendencies.every(group => group.length >= 1))).toBe(true);
         expect(plans.some(plan => plan.tendencies.some(group => group.length === 1))).toBe(true);
         expect(plans.some(plan => plan.tendencies.some(group => group.length > 2))).toBe(true);
+        expect(plans.some(plan => plan.tendencies.some((group, index) =>
+            plan.tendencies.slice(index + 1).some(other => group.some(id => other.includes(id))),
+        ))).toBe(true);
+        const variablePlans = Array.from({ length: 32 }, (_, index) => drawStoryInteractionPlan(
+            people, normalizeStoryCastLimits({ minGroups: 1, maxGroups: 6, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(300 + index * 19),
+        ));
+        expect(new Set(variablePlans.map(plan => plan.tendencies.length)).size).toBeGreaterThan(1);
         expect(canDrawStoryInteractionPlan(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
         expect(canDrawStoryInteractionPlan(2, normalizeStoryCastLimits({ minGroups: 2, maxGroups: 4, minPeople: 1, maxPeople: 2 }, 2))).toBe(true);
         expect(drawStoryInteractionPlan(['solo'], normalizeStoryCastLimits(undefined, 1), [], seededRandom(1)))
