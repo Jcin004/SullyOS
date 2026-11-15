@@ -1080,6 +1080,7 @@ export const DB = {
                 ...original.metadata,
                 ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : castIds.length ? {
                     theaterCastIds: reply.metadata?.theaterCastIds ?? castIds,
+                    theaterCandidateIds: reply.metadata?.theaterCandidateIds ?? castIds,
                     ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
                 } : {}),
                 ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
