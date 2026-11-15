@@ -194,7 +194,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}"
+                        "content": "按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}\n在 <turn_cast> 中原样输出名单里的角色 ID 一维 JSON 数组。"
                     },
                     {
                         "id": "nmj-v67-theater-interaction-bias",
