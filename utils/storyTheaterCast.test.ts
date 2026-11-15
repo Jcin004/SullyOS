@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, collectUnrealizedStoryTendencies, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage } from './storyTheaterCast';
 
 const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
@@ -53,7 +53,9 @@ describe('剧场选角协议', () => {
             expect(cast.length).toBeGreaterThanOrEqual(6);
             expect(cast.length).toBeLessThanOrEqual(7);
             expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(groups)}</turn_cast>${axes(cast)}正文`, pool, range).groups).toEqual(groups);
-            expect(buildStoryTheaterPromptValues({ actors, limits: range, proposals: groups, modeState: '剧情续写' }).theater_cast_data).toContain('出演人数范围：6～7');
+            const promptValues = buildStoryTheaterPromptValues({ actors, candidateActors: actors, limits: range, proposals: groups, modeState: '剧情续写' });
+            expect(promptValues.theater_cast_data).toContain('"id":"a"');
+            expect(promptValues.theater_interaction_tendencies).toContain('"id":"a"');
         }
         const singleGroup = [pool];
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(singleGroup)}</turn_cast>${axes(pool)}正文`, pool, normalizeStoryCastLimits(undefined, pool.length)).groups).toEqual(singleGroup);
@@ -118,8 +120,8 @@ describe('剧场选角协议', () => {
         });
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(links)}</turn_cast><story_text>正文</story_text>`, ids, range).groups).toEqual(links);
         expect(values.theater_mode_state).toBe('剧情续写');
-        expect(values.theater_cast_data).toContain(JSON.stringify(links));
-        expect(values.theater_cast_data).toContain('候选角色（ID、姓名）');
+        expect(values.theater_cast_data).toContain('"id":"a"');
+        expect(values.theater_interaction_tendencies).toContain('"id":"a"');
         expect(values.theater_previous_axes).toContain('仍在找丢失的铅笔盒');
         expect(values.theater_prefill).toContain('<scene_header>');
         expect(normalizeStoryCastLimits(undefined, 8).maxGroups).toBeGreaterThan(4);
@@ -136,7 +138,7 @@ describe('剧场选角协议', () => {
         expect(samples.some(groups => groups.length === 2 && groups[0].some(id => groups[1].includes(id)))).toBe(true);
         expect(samples.some(groups => groups.some(group => group.length === 1))).toBe(true);
         const values = buildStoryTheaterPromptValues({ actors: people.map(id => ({ id, name: id })), limits: flexible, proposals: [['a', 'b'], ['b', 'c']], modeState: '按最新输入判断' });
-        expect(values.theater_cast_data).toContain('参考分组');
+        expect(values.theater_interaction_tendencies).toContain('"id":"a"');
     });
 
     it('随机建议只生成有交流对象的关系，组数不固定，关系可重叠', () => {
@@ -191,5 +193,70 @@ describe('剧场选角协议', () => {
     it('读取 scene_header 中的旧式演员数组', () => {
         const text = '<scene_header>[["a","b"]]<time>2026-04-10</time></scene_header><story_text>正文</story_text>';
         expect(parseStoryCastReply(text, ids, limits).groups).toEqual([['a','b']]);
+    });
+});
+
+describe('交流倾向随机调度', () => {
+    const people = ['a', 'b', 'c', 'd'];
+    const fixedRoster = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 4, maxPeople: 4 }, 4);
+    const seed = (index: number) => seededRandom(9127 + index * 193);
+
+    it('在剧情生成前确定出演名单，并允许重叠与多人交流倾向', () => {
+        const plan = drawStoryInteractionPlan(people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(7));
+        expect(plan.castIds).toHaveLength(4);
+        expect(plan.tendencies).toHaveLength(3);
+        expect(plan.tendencies.every(group => group.length >= 2)).toBe(true);
+        expect(plan.tendencies.some(group => group.length > 2)).toBe(true);
+        expect(canDrawStoryInteractionPlan(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
+        expect(drawStoryInteractionPlan(['solo'], normalizeStoryCastLimits(undefined, 1), [], seededRandom(1)))
+            .toEqual({ castIds: ['solo'], tendencies: [['solo']] });
+    });
+
+    it('近期真实互动降低旧搭档权重，未实现倾向会暂时获得探索加成', () => {
+        const actualHistory = Array.from({ length: 8 }, () => ({
+            castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']],
+        }));
+        const missedHistory = Array.from({ length: 4 }, () => ({
+            castIds: people, tendencies: [['a', 'b']], actual: [],
+        }));
+        const sample = (history: typeof actualHistory) => Array.from({ length: 180 }, (_, index) =>
+            drawStoryInteractionPlan(people, fixedRoster, history, seed(index)).tendencies[0].join(''));
+        const baseline = sample([]);
+        const actual = sample(actualHistory);
+        const missed = sample(missedHistory);
+        expect(actual.filter(group => group === 'ab').length).toBeLessThan(baseline.filter(group => group === 'ab').length);
+        expect(missed.filter(group => group === 'ab').length).toBeGreaterThan(baseline.filter(group => group === 'ab').length);
+        expect(collectUnrealizedStoryTendencies(missedHistory)).toEqual([['a', 'b']]);
+    });
+
+    it('从剧情结果中提取实际互动，过滤旁观者、无效角色和单人组', () => {
+        const roster = ['a', 'b', 'c'];
+        const generated = '<turn_cast>' + JSON.stringify(roster) + '</turn_cast>'
+            + '<story_text>正文。</story_text>'
+            + '<interaction_result>[["a","b"],["b","c"],["c"],["a","outside"]]</interaction_result>'
+            + axes(roster);
+        expect(parseStoryTheaterReply(generated, roster)).toEqual({
+            interactions: [['a', 'b'], ['b', 'c']], axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
+        });
+        expect(parseStoryTheaterReply('<story_text>没有交流。</story_text>', roster).interactions).toEqual([]);
+        expect(() => assertStoryRerollBody('<interaction_result>[]</interaction_result>正文')).toThrow('本轮只需返回正文');
+    });
+
+    it('历史数据分别读取出演名单、交流倾向和真实互动', () => {
+        const message = {
+            role: 'assistant',
+            metadata: {
+                theaterCastIds: ['a', 'b', 'c'],
+                theaterInteractionTendencies: [['a', 'b'], ['a', 'c']],
+                theaterInteractionGroups: [['a', 'c']],
+            },
+        } as any;
+        expect(storyCastIdsFromMessage(message)).toEqual(['a', 'b', 'c']);
+        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([['a', 'c']]);
+        expect(storyInteractionHistoryFromMessage(message)).toEqual({
+            castIds: ['a', 'b', 'c'],
+            tendencies: [['a', 'b'], ['a', 'c']],
+            actual: [['a', 'c']],
+        });
     });
 });
