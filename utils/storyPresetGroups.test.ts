@@ -77,8 +77,13 @@ describe('剧情自定义大区', () => {
             ...BUILTIN_NIGHT_SCREENING_PRESET.document,
             prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts
                 .filter(prompt => prompt.id !== 'nmj-v67-theater-interaction-bias')
-                .map(prompt => prompt.id === 'nmj-v67-theater-cast' ? { ...prompt, content: oldCast }
-                    : prompt.id === 'nmj-v67-theater-output' ? { ...prompt, content: oldOutput } : prompt),
+                .flatMap(prompt => {
+                    const current = prompt.id === 'nmj-v67-theater-cast' ? { ...prompt, content: oldCast }
+                        : prompt.id === 'nmj-v67-theater-output' ? { ...prompt, content: oldOutput } : prompt;
+                    return prompt.id === 'nmj-v67-theater-cast'
+                        ? [current, { id: 'custom-theater-note', name: '用户补充', enabled: true, role: 'system' as const, scope: 'story_theater_story' as const, content: '保留在原位置。' }]
+                        : [current];
+                }),
         };
         const imported = parseStoryTheaterPreset(JSON.stringify(legacy), 'older-theater.json');
         const cast = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')!;
@@ -86,6 +91,9 @@ describe('剧情自定义大区', () => {
         expect(cast.content).toContain('按代码预先确定的出演名单');
         expect(output.content).toContain('<interaction_result>');
         expect(imported.document.prompts.some(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')).toBe(true);
+        const promptOrder = imported.document.prompts.map(prompt => prompt.id);
+        expect(promptOrder.indexOf('custom-theater-note')).toBeGreaterThan(promptOrder.indexOf('nmj-v67-theater-cast'));
+        expect(promptOrder.indexOf('custom-theater-note')).toBeLessThan(promptOrder.indexOf('nmj-v67-theater-continuity'));
 
         const edited = {
             ...legacy,
