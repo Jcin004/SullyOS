@@ -532,9 +532,9 @@ export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
 const STORY_THEATER_SECTION_START = 'nmj-v67-section-theater-start';
 const STORY_THEATER_SECTION_END = 'nmj-v67-section-theater-end';
 
-const LEGACY_THEATER_PROMPT_CONTENT: Record<string, string> = {
-    'nmj-v67-theater-cast': '根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。',
-    'nmj-v67-theater-output': '剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}',
+const LEGACY_THEATER_PROMPT_CONTENT: Record<string, string[]> = {
+    'nmj-v67-theater-cast': ["根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。"],
+    'nmj-v67-theater-output': ["剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>本轮正文中实际发生的直接交流关系，JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n互动分组只记录直接交流：两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}"],
 };
 
 /** 给旧预设补入最新版出演协议；只迁移未被用户改写的旧默认提示词。 */
@@ -553,7 +553,7 @@ export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocu
         const mergedBlock = existingBlock.map(existing => {
             const latest = theaterDefaults.find(prompt => prompt.id === existing.id);
             const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[existing.id];
-            return latest && legacyContent && existing.content === legacyContent
+            return latest && legacyContent?.includes(existing.content)
                 ? { ...latest, ...existing, content: latest.content, scope: latest.scope }
                 : existing;
         });
@@ -584,7 +584,7 @@ export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocu
         const current = existing.get(prompt.id);
         const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[prompt.id];
         const latest = defaults.find(item => item.id === prompt.id);
-        return current && latest && legacyContent && current.content === legacyContent
+        return current && latest && legacyContent?.includes(current.content)
             ? { ...current, content: latest.content, scope: latest.scope }
             : prompt;
     });
