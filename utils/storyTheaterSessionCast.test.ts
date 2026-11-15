@@ -118,10 +118,10 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await send(advance(), 1);
         await send(advance(), 2);
         expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
-        for (const actor of actors) {
-            expect(await contents(actor.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        }
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id]));
+        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+        expect(await contents(b.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+        expect(await contents(c.id)).toEqual([]);
         expect(checked()).toEqual([a.name, b.name]);
         expect(mocks.toast.mock.calls.some(([message]) => String(message).includes('出演名单无效'))).toBe(false);
 
@@ -218,14 +218,14 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
         expect(archiveCalls).toBe(6);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
-        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15)]);
+        expect(await timeline(c.id)).toEqual([at(10), at(13), at(13), at(18)]);
 
         historyPrompt.enabled = true;
         await render('other-cast-session');
         await render(entry.id);
         await send(container.querySelector<HTMLButtonElement>('button[aria-label="继续当前剧情"]')!, 10);
         expect(promptText(9)).toContain('本轮模式：剧情续写');
-        expect(lastReference(c.id)).toBe(at(15));
+        expect(lastReference(c.id)).toBe(at(13));
         expect(promptText(9)).toContain('整理旧线索');
         expect(await timeline(c.id)).toEqual([at(10), at(13), at(13), at(18)]);
         expect(checked()).toEqual([a.name, b.name]);
