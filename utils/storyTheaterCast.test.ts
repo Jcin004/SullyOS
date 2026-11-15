@@ -202,11 +202,12 @@ describe('交流倾向随机调度', () => {
     const seed = (index: number) => seededRandom(9127 + index * 193);
 
     it('在剧情生成前确定出演名单，并允许重叠与多人交流倾向', () => {
-        const plan = drawStoryInteractionPlan(people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(7));
-        expect(plan.castIds).toHaveLength(4);
-        expect(plan.tendencies).toHaveLength(3);
-        expect(plan.tendencies.every(group => group.length >= 2)).toBe(true);
-        expect(plan.tendencies.some(group => group.length > 2)).toBe(true);
+        const plans = Array.from({ length: 24 }, (_, index) => drawStoryInteractionPlan(
+            people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(7 + index * 31),
+        ));
+        expect(plans.every(plan => plan.castIds.length === 4 && plan.tendencies.length === 3)).toBe(true);
+        expect(plans.every(plan => plan.tendencies.every(group => group.length >= 2))).toBe(true);
+        expect(plans.some(plan => plan.tendencies.some(group => group.length > 2))).toBe(true);
         expect(canDrawStoryInteractionPlan(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
         expect(drawStoryInteractionPlan(['solo'], normalizeStoryCastLimits(undefined, 1), [], seededRandom(1)))
             .toEqual({ castIds: ['solo'], tendencies: [['solo']] });
