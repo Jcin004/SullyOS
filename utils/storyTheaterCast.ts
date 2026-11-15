@@ -539,6 +539,7 @@ export function parseStoryTheaterReply(text: string, candidateIds: readonly stri
     let body = response
         .replace(/<turn_cast\b[^>]*>[\s\S]*?<\/turn_cast\s*>/gi, '')
         .replace(/<interaction_result\b[^>]*>[\s\S]*?<\/interaction_result\s*>/gi, '')
+        .replace(/<interaction_result\b[^>]*>[\s\S]*$/i, '')
         .replace(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi, '')
         .replace(/<private_axes\b[^>]*>[\s\S]*$/i, '')
         .trim();
