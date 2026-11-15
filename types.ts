@@ -2286,9 +2286,10 @@ export interface StoryTheaterMask {
 }
 
 export interface StoryCastLimits {
+    /** 每轮随机生成的交流倾向组数范围。 */
     minGroups: number;
     maxGroups: number;
-    /** 每轮所有分组合计的人数。 */
+    /** 每轮代码预先抽取的出演人数范围。 */
     minPeople: number;
     maxPeople: number;
 }
