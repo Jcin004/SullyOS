@@ -549,23 +549,31 @@ export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocu
     const endIndex = document.prompts.findIndex(prompt => prompt.id === STORY_THEATER_SECTION_END);
     if (startIndex >= 0 && endIndex > startIndex) {
         const existingBlock = document.prompts.slice(startIndex + 1, endIndex);
-        const existingById = new Map(existingBlock.map(prompt => [prompt.id, prompt]));
         const theaterDefaults = defaults.filter(prompt => prompt.id.startsWith('nmj-v67-theater-'));
-        const migrated = theaterDefaults.map(prompt => {
-            const existing = existingById.get(prompt.id);
-            if (!existing) return { ...prompt };
-            const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[prompt.id];
-            return legacyContent && existing.content === legacyContent
-                ? { ...prompt, ...existing, content: prompt.content, scope: prompt.scope }
+        const defaultOrder = new Map(theaterDefaults.map((prompt, index) => [prompt.id, index]));
+        const mergedBlock = existingBlock.map(existing => {
+            const latest = theaterDefaults.find(prompt => prompt.id === existing.id);
+            const legacyContent = LEGACY_THEATER_PROMPT_CONTENT[existing.id];
+            return latest && legacyContent && existing.content === legacyContent
+                ? { ...latest, ...existing, content: latest.content, scope: latest.scope }
                 : existing;
         });
-        const customPrompts = existingBlock.filter(prompt => !defaultIds.has(prompt.id));
+        const existingIds = new Set(existingBlock.map(prompt => prompt.id));
+        for (const prompt of theaterDefaults) {
+            if (existingIds.has(prompt.id)) continue;
+            const order = defaultOrder.get(prompt.id) ?? Number.MAX_SAFE_INTEGER;
+            const insertAt = mergedBlock.findIndex(existing => {
+                const existingOrder = defaultOrder.get(existing.id);
+                return existingOrder !== undefined && existingOrder > order;
+            });
+            if (insertAt < 0) mergedBlock.push({ ...prompt });
+            else mergedBlock.splice(insertAt, 0, { ...prompt });
+        }
         return {
             ...document,
             prompts: [
                 ...document.prompts.slice(0, startIndex + 1),
-                ...migrated,
-                ...customPrompts,
+                ...mergedBlock,
                 ...document.prompts.slice(endIndex),
             ],
         };
