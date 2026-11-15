@@ -202,11 +202,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n将倾向组作为本轮注意力偏置。写作时主动留意组内人物的动作、话语和可回应之处，优先让他们有机会相互注意、接话、加入或转移交流。
-不要把倾向组写成固定搭档或必须完成的任务；遇到自然契机时优先沿这些方向展开，条件不合适时允许未实现。
-近期反复交流的搭档降低默认优先级，除非当前情境确实更适合他们继续交流。
-多人组关注同一段共同讨论；重叠组允许交流对象转移。单人组只表示独立关注，不安排对话。
-保留人物自己的目的、注意力和行动，不为凑齐交流而制造无关对话。"
+                        "content": "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n将倾向组作为本轮注意力偏置。写作时主动留意组内人物的动作、话语和可回应之处，优先让他们有机会相互注意、接话、加入或转移交流。\n不要把倾向组写成固定搭档或必须完成的任务；遇到自然契机时优先沿这些方向展开，条件不合适时允许未实现。\n近期反复交流的搭档降低默认优先级，除非当前情境确实更适合他们继续交流。\n多人组关注同一段共同讨论；重叠组允许交流对象转移。单人组只表示独立关注，不安排对话。\n保留人物自己的目的、注意力和行动，不为凑齐交流而制造无关对话。"
                     },
                     {
                         "id": "nmj-v67-theater-continuity",
