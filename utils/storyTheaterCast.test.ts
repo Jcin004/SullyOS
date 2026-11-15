@@ -246,6 +246,8 @@ describe('交流倾向随机调度', () => {
         expect(missed.filter(group => group === 'ab').length).toBeGreaterThan(baseline.filter(group => group === 'ab').length);
         expect(collectUnrealizedStoryTendencies(missedHistory)).toEqual([['a', 'b']]);
         expect(collectUnrealizedStoryTendencies([...missedHistory, { castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']] }])).toEqual([]);
+        const expired = [...missedHistory, ...Array.from({ length: 8 }, () => ({ castIds: people, tendencies: [], actual: [] }))];
+        expect(collectUnrealizedStoryTendencies(expired)).toEqual([]);
     });
 
     it('从剧情结果中提取实际互动，过滤旁观者、无效角色和单人组', () => {
