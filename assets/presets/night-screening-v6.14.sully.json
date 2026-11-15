@@ -175,7 +175,7 @@
                     },
                     {
                         "id": "nmj-v67-section-theater-start",
-                        "name": "🧩↓出演模式｜回复／分组／连续性／输出",
+                        "name": "🧩↓出演模式｜出演名单／交流倾向／实际互动／私轴",
                         "enabled": false,
                         "role": "system",
                         "content": ""
