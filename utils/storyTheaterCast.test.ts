@@ -244,6 +244,7 @@ describe('交流倾向随机调度', () => {
             interactions: [['a', 'b'], ['b', 'c']], axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
         });
         expect(parseStoryTheaterReply('<story_text>没有交流。</story_text>', roster).interactions).toEqual([]);
+        expect(parseStoryTheaterReply('<story_text>正文。</story_text><interaction_result>[["a","b"]]', roster).body).toBe('<story_text>正文。</story_text>');
         const background = parseStoryTheaterReply(
             '<interaction_result>[["a","d"]]</interaction_result>' + axes(['a', 'b']),
             ['a', 'b', 'c', 'd'], ['a', 'b'],
