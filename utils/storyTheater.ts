@@ -15,6 +15,7 @@ import {
     type WorldbookScanMessage,
 } from './worldbook';
 import { shareOrDownloadFile } from './shareExport';
+import { normalizeStoryCastLimits } from './storyTheaterCast';
 import { hasReliableMessageTimestamp } from './storyTheaterTimeline';
 
 export type StoryApiRole = 'system' | 'user' | 'assistant';
@@ -215,6 +216,7 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         characterIds: Array.isArray(entry.characterIds) ? entry.characterIds.filter(Boolean) : [],
         writesToCharacterMemory: entry.writesToCharacterMemory === true,
         castModeEnabled: entry.castModeEnabled !== false,
+        castLimits: entry.castLimits ? normalizeStoryCastLimits(entry.castLimits) : undefined,
         characterMemoryDates: entry.characterMemoryDates || {},
         carryCharacterMemory: entry.writesToCharacterMemory ? true : entry.carryCharacterMemory === true,
         characterContextLimits: entry.characterContextLimits || {},
