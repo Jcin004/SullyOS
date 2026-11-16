@@ -11,6 +11,7 @@ describe('剧情剧场数据与糯米机原生预设备份', () => {
             openingMode: 'assistant',
             mask: { type: 'custom', id: 'story-mask' },
             characterIds: ['char-a', 'char-b'],
+            primaryCharacterId: 'char-b',
             writesToCharacterMemory: false,
             characterMemoryDates: {},
             carryCharacterMemory: true,

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message, StoryTheaterEntry } from '../types';
 import { DB } from './db';
 import { createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
+import { getStoryRelationshipBaseline } from './storyTheaterRelationships';
 import { archiveStoryManually, generateStoryArchiveSummary, parseStoryArchiveSummary, regenerateStoryArchiveSummary } from './storyTheaterArchive';
 
 const api = { baseUrl: 'https://llm.invalid/v1/', apiKey: 'test', model: 'test' };
@@ -125,6 +126,28 @@ async function addPending(role: 'user' | 'assistant', content: string) {
  return DB.saveMessage({ charId: storyTheaterThreadId(entry.id), role, type: 'text', content, metadata: { source: 'story_theater', theaterId: entry.id } });
 }
 describe('manual story archive', () => {
+    it('retains the exact relationship state in archived originals and excludes panel scores from the event box', async () => {
+        const primary = { id: 'xiaoyu', name: '小雨' };
+        const other = { id: 'aze', name: '阿泽' };
+        entry = { ...entry, characterIds: [primary.id, other.id], primaryCharacterId: primary.id };
+        await DB.saveStoryTheater(entry);
+        const panel = {
+            primaryId: primary.id, state_note: '决定接受帮助',
+            relationships: [{ fromId: primary.id, toId: other.id, axes: { FL: { score: 43 }, RI: { score: 12 } } }],
+        };
+        const original = '<story_text>小雨答应一起回家。</story_text><relationship_panel>' + JSON.stringify(panel) + '</relationship_panel>';
+        const id = await addPending('assistant', original);
+        const archived = await archiveStoryManually(entry, api);
+        expect(archived.primaryCharacterId).toBe(primary.id);
+        const input = JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content;
+        expect(input).toContain('小雨答应一起回家');
+        expect(input).not.toContain('relationship_panel');
+        const rows = await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true);
+        expect(rows.find(row => row.id === id)).toMatchObject({ content: original, metadata: { theaterArchived: true } });
+        const baseline = getStoryRelationshipBaseline(rows, primary, [primary, other]);
+        expect(baseline.state_note).toBe('决定接受帮助');
+        expect(baseline.relationships[1].axes).toMatchObject({ FL: { score: 43 }, RI: { score: 12 } });
+    });
  it('includes the latest completed pair, preserves old boxes/originals and does not touch character memory', async () => {
   await addPending('user', '本段最后的输入'); await addPending('assistant', '本段最后的回复');
   const before = await DB.getAllCharacters();

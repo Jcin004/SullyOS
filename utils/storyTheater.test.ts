@@ -3,23 +3,18 @@ import { describe, expect, it } from 'vitest';
 import type { CharacterProfile, Message, StoryTheaterPreset, UserProfile } from '../types';
 import { STORY_PRESET_SIMPLE_CHOICES } from '../components/date/story/StoryPresetMaker';
 import {
-    appendStoryAffinityInput,
-    appendStoryAffinityInputs,
     appendStoryUserTurn,
     applyStoryPresetChoice,
     BUILTIN_NIGHT_SCREENING_PRESET,
     buildStoryMiniTheaterReminder,
     buildStoryActorMemoryEnvelope,
     buildStoryArchiveMemoryEnvelope,
-    buildStoryAffinityAwarenessReminder,
     buildStoryBackstageAftermathReminder,
     buildStoryIdentityGuard,
     buildStoryPrefillInstruction,
-    buildStoryMultiAffinityGuide,
     buildStoryWorldbookScanMessages,
     compileStoryPreset,
     prepareStoryGenerationSettings,
-    reconcileStoryAffinityScores,
     createBlankStoryPreset,
     createStoryTheaterDraft,
     hasStoryTheaterParticipant,
@@ -37,7 +32,6 @@ import {
     parseStoryTheaterPreset,
     normalizeStoryTheater,
     REAL_COMPANION_MEMORY_GUARD,
-    RELATIONSHIP_TEXTURE_GUIDE,
     resolveStoryPresetDocument,
     resolveStoryTheaterMask,
     selectStoryArchiveBatch,
@@ -137,8 +131,8 @@ describe('糯米机原生剧情预设边界', () => {
         expect(document.schema).toBe('sullyos.story-preset');
         expect(document.version).toBe(1);
         expect(document.name).toContain('V6.27');
-        expect(document.prompts).toHaveLength(130);
-        expect(document.prompts.filter(prompt => prompt.enabled)).toHaveLength(53);
+        expect(document.prompts).toHaveLength(128);
+        expect(document.prompts.filter(prompt => prompt.enabled)).toHaveLength(52);
         const serialized = JSON.stringify(document);
         expect(serialized).not.toContain('prompt_order');
         expect(serialized).not.toContain('extensions');
@@ -153,23 +147,20 @@ describe('糯米机原生剧情预设边界', () => {
         expect(new Set(document.prompts.map(prompt => prompt.id)).size).toBe(document.prompts.length);
         expect(enabled.every(prompt => Boolean(prompt.marker || prompt.content.trim()))).toBe(true);
         const affinity = document.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
-        expect(affinity.content).toContain('<affinity_person>');
-        expect(affinity.content).toContain('<character_id>');
-        expect(affinity.content).toContain('<c_to_u_score>');
-        expect(affinity.content).toContain('<trust>');
-        expect(affinity.content).toContain('<repair_will>');
-        expect(affinity.content).not.toContain('<c_score>');
-        expect(affinity.content).not.toContain('<u_score>');
+        expect(affinity.content).toContain('FL 关系联结');
+        expect(affinity.content).toContain('RI 恋爱性心动');
+        expect(affinity.content).toContain('DI 失序扰动');
+        expect(enabled.map(prompt => prompt.content).join('\n')).not.toMatch(/<u_affinity>|<affinity_panel>|五维关系混音|执笔灯号/);
         const scene = document.prompts.find(prompt => prompt.id === 'nmj-v3-scene-header')!;
         expect(scene.content).toContain('幕后与余波”（幕后暗格后紧接镜头债）');
         expect(scene.content).not.toContain('幕后暗格、世界线、镜头债');
         const exit = document.prompts.find(prompt => prompt.id === 'nmj-v3-exit-check')!;
-        expect(exit.content).toContain('按 character_id 独立续接 C→U、U→C 与五维状态');
+        expect(exit.content).toContain('检查双方各自的证据和三轴变化');
         expect(exit.content).toContain('幕后与余波（幕后暗格 → 镜头债）');
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(preflight.content).toContain('按 character_id 逐人续接 C→U、U→C 与五维关系混音');
+        expect(preflight.content).toContain('依据各自亲历事件更新 FL、RI、DI');
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
 
@@ -633,34 +624,7 @@ describe('手机端预设分层', () => {
     });
 });
 
-describe('本轮关系备注', () => {
-    it('只把填写内容附在模型输入里并转义用户文本', () => {
-        const modelInput = appendStoryAffinityInput('推开门。', { delta: 4, reason: '因为他 <留下> & 等我' });
-        expect(modelInput).toContain('<delta>+4</delta>');
-        expect(modelInput).toContain('<reason>因为他 &lt;留下&gt; &amp; 等我</reason>');
-        expect(modelInput).toContain('<awareness>unnoticed</awareness>');
-        expect(appendStoryAffinityInput('推开门。', { delta: 0, reason: '' })).toBe('推开门。');
-    });
-
-    it('多人关系备注按角色分别发送并要求逐人输出双向五维面板', () => {
-        const modelInput = appendStoryAffinityInputs('继续。', [
-            { characterId: 'lin', characterName: '林星', delta: 2, reason: '他接住了话', awareness: 'noticed' },
-            { characterId: 'noir', characterName: 'Noir', delta: -1, reason: '他又在回避', awareness: 'unnoticed' },
-        ]);
-        expect(modelInput).toContain('<u_affinity_updates>');
-        expect(modelInput).toContain('<character_id>lin</character_id>');
-        expect(modelInput).toContain('<character_id>noir</character_id>');
-        expect(modelInput.match(/<u_affinity>/g)).toHaveLength(2);
-        const guide = buildStoryMultiAffinityGuide([{ id: 'lin', name: '林星' }, { id: 'noir', name: 'Noir' }]);
-        expect(guide).toContain('禁止共享数值');
-        expect(guide).toContain('<affinity_person>');
-        expect(guide).toContain('<character_name>角色名</character_name>');
-        expect(guide).toContain('<c_to_u_score>50</c_to_u_score>');
-        expect(guide).toContain('<trust>50</trust>');
-        expect(guide).toContain('<repair_will>50</repair_will>');
-        expect(guide).toContain('不得用某个角色的变化影响另一位角色');
-    });
-
+describe('叙事人称与用户侧身份', () => {
     it('第三人称最终锚点明确“你”属于用户侧，而不是生成回复的一方', () => {
         const thirdPerson = applyStoryPresetChoice(
             BUILTIN_NIGHT_SCREENING_PRESET.document,
@@ -669,7 +633,6 @@ describe('本轮关系备注', () => {
         );
         const guard = buildStoryIdentityGuard(thirdPerson, '条条', ['林星', 'Noir']);
         expect(guard).toContain('用户侧剧情身份：条条');
-        expect(guard).toContain('关系协议中的 U 只指「条条」');
         expect(guard).toContain('生成回复的一方不属于故事人物');
         expect(guard).toContain('旁白中的“你／你的”必须改掉');
         expect(guard).toContain('角色对白里对「条条」说“你”是正常称呼');
@@ -678,52 +641,4 @@ describe('本轮关系备注', () => {
         expect(guard).toContain('不得覆盖本剧场的时间线');
     });
 
-    it('已察觉要求角色在当幕自然反应，未察觉只保留氛围', () => {
-        const noticed = buildStoryAffinityAwarenessReminder({ delta: 3, reason: '他留下来了', awareness: 'noticed' }, 'Noir');
-        expect(noticed).toContain('角色完全透视');
-        expect(noticed).toContain('Noir明确知道');
-        expect(noticed).toContain('准确幅度');
-        expect(noticed).toContain('必须给出一次');
-        const unnoticed = buildStoryAffinityAwarenessReminder({ delta: -2, reason: '感到失望', awareness: 'unnoticed' }, 'Noir');
-        expect(unnoticed).toContain('角色未察觉');
-        expect(unnoticed).toContain('叙事氛围');
-        expect(unnoticed).toContain('不覆盖用户对其他角色单独设置的察觉状态');
-    });
-
-    it('满值后保持数值底座，允许关系质地继续变化', () => {
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('95—100');
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('<relation_fragment>');
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('不写散乱 Markdown');
-    });
-
-    it('绝对关系值由前端按上一轮加减 delta，纠正模型把 41 - 1 算成 42', () => {
-        const previous = '<affinity_panel><affinity_person><character_id>lin</character_id><character_name>林星</character_name><c_to_u_score>60</c_to_u_score><u_to_c_score>41</u_to_c_score></affinity_person></affinity_panel>';
-        const generated = '<affinity_panel><affinity_person><character_id>lin</character_id><character_name>林星</character_name><c_to_u_score>64</c_to_u_score><c_to_u_delta>+2</c_to_u_delta><u_to_c_score>42</u_to_c_score><u_to_c_delta>-1</u_to_c_delta></affinity_person></affinity_panel>';
-        const reconciled = reconcileStoryAffinityScores(
-            generated,
-            previous,
-            [{ characterId: 'lin', characterName: '林星', delta: -1, reason: '有些失望' }],
-            [{ id: 'lin', name: '林星' }],
-        );
-        expect(reconciled).toContain('<c_to_u_score>62</c_to_u_score>');
-        expect(reconciled).toContain('<u_to_c_score>40</u_to_c_score>');
-        expect(reconciled).toContain('<u_to_c_delta>-1</u_to_c_delta>');
-        expect(reconciled).not.toContain('<u_to_c_score>42</u_to_c_score>');
-    });
-
-    it('多人关系分别复算，未填写的角色保持上一轮 U→C', () => {
-        const previous = '<affinity_panel><affinity_person><character_id>a</character_id><character_name>A</character_name><c_to_u_score>50</c_to_u_score><u_to_c_score>31</u_to_c_score></affinity_person><affinity_person><character_id>b</character_id><character_name>B</character_name><c_to_u_score>70</c_to_u_score><u_to_c_score>80</u_to_c_score></affinity_person></affinity_panel>';
-        const generated = '<affinity_panel><affinity_person><character_id>a</character_id><character_name>A</character_name><c_to_u_score>49</c_to_u_score><c_to_u_delta>-2</c_to_u_delta><u_to_c_score>34</u_to_c_score><u_to_c_delta>+3</u_to_c_delta></affinity_person><affinity_person><character_id>b</character_id><character_name>B</character_name><c_to_u_score>72</c_to_u_score><c_to_u_delta>+1</c_to_u_delta><u_to_c_score>79</u_to_c_score><u_to_c_delta>-1</u_to_c_delta></affinity_person></affinity_panel>';
-        const reconciled = reconcileStoryAffinityScores(
-            generated,
-            previous,
-            [{ characterId: 'a', characterName: 'A', delta: 3, reason: '更信任了' }],
-            [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }],
-        );
-        expect(reconciled).toContain('<c_to_u_score>48</c_to_u_score>');
-        expect(reconciled).toContain('<u_to_c_score>34</u_to_c_score>');
-        expect(reconciled).toContain('<c_to_u_score>71</c_to_u_score>');
-        expect(reconciled).toContain('<u_to_c_score>80</u_to_c_score>');
-        expect(reconciled).toContain('<u_to_c_delta>+0</u_to_c_delta>');
-    });
 });

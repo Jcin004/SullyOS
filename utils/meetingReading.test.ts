@@ -30,7 +30,7 @@ it('novel view renders both speakers as prose without avatars and preserves text
 
 it('story novel mode keeps prose outside a collapsed supplement; none keeps the original layout', () => {
     const content='<scene_header>地点｜书店</scene_header><story_text>灯光落在书页上。</story_text>';
-    const render=()=>renderToStaticMarkup(React.createElement(StoryOutput,{content,affinityInputs:[]}));
+    const render=()=>renderToStaticMarkup(React.createElement(StoryOutput,{content}));
     const host=document.createElement('div');host.innerHTML=render();
     expect(host.querySelector('.meeting-prose')?.textContent).toContain('灯光落在书页上。');
     expect(host.querySelector('details')?.hasAttribute('open')).toBe(false);
@@ -40,6 +40,24 @@ it('story novel mode keeps prose outside a collapsed supplement; none keeps the 
     expect(host.querySelector('.meeting-prose')).toBeNull();
     expect(host.textContent).toContain('书店');
     expect(host.textContent).not.toContain('场景与补充');
+});
+
+it('story output displays three axes under each named direction and keeps the primary self note', () => {
+    const panel = {
+        primaryId: 'a', primaryName: '阿泽', state_note: '等对方把话说完',
+        relationships: [
+            { fromId: 'a', toId: 'b', fromName: '阿泽', toName: '小雨', axes: { FL: { score: 60 }, RI: { score: 12 }, DI: { score: 7 } } },
+            { fromId: 'b', toId: 'a', fromName: '小雨', toName: '阿泽', axes: { FL: { score: 30 }, RI: { score: 0 }, DI: { score: 33 } } },
+        ],
+    };
+    const content = '<story_text>雨停了。</story_text><relationship_panel>' + JSON.stringify(panel) + '</relationship_panel>';
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(React.createElement(StoryOutput, { content }));
+    expect(host.textContent).toContain('等对方把话说完');
+    const directions = [...host.querySelectorAll('details section')];
+    expect(directions.map(node => node.querySelector('h4')?.textContent)).toEqual(['阿泽 → 小雨', '小雨 → 阿泽']);
+    expect(directions[0].textContent).toContain('RI · 恋爱性心动12 / 100');
+    expect(directions[1].textContent).toContain('DI · 失序扰动33 / 100');
 });
 
 it('reading shows previous encounters, prepends without jumping to the bottom, and keeps scroll position for new replies', async () => {

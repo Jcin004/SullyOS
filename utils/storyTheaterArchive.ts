@@ -2,6 +2,7 @@ import type { APIConfig, Message, StoryTheaterArchive, StoryTheaterEntry } from 
 import { DB, openDB } from './db';
 import { extractContent, safeResponseJson } from './safeApi';
 import { describeStoryApiError, storyTheaterThreadId, makeStoryTheaterId } from './storyTheater';
+import { stripStoryRelationshipPanels } from './storyTheaterRelationships';
 import { hasSummaryReasoningLeak } from './summaryReasoning';
 
 /** Summaries must come from the final channel, never a reasoning-only fallback. */
@@ -25,7 +26,7 @@ export function parseStoryArchiveSummary(data: any): string {
 export async function generateStoryArchiveSummary(title: string, messages: Message[], api: Pick<APIConfig, 'baseUrl' | 'apiKey' | 'model'>): Promise<string> {
     if (!api.baseUrl || !api.model) throw new Error('请先配置主 API');
     const transcript = messages.map(message => {
-        const content = extractContent({ choices: [{ message: { content: message.content } }] });
+        const content = extractContent({ choices: [{ message: { content: stripStoryRelationshipPanels(message.content) } }] });
         if (!content) throw new Error('事件盒原文缺少正文，未生成总结');
         return `${message.role === 'user' ? '推进' : '正文'}：${content}`;
     }).join('\n\n');
