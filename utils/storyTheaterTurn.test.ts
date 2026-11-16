@@ -23,12 +23,12 @@ describe('剧场整轮提交', () => {
         await DB.commitStoryTheaterTurn({ ...reply, metadata: { ...reply.metadata, theaterInputId: input.id, theaterPrivateAxes: { actor: axis } } },
             input, [['actor']], mirrors(theater));
         const [savedInput, savedReply] = await read(user.charId);
-        expect(storyPrivateAxesFromMessage(savedReply, new Map([[savedInput.id, savedInput]]))).toEqual({ actor: axis });
+        expect(storyPrivateAxesFromMessage(savedReply, new Map([[savedInput.id, savedInput]]))).toEqual({ actor: '修表；缺零件；去找工具' });
         await replaceStoryTheaterReply(savedInput, '新输入', { theaterInputRevision: 'new-input' });
         const edited = (await read(user.charId))[0];
         expect(storyPrivateAxesFromMessage(savedReply, new Map([[edited.id, edited]]))).toEqual({});
         await expect(replaceStoryTheaterReply(savedReply, '过期正文', {}, true, undefined, savedInput)).rejects.toThrow('本轮输入已被修改');
-        const revisedAxis = { ...axis, next: '先问师傅' };
+        const revisedAxis = '修表；缺零件；先问师傅';
         await replaceStoryTheaterReply(savedReply, '新正文', {
             theaterPrivateAxes: { actor: revisedAxis }, theaterPrivateAxesInputRevision: 'new-input',
         }, true, undefined, edited);

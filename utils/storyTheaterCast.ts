@@ -1,27 +1,15 @@
 import type { Message, StoryCastLimits } from '../types';
 
-export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolSize = Number.MAX_SAFE_INTEGER): StoryCastLimits {
+export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>): StoryCastLimits {
     return {
         minGroups: value?.minGroups ?? 1,
         maxGroups: value?.maxGroups ?? 4,
-        minPeople: value?.minPeople ?? 1,
-        maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
 }
 
-export function validStoryCastLimits(limits: StoryCastLimits): boolean {
-    const { minGroups, maxGroups, minPeople, maxPeople } = limits;
-    return [minGroups, maxGroups, minPeople, maxPeople].every(value => Number.isSafeInteger(value) && value > 0)
-        && minGroups <= maxGroups && minPeople <= maxPeople;
-}
-
-function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
-    if (!validStoryCastLimits(limits)) return undefined;
-    const maxPeople = Math.min(poolSize, limits.maxPeople);
-    // An n-person cast has at most 2^n - 1 distinct nonempty groups.
-    const minPeople = Math.max(limits.minPeople, Math.ceil(Math.log2(limits.minGroups + 1)));
-    if (minPeople > maxPeople) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, 2 ** maxPeople - 1) };
+export function validStoryCastLimits({ minGroups, maxGroups }: StoryCastLimits): boolean {
+    return [minGroups, maxGroups].every(value => Number.isSafeInteger(value) && value > 0)
+        && minGroups <= maxGroups;
 }
 
 const groupKey = (group: readonly string[]) => JSON.stringify([...group].sort());
@@ -32,31 +20,28 @@ export const storyCastFromMessage = (message?: Message): string[][] | undefined 
         ? value : undefined;
 };
 
-export function canDrawStoryCast(poolSize: number, limits: StoryCastLimits): boolean {
-    return !!effectiveStoryCastLimits(poolSize, limits);
-}
-
 export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLimits, recent: readonly string[][][], random = Math.random): string[][] {
     const candidates = [...new Set(ids)];
-    const range = effectiveStoryCastLimits(candidates.length, limits);
-    if (!range || range.minGroups > candidates.length + 1) return [];
+    if (!candidates.length || !validStoryCastLimits(limits)) return [];
+    // Keep suggestions compact and fit the number of distinct groups the pool can supply.
+    const capacity = Math.min(2 ** candidates.length - 1, candidates.length + 1);
+    const pick = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
+    const count = pick(Math.min(limits.minGroups, capacity), Math.min(limits.maxGroups, capacity));
+    const minSize = Math.ceil(Math.log2(count + 1));
     const people = new Map<string, number>();
     const groups = new Map<string, number>();
     recent.slice(-6).reverse().forEach((turn, index) => {
         const weight = (6 - index) / 6;
-        for (const id of storyCastIds(turn)) people.set(id, (people.get(id) ?? 0) + weight);
         for (const group of turn) {
+            for (const id of new Set(group)) people.set(id, (people.get(id) ?? 0) + weight);
             const key = groupKey(group);
             groups.set(key, (groups.get(key) ?? 0) + weight);
         }
     });
-    const pick = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     let best: string[][] = [];
     let bestScore = -1;
     for (let sample = 0; sample < 24; sample++) {
-        const size = pick(range.minPeople, range.maxPeople);
-        // Suggestions are advisory. Prefer a compact sample even when the user allows many groups.
-        const count = pick(range.minGroups, Math.min(range.maxGroups, 2 ** size - 1, Math.max(range.minGroups, size + 1)));
+        const size = pick(minSize, candidates.length);
         const selected = candidates.map(id => ({ id, rank: -Math.log(1 - random()) * (1 + (people.get(id) ?? 0)) }))
             .sort((a, b) => a.rank - b.rank).slice(0, size).map(row => row.id);
         const proposed = selected.slice(0, count).map(id => [id]);
@@ -79,11 +64,10 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
 }
 
 export function buildStoryCastInstruction(
-    actors: readonly { id: string; name: string }[], limits: StoryCastLimits, proposals: string[][], prefill?: string,
+    actors: readonly { id: string; name: string }[], proposals: string[][], prefill?: string,
     storyOnly = false,
 ): string {
-    const range = effectiveStoryCastLimits(new Set(actors.map(actor => actor.id)).size, limits);
-    if (!range) return `当前出演范围不可用。只有用户明确发起或接续场外交流时，才按场外模式回答。\n${STORY_OUT_OF_STORY_RULE}`;
+    if (!actors.length) return `当前没有候选角色。只有用户明确发起或接续场外交流时，才按场外模式回答。\n${STORY_OUT_OF_STORY_RULE}`;
     return [
         '### 本轮回复模式（优先于预设中的输出顺序）',
         ...(storyOnly ? ['本轮使用剧情续写模式。'] : [
@@ -91,16 +75,16 @@ export function buildStoryCastInstruction(
         ]),
         '### 剧情续写',
         `候选角色（只用 ID 填写名单）：${JSON.stringify(actors.map(({ id, name }) => [id, name]))}`,
-        `本轮随机建议组合（优先考虑能自然成立的组合，可从候选池重组）：${JSON.stringify(proposals)}`,
-        `从候选中决定 ${range.minGroups}～${range.maxGroups} 个不同的组。整轮去重后共 ${range.minPeople}～${range.maxPeople} 位演员，每组至少一人。同一角色可跨组，每组内只填一次。用户执笔的身份不进入名单。`,
+        `本轮随机建议组合（优先考虑能自然成立的组合）：${JSON.stringify(proposals)}`,
+        STORY_CAST_TENDENCY,
+        '同一角色可出现在多个组。',
         '回复顺序：先独立输出 <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>；然后从原预设起始文本开始完整输出剧情正文；全部剧情区块结束后，最后输出 <private_axes>人物私轴 JSON</private_axes>。出演名单不得嵌入 <scene_header>、<story_text> 等原预设标签。',
         STORY_PRIVATE_AXES_RULE,
-        STORY_CAST_ACTION_RULE,
         prefill ? `出演名单关闭后，正文沿用预设起始文本：\n${prefill}` : '',
     ].filter(Boolean).join('\n');
 }
 
-export const STORY_CAST_ACTION_RULE = '按互动联系分组。同一地点可以有多组，人物也可以跨地点互动。每组成员都要在正文实际出场，依据各自私轴和关系自然互动，例如交谈、行动、协作、打断、观察或相互影响。单人组可推进自己的事。除用户执笔的身份外，正文仅允许名单中的角色实际出场。';
+export const STORY_CAST_TENDENCY = '本轮关注候选人物之间的关系与交流机会。结合人物当前生活、私轴、性格、关系和剧情进展安排人物行动，让角色之间形成各自的交流与生活联系。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读取各角色最近的私轴，人物从自身经历、人格、关系和环境中展开本轮行动。',
     '本轮剧情全部写完后，最后输出 <private_axes>JSON</private_axes>。JSON 以本轮出演角色 ID 为键，每个值为一段简短文字。',
@@ -138,8 +122,9 @@ export function storyPrivateAxesFromMessage(reply: Message, rowsById: ReadonlyMa
     const input = rowsById.get(inputId);
     if (inputId > 0 && (!input || input.metadata?.theaterInputRevision !== reply.metadata?.theaterPrivateAxesInputRevision)) return {};
     const axes = reply.metadata?.theaterPrivateAxes;
-    return Object.fromEntries(storyCastIds(storyCastFromMessage(reply) ?? []).flatMap(id => {
-        const axis = readAxis(axes?.[id]);
+    const groups = storyCastFromMessage(reply);
+    return Object.fromEntries((groups ? storyCastIds(groups) : Object.keys(axes)).flatMap(id => {
+        const axis = readAxis(axes[id]);
         return axis ? [[id, axis]] : [];
     }));
 }
@@ -186,8 +171,7 @@ function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>)
     const groups = sanitizeStoryCastGroups(parsed.value, allowed);
     return groups.length ? { groups, fragment: text.slice(start, parsed.end) } : undefined;
 }
-export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits, fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
-    void limits;
+export function parseStoryCastReply(text: string, candidateIds: readonly string[], fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
     const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
     const allowed = new Set(candidateIds);
     const castMatches = [...response.matchAll(/<turn_cast\b[^>]*>([\s\S]*?)<\/turn_cast\s*>/gi)];
@@ -197,21 +181,35 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     }
     const legacy = !groups.length && !fixedCast ? readLegacySceneHeaderGroups(response, allowed) : undefined;
     if (legacy) groups = legacy.groups;
-    const axes: StoryPrivateAxes = {};
-    if (groups.length) for (const match of response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)) {
+    const axes = new Map<string, StoryPrivateAxis>();
+    const axisIds = groups.length ? storyCastIds(groups) : allowed;
+    const axisMatches = [...response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)];
+    for (const match of axisMatches) {
         try {
             const raw = JSON.parse(unwrapFence(match[1])) as unknown;
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-            for (const id of storyCastIds(groups)) { const axis = readAxis((raw as Record<string, unknown>)[id]); if (axis && !axes[id]) axes[id] = axis; }
+            for (const id of axisIds) {
+                if (axes.has(id) || !Object.prototype.hasOwnProperty.call(raw, id)) continue;
+                const axis = readAxis((raw as Record<string, unknown>)[id]);
+                if (axis) axes.set(id, axis);
+            }
         } catch { /* 私轴为可选数据。 */ }
     }
     let body = response;
     for (const match of castMatches) body = body.replace(match[0], '');
-    for (const match of response.matchAll(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi)) body = body.replace(match[0], '');
+    for (const match of axisMatches) body = body.replace(match[0], '');
     if (legacy) body = body.replace(legacy.fragment, '');
+    const unclosedCast = /<turn_cast\b[^>]*>\s*/i.exec(body);
+    if (unclosedCast) {
+        const start = unclosedCast.index + unclosedCast[0].length;
+        const end = readJsonArrayAt(body, start)?.end;
+        const nextTag = body.slice(start).search(/<\/?[a-z][\w-]*\b/i);
+        body = body.slice(0, unclosedCast.index) + (end !== undefined
+            ? body.slice(end) : nextTag < 0 ? '' : body.slice(start + nextTag));
+    }
     // 输出在末尾私轴处截断时，仍保留已经完成的剧情正文。
     body = body.replace(/<private_axes\b[^>]*>[\s\S]*$/i, '').trim();
-    return { groups, axes, body };
+    return { groups, axes: Object.fromEntries(axes), body };
 }
 
 export function assertStoryRerollBody(text: string): string {

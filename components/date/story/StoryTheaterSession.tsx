@@ -54,7 +54,7 @@ import {
     type StoryApiMessage,
     type StoryGenerationSettings,
 } from '../../../utils/storyTheater';
-import { assertStoryRerollBody, buildStoryCastInstruction, canDrawStoryCast, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, STORY_CAST_ACTION_RULE, STORY_OUT_OF_STORY_RULE, STORY_PRIVATE_AXES_RULE, STORY_REPLY_MODE_RULE, storyCastFromMessage, storyCastIds, storyPrivateAxesFromMessage, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
+import { assertStoryRerollBody, buildStoryCastInstruction, drawStoryCastGroups, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, STORY_CAST_TENDENCY, STORY_OUT_OF_STORY_RULE, STORY_PRIVATE_AXES_RULE, storyCastFromMessage, storyCastIds, storyPrivateAxesFromMessage, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -320,9 +320,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const activeMiniTheater = useMemo(() => getActiveStoryMiniTheaterPrompt(effectivePreset.document), [effectivePreset.document]);
     const affinityEnabled = useMemo(() => effectivePreset.document.prompts.some(prompt => prompt.id === 'nmj-v65-affinity-control' && prompt.enabled), [effectivePreset.document]);
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
-    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits, actors.length), [entry.castLimits, actors.length]);
+    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits), [entry.castLimits]);
     const castEnabled = entry.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryCast(actors.length, castLimits);
+    const canStart = !castEnabled || actors.length > 0;
     const [messages, setMessages] = useState<Message[]>([]);
     const latestReply = [...messages].reverse().find(message => message.role === 'assistant');
     const currentCast = storyCastFromMessage(latestReply) ?? [];
@@ -705,10 +705,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 && (castEnabled || !Object.keys(latest.metadata?.theaterMirrorIds || {}).length);
             const fixedMessage = isReroll ? latest : retry ? latest : undefined;
             const rerollOutOfStory = isReroll && latest.metadata?.theaterOutOfStory === true;
-            const existingRecipientIds = Object.keys(fixedMessage?.metadata?.theaterMirrorIds || {});
-            // Older replies and interrupted inputs may already have mirrors, but no saved cast.
-            const fixedCast = rerollOutOfStory || (!isReroll && !castEnabled) ? undefined : (storyCastFromMessage(fixedMessage)
-                ?? (existingRecipientIds.length ? [existingRecipientIds] : undefined));
+            const fixedCast = rerollOutOfStory || (!isReroll && !castEnabled) ? undefined : storyCastFromMessage(fixedMessage);
             const castTurn = !rerollOutOfStory && (isReroll ? !!fixedCast : castEnabled);
             const fixedIds = fixedCast && storyCastIds(fixedCast);
             const requestActors = rerollOutOfStory ? [] : fixedIds ? characters.filter(actor => fixedIds.includes(actor.id)) : actors;
@@ -718,8 +715,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 actors.map(actor => actor.id), castLimits,
                 before.filter(message => message.role === 'assistant').flatMap(message => {
                     const groups = storyCastFromMessage(message);
-                    const legacyIds = Object.keys(message.metadata?.theaterMirrorIds || {});
-                    return groups ? [groups] : legacyIds.length ? [[legacyIds]] : [];
+                    return groups ? [groups] : [];
                 }),
             );
             // 重新生成与失败重试都从消息标记恢复“继续”，模型始终收到模式专属调度词；
@@ -859,8 +855,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(rerollOutOfStory || castTurn ? [{ role: 'system' as const, content: rerollOutOfStory
                         ? `本轮是重写上一条场外回复，必须继续场外交流。\n${STORY_OUT_OF_STORY_RULE}`
                         : fixedCast
-                        ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接按原预设生成完整剧情，最后更新私轴。\n${STORY_PRIVATE_AXES_RULE}\n${STORY_CAST_ACTION_RULE}${compiled.assistantPrefill ? `\n剧情正文以此开头：${compiled.assistantPrefill.content}` : ''}`
-                        : buildStoryCastInstruction(actors, castLimits, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening) }] : []),
+                        ? `沿用已确定的出演分组（角色 ID）：${JSON.stringify(fixedCast)}。直接按原预设生成完整剧情，最后更新私轴。\n${STORY_CAST_TENDENCY}\n${STORY_PRIVATE_AXES_RULE}${compiled.assistantPrefill ? `\n剧情正文以此开头：${compiled.assistantPrefill.content}` : ''}`
+                        : buildStoryCastInstruction(actors, proposals, compiled.assistantPrefill?.content, isContinueTurn || assistantOpening) }] : []),
                     ];
                     // 关闭出演模式：和官方原版一样，所有剧情请求都保留原生助手预填。
                     const nativePrefill = !castTurn && !rerollOutOfStory
@@ -906,14 +902,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const { groups, body, axes } = outOfStory
                 ? { groups: [], body: outOfStoryBody, axes: undefined }
                 : castTurn
-                    ? parseStoryCastReply(generated, requestActors.map(actor => actor.id), castLimits, fixedCast)
+                    ? parseStoryCastReply(generated, requestActors.map(actor => actor.id), fixedCast)
                     : { groups: [], body: assertStoryRerollBody(generated), axes: undefined };
             const castIds = new Set(storyCastIds(groups));
             const castActors = requestActors.filter(actor => castIds.has(actor.id));
-            const mirrorRecipientIds = castTurn && !outOfStory
-                ? (groups.length ? storyCastIds(groups) : requestActors.map(actor => actor.id))
-                : [];
-            const mirrorActors = requestActors.filter(actor => mirrorRecipientIds.includes(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
             // 不能将未完成的出演元数据与预设开头拼成一段假正文。
             if (castTurn && !body.replace(/<[^>]*>/g, '').trim()) {
@@ -945,7 +937,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     theaterPrivateAxes: axes,
                     theaterPrivateAxesInputRevision: turnInput?.metadata?.theaterInputRevision,
                 } : {}),
-                ...(!castTurn && !outOfStory ? { theaterFreeStory: true } : {}),
+                ...(!isReroll && !castTurn && !outOfStory ? { theaterFreeStory: true } : {}),
             };
             if (isReroll && rerollTarget) {
                 if (cannotRerollStoryReply(rerollTarget, promptEntry)) throw new Error('这条回复已进入记忆归档，请刷新后查看');
@@ -958,10 +950,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
-                }, turnInput, groups, entry.writesToCharacterMemory && castTurn && !outOfStory
+                }, turnInput, groups, entry.writesToCharacterMemory && groups.length
                     ? (id, original) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
-                    : undefined,
-                    entry.writesToCharacterMemory && castTurn && !outOfStory ? mirrorRecipientIds : undefined);
+                    : undefined);
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -969,7 +960,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await loadMessages();
             if (outOfStory) return;
             if (entry.writesToCharacterMemory) {
-                if (!isReroll && castTurn) void applyActorMemoryPipeline(mirrorActors);
+                if (!isReroll && castActors.length) void applyActorMemoryPipeline(castActors);
                 if (!isReroll && !castTurn) await archiveIfNeeded();
             } else void archiveIfNeeded();
         } catch (error: any) {
@@ -1104,7 +1095,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         <footer className='story-safe-footer shrink-0 px-4 pt-3 bg-stone-100/95 backdrop-blur border-t border-slate-200'>
             <div className='max-w-2xl mx-auto'>
                 {memoryStatus && <div className='mb-2 flex items-center gap-2 text-[10px] text-violet-600'><SpinnerGap size={13} className='animate-spin' />{memoryStatus}</div>}
-                {!canStart && <p role='status' className='mb-2 text-[10px] text-amber-700'>当前可进行场外对话。续写前请在剧场设置检查出演范围和候选人数。</p>}
+                {!canStart && <p role='status' className='mb-2 text-[10px] text-amber-700'>当前可进行场外对话。续写前请在剧场设置添加候选角色。</p>}
                 {!sending && !memoryStatus && !input.trim() && pendingRetryInput && <div className='mb-2 text-[10px] text-violet-600'>上次续写可能中断了，点击推进即可继续</div>}
                 {!sending && !memoryStatus && canWriteOpening && <div className='mb-2 text-[10px] text-violet-600'>准备好了，点击推进让故事写下第一幕</div>}
                 {affinityEnabled && <div className='mb-2 overflow-hidden rounded-2xl border border-rose-200 bg-rose-50/70'>

@@ -47,7 +47,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     }));
     const fetch = vi.fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(new Response('{}', { status: 503 }))
-        .mockResolvedValueOnce(reply('<story_text>越界回复</story_text>', [['unknown']]))
+        .mockResolvedValueOnce(reply('<story_text>越界回复</story_text>' + privateAxes([a.id], '钟楼待查'), [['unknown']]))
         .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, b.id], [b.id]]))
         .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。</story_text><scene_header><time>3天后</time></scene_header>', [[c.id]]))
         .mockResolvedValueOnce(reply(privateAxes([c.id], '收拾旧信') + '演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>'))
@@ -63,6 +63,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     let entry: StoryTheaterEntry = {
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
         characterIds: actors.map(actor => actor.id), writesToCharacterMemory: true, carryCharacterMemory: true,
+        castLimits: { minGroups: 3, maxGroups: 3 },
         selectedWorldbookIds: ['test-worldbook'],
         characterMemoryDates: { [a.id]: '2026-04-10T09:00', [b.id]: '2026-04-11T09:00', [c.id]: '2026-04-10T09:00' },
     };
@@ -112,24 +113,30 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await send(advance(), 1);
         await send(advance(), 2);
         expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
+        const fallbackRows = await DB.getMessagesByCharId(thread, true);
+        expect(fallbackRows.every(row => !row.metadata.theaterCastGroups && !row.metadata.theaterMirrorIds)).toBe(true);
+        expect(fallbackRows[1].metadata.theaterPrivateAxes).toEqual({ [a.id]: '钟楼待查' });
+        expect(mocks.archive).not.toHaveBeenCalled();
         for (const actor of actors) {
-            expect(await contents(actor.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+            expect(await contents(actor.id)).toEqual([]);
         }
         expect(checked()).toEqual([]);
         expect(mocks.toast.mock.calls.some(([message]) => String(message).includes('出演名单无效'))).toBe(false);
 
+        await setInput('我走到钟楼门口。');
         await send(advance(), 3);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id]));
         expect(checked()).toEqual([a.name, b.name]);
-        expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>', '我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
-        expect(await timeline(a.id)).toEqual([at(10), at(10), at(10), at(13)]);
-        expect(await timeline(b.id)).toEqual([at(11), at(10), at(10), at(13)]);
+        expect(await contents(a.id)).toEqual(['我走到钟楼门口。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
+        expect(await timeline(a.id)).toEqual([at(10), at(13)]);
+        expect(await timeline(b.id)).toEqual([at(11), at(13)]);
         expect(await contents(b.id)).toEqual(await contents(a.id));
-        expect(await contents(c.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
+        expect(await contents(c.id)).toEqual([]);
         expect(payload(2).at(-1)?.role).toBe('user');
-        expect(payload(2).map(row => row.content).join('\n')).toContain('本轮随机建议组合');
+        const suggestions = promptText(2).match(/本轮随机建议组合（优先考虑能自然成立的组合）：(.+)/)?.[1];
+        expect(JSON.parse(suggestions!)).toHaveLength(3);
         expect(promptText(2)).toContain('出演名单关闭后，正文沿用预设起始文本');
+        expect(promptText(2)).toContain(`"${a.id}":"钟楼待查"`);
         expect(payload(2).map(row => row.content).join('\n').match(/城南钟楼已经停摆/g)).toHaveLength(1);
         expect(container.textContent).toContain('第一幕暗号');
         expect(container.textContent).not.toContain('<turn_cast>');
@@ -141,11 +148,11 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
 
         await setInput('我翻到另一页。');
         await send(advance(), 4);
-        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id, a.id, b.id, c.id]));
+        await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, c.id]));
         expect(checked()).toEqual([c.name]);
-        expect(await contents(a.id)).toHaveLength(4);
-        expect(await contents(b.id)).toHaveLength(4);
-        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(13)]);
+        expect(await contents(a.id)).toHaveLength(2);
+        expect(await contents(b.id)).toHaveLength(2);
+        expect(await timeline(c.id)).toEqual([at(10), at(13)]);
         expect(lastReference(a.id)).toBe(at(13));
         expect(payload(3).map(row => row.content).join('\n').match(/第一幕暗号/g)).toHaveLength(1);
         expect(promptText(3)).toContain('各角色最近有效私轴');
@@ -154,11 +161,11 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await vi.waitFor(async () => { await flush(); expect(reroll.disabled).toBe(false); });
         await send(reroll, 5);
         expect(checked()).toEqual([c.name]);
-        expect(await contents(c.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>', '我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>']);
-        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15)]);
+        expect(await contents(c.id)).toEqual(['我翻到另一页。', '<story_text>演员 c 独自收拾旧信。</story_text><scene_header><time>5天后</time></scene_header>']);
+        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
         expect(lastReference(c.id)).toBe(at(10));
         expect(await contents(thread)).toHaveLength(6);
-        expect(mocks.archive).toHaveBeenCalledTimes(6);
+        expect(mocks.archive).toHaveBeenCalledTimes(3);
         expect(payload(4).map(row => row.content).join('\n')).toContain('沿用已确定的出演分组');
         expect(payload(4).map(row => row.content).join('\n')).not.toContain('本轮随机建议组合');
         expect(promptText(4)).not.toContain(`"${c.id}":"整理旧线索"`);
@@ -171,6 +178,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(promptText(5)).not.toContain('共通文件夹 · 其他剧场原文');
         expect(await contents(thread)).toHaveLength(6);
         expect(await contents(a.id)).toHaveLength(4);
+        await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(4));
 
         const historyPrompt = preset.document.prompts.find(prompt => prompt.marker === 'history')!;
         historyPrompt.enabled = false;
@@ -209,9 +217,9 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             expect(row.metadata.theaterTimelineTimestamp).toBeUndefined();
         }
         expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
-        expect(archiveCalls).toBe(6);
+        expect(archiveCalls).toBe(4);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
-        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15)]);
+        expect(await timeline(c.id)).toEqual([at(10), at(15)]);
 
         historyPrompt.enabled = true;
         await render('other-cast-session');
@@ -220,7 +228,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(payload(9).some(row => row.content.includes('本轮使用剧情续写模式'))).toBe(true);
         expect(lastReference(c.id)).toBe(at(15));
         expect(promptText(9)).toContain(`"${c.id}":"收拾旧信"`);
-        expect(await timeline(c.id)).toEqual([at(10), at(10), at(10), at(15), at(15), at(17)]);
+        expect(await timeline(c.id)).toEqual([at(10), at(15), at(15), at(17)]);
         expect(checked()).toEqual([c.name]);
         await vi.waitFor(() => expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls + 1));
 
@@ -268,7 +276,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await setInput('移回后的新一轮。');
         await send(advance(), 14);
         expect(promptText(13)).toContain('来源剧场：剧情选角验证');
-        expect(promptText(13)).not.toMatch(/第一幕暗号|我在窗边坐下/);
+        expect(promptText(13)).toContain('越界回复');
+        expect(promptText(13)).not.toMatch(/第一幕暗号|我走到钟楼门口/);
         for (const [id] of watermarks) localStorage.removeItem(`mp_lastMsgId_${id}`);
 
         await setInput('本剧场长输入' + '长'.repeat(26_000));
@@ -311,6 +320,40 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await setInput('出戏聊聊？');
         await send(advance(), 19);
         expect(container.textContent).toContain('我们聊聊这一段。');
+
+        entry = { ...entry, id: 'legacy-mirrored-session', castModeEnabled: true };
+        const legacyThread = storyTheaterThreadId(entry.id);
+        const legacyContent = '<story_text>旧版只有镜像。</story_text>';
+        await DB.saveStoryTheater(entry);
+        const mirrorId = await DB.saveMessage({ charId: a.id, role: 'assistant', type: 'text', content: legacyContent,
+            metadata: { source: 'story_theater_memory', theaterId: entry.id } });
+        const legacyId = await DB.saveMessage({ charId: legacyThread, role: 'assistant', type: 'text', content: legacyContent,
+            metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: 0, theaterMirrorIds: { [a.id]: mirrorId } } });
+        fetch.mockImplementationOnce(async () => reply('旧版正文已重写。</story_text>'));
+        await render(entry.id);
+        const legacyReroll = await vi.waitFor(async () => {
+            await flush();
+            const button = Array.from(container.querySelectorAll('button')).find(node => node.textContent?.includes('换一种写法'));
+            expect(button?.disabled).toBe(false);
+            return button!;
+        });
+        await send(legacyReroll, 20);
+        expect(promptText(19)).not.toMatch(/沿用已确定的出演分组|本轮随机建议组合|<turn_cast>/);
+        expect(payload(19).at(-1)).toEqual({ role: 'assistant', content: '<story_text>' });
+        const legacyReply = await DB.getMessageById(legacyId);
+        expect(legacyReply?.metadata.theaterCastGroups).toBeUndefined();
+        expect(legacyReply?.metadata.theaterMirrorIds).toEqual({ [a.id]: mirrorId });
+        expect(legacyReply?.content).toBe('<story_text>旧版正文已重写。</story_text>');
+        expect((await DB.getMessageById(mirrorId))?.content).toBe(legacyReply?.content);
+
+        const beforeMissingCast = await Promise.all(actors.map(actor => contents(actor.id)));
+        fetch.mockImplementationOnce(async () => reply('<story_text>没有名单的续写。</story_text>'));
+        await setInput('继续故事。');
+        await send(advance(), 21);
+        const missingCastReply = (await DB.getMessagesByCharId(legacyThread, true)).at(-1);
+        expect(missingCastReply?.content).toBe('<story_text>没有名单的续写。</story_text>');
+        expect(missingCastReply?.metadata.theaterMirrorIds).toBeUndefined();
+        expect(await Promise.all(actors.map(actor => contents(actor.id)))).toEqual(beforeMissingCast);
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

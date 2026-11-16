@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, DownloadSimple, LockSimple, UploadSimple, UserCircle } from '@phosphor-icons/react';
 import { DB } from '../../../utils/db';
 import { storyTheaterThreadId } from '../../../utils/storyTheater';
-import { canDrawStoryCast, normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
+import { normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
 import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
@@ -59,10 +59,10 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         return characters.filter(char => participantIds.has(char.id));
     }, [characters, draft.characterIds, draft.mask]);
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
-    const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
+    const castLimits = normalizeStoryCastLimits(draft.castLimits);
     const validCastLimits = validStoryCastLimits(castLimits);
     const castEnabled = draft.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryCast(actors.length, castLimits);
+    const canStart = !castEnabled || (actors.length > 0 && validCastLimits);
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
@@ -92,7 +92,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         setSaving(true);
         const archiveAfter = Math.max(2, Math.min(200, Number(draft.archiveAfter) || 40));
         const archiveKeepRecent = Math.max(1, Math.min(archiveAfter - 1, Number(draft.archiveKeepRecent) || 5));
-        try { await onSave({ ...draft, castLimits: castEnabled ? castLimits : draft.castLimits, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
+        try { await onSave({ ...draft, castLimits: castEnabled || draft.castLimits ? castLimits : undefined, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
         finally { setSaving(false); }
     };
     const recentContextFields = <div className='space-y-2'>
@@ -149,21 +149,20 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <Toggle label='出演模式' value={castEnabled} onChange={value => update('castModeEnabled', value)} />
                 </div>
                 {castEnabled && <fieldset className='mt-4'>
-                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
+                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮随机建议组数</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
                             ['minGroups', '最少组数'], ['maxGroups', '最多组数'],
-                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'],
                         ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
                             {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
                                 onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}
                                 className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。同一人物可跨组，出演人数按整轮去重。</p>
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。同一角色可跨组。</p>
                     {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
-                        ? '请填写正整数，且每项最小值不能超过最大值。'
-                        : '当前候选或最多出演人数不足以满足最少组数或人数。请调整范围或增加候选。'}</p>}
+                        ? '请填写正整数，且最少组数不能超过最多组数。'
+                        : '请至少添加一位候选角色。'}</p>}
                 </fieldset>}
             </section>
             <section className='pt-6 border-t border-slate-200'>
