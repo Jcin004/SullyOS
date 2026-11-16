@@ -47,6 +47,8 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
     };
     try {
         const legacyCastLimits = { minGroups: 1, maxGroups: 4, minPeople: 6, maxPeople: 12 };
+        expect(normalizeStoryTheater({ ...createStoryTheaterDraft(), castLimits: legacyCastLimits }).castLimits)
+            .toEqual({ minGroups: 1, maxGroups: 4 });
         await open({
             ...createStoryTheaterDraft(),
             title: '真实剧情',
