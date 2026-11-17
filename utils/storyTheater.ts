@@ -11,6 +11,7 @@ import type {
     UserProfile,
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
+import { formatStoryRelationshipPanel, parseStoryRelationshipPanel, upgradeStoryRelationshipPrompts, type StoryRelationshipPanel } from './storyTheaterRelationships';
 import {
     type WorldbookScanMessage,
 } from './worldbook';
@@ -79,12 +80,13 @@ export interface ResolvedStoryTheaterMask {
     characterId?: string;
 }
 
-export type StoryDisplayBlockKind = 'story' | 'scene' | 'backstage' | 'worldline' | 'debts' | 'theater' | 'choices' | 'affinity' | 'other';
+export type StoryDisplayBlockKind = 'story' | 'scene' | 'backstage' | 'worldline' | 'debts' | 'theater' | 'choices' | 'affinity' | 'relationship' | 'other';
 export interface StoryDisplayBlock {
     kind: StoryDisplayBlockKind;
     title?: string;
     text: string;
     theater?: StoryMiniTheaterDisplay;
+    relationship?: StoryRelationshipPanel;
 }
 
 export interface StoryMiniTheaterDisplayMessage {
@@ -523,7 +525,7 @@ export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
     id: 'builtin-night-screening',
     name: '糯米鸡｜夜班放映室 V6.27',
     format: 'sullyos-story-preset',
-    document: mergeNightScreeningBackstageAndDebts(normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27')),
+    document: upgradeStoryRelationshipPrompts(mergeNightScreeningBackstageAndDebts(normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27'))),
     builtIn: true,
     createdAt: 0,
     updatedAt: 0,
@@ -609,15 +611,15 @@ export const resolveStoryPresetDocument = (
     preset: StoryTheaterPreset,
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
-    if (!override) return ensureStoryTheaterPromptSection(preset.document);
-    if (!preset.builtIn) return ensureStoryTheaterPromptSection(override);
+    if (!override) return upgradeStoryRelationshipPrompts(ensureStoryTheaterPromptSection(preset.document));
+    if (!preset.builtIn) return upgradeStoryRelationshipPrompts(ensureStoryTheaterPromptSection(override));
     const enabledById = new Map(override.prompts.map(prompt => [prompt.id, prompt.enabled]));
-    return ensureStoryTheaterPromptSection({
+    return upgradeStoryRelationshipPrompts(ensureStoryTheaterPromptSection({
         ...preset.document,
         prompts: preset.document.prompts.map(prompt => enabledById.has(prompt.id)
             ? { ...prompt, enabled: enabledById.get(prompt.id) === true }
             : prompt),
-    });
+    }));
 };
 
 export const parseStoryTheaterPreset = (rawText: string, sourceFileName: string, now: number = Date.now()): StoryTheaterPreset => {
@@ -626,7 +628,7 @@ export const parseStoryTheaterPreset = (rawText: string, sourceFileName: string,
     try { data = JSON.parse(rawText); } catch { throw new Error('不是有效的 JSON 预设'); }
     const fileBase = sourceFileName.replace(/\.json$/i, '').trim() || '导入预设';
     if (data.schema !== 'sullyos.story-preset') throw new Error('只接受糯米机剧情预设（schema: sullyos.story-preset）');
-    const document = ensureStoryTheaterPromptSection(normalizeDocument(data, fileBase));
+    const document = upgradeStoryRelationshipPrompts(ensureStoryTheaterPromptSection(normalizeDocument(data, fileBase)));
     return { id: makeStoryTheaterId(), name: document.name, sourceFileName, format: 'sullyos-story-preset', document, createdAt: now, updatedAt: now };
 };
 
@@ -675,7 +677,7 @@ const STORY_PRESET_GROUP_SPECS = [
     { key: 'theater', label: '出演模式', description: '出演名单、交流倾向、实际互动记录、人物连续性与私轴协议', start: 'nmj-v67-section-theater-start', end: 'nmj-v67-section-theater-end' },
     { key: 'story', label: '人物与剧情', description: '人物发动机、证据门、推进、对白与纠偏', start: 'nmj-v64-section-story-start', end: 'nmj-v64-section-story-end' },
     { key: 'tone', label: '文风与张力', description: '文风、场景张力、亲密镜头与叠加仲裁', start: 'nmj-v64-section-style-start', end: 'nmj-v64-section-arbitration-end' },
-    { key: 'camera', label: '镜头与关系', description: '人称、执笔权与多角色 U→C 关系温度', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
+    { key: 'camera', label: '镜头与关系', description: '人称、执笔权与主要角色的双向关系三轴', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
     { key: 'output', label: '语言与输出', description: '语言、篇幅、场景条、幕后与余波、世界线', start: 'nmj-v64-section-language-start', end: 'nmj-v64-section-output-end' },
     { key: 'extras', label: '幕间与选项', description: '小剧场、边角频道与回复方向', start: 'nmj-v64-section-theater-start', end: 'nmj-v64-section-choices-end' },
     { key: 'exit', label: '出口与收尾', description: '出口检查、核心续写与定义增强', start: 'nmj-v64-section-exit-start', end: 'enhanceDefinitions' },
@@ -1325,7 +1327,8 @@ const DISPLAY_BLOCK_META: Record<string, { kind: StoryDisplayBlockKind; title?: 
     shot_debts: { kind: 'debts', title: '尚未偿还的镜头' },
     mini_theater: { kind: 'theater', title: '幕间剧场' },
     reply_choices: { kind: 'choices', title: '可以这样推进' },
-    affinity_panel: { kind: 'affinity', title: '关系变化' },
+    affinity_panel: { kind: 'affinity', title: '历史关系' },
+    relationship_panel: { kind: 'relationship', title: '双向关系' },
 };
 
 const DISPLAY_TAG_LABELS: Record<string, string> = {
@@ -1443,7 +1446,7 @@ const formatTaggedStoryFragment = (fragment: string): string => {
 export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] => {
     const source = String(content || '');
     const blocks: StoryDisplayBlock[] = [];
-    const topLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
+    const topLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel|relationship_panel)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
     let cursor = 0;
     let match: RegExpExecArray | null;
     const push = (kind: StoryDisplayBlockKind, text: string, title?: string) => {
@@ -1467,6 +1470,9 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
         const meta = DISPLAY_BLOCK_META[match[1].toLowerCase()] || { kind: 'other' as const };
         if (meta.kind === 'theater') {
             pushTheater(match[2], meta.title);
+        } else if (meta.kind === 'relationship') {
+            const relationship = parseStoryRelationshipPanel(match[2]);
+            if (relationship) blocks.push({ kind: 'relationship', title: meta.title, relationship, text: formatStoryRelationshipPanel(relationship) });
         } else {
             push(meta.kind, match[2], meta.title);
         }
