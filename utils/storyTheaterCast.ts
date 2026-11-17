@@ -294,6 +294,7 @@ export function drawStoryInteractionPlan(
     limits: StoryCastLimits,
     history: readonly StoryInteractionHistoryEntry[],
     random = Math.random,
+    primaryActorId?: string,
 ): StoryInteractionPlan {
     const candidates = [...new Set(ids)];
     const range = effectiveInteractionLimits(candidates.length, limits);
@@ -328,7 +329,7 @@ export function drawStoryInteractionPlan(
     const pickInt = (min: number, max: number) => min + Math.floor(Math.min(0.999999999, Math.max(0, random())) * (max - min + 1));
     const size = pickInt(range.minPeople, range.maxPeople);
     const castIds = candidates.map(id => {
-        const weight = 1 / (1 + (appearances.get(id) ?? 0) * 0.75);
+        const weight = id === primaryActorId ? 1 : 1 / (1 + (appearances.get(id) ?? 0) * 0.75);
         const rank = -Math.log(Math.max(1e-12, random())) / weight;
         return { id, rank };
     }).sort((a, b) => a.rank - b.rank).slice(0, size).map(item => item.id);
@@ -429,9 +430,8 @@ function readAxis(value: unknown): StoryPrivateAxis | undefined {
 
 export function storyPrivateAxesFromMessage(reply: Message, rowsById: ReadonlyMap<number, Message>): StoryPrivateAxes {
     if (!reply.metadata?.theaterPrivateAxes || reply.metadata.theaterOutOfStory) return {};
-    const inputId = reply.metadata?.theaterInputId;
-    const input = rowsById.get(inputId);
-    if (inputId > 0 && (!input || input.metadata?.theaterInputRevision !== reply.metadata?.theaterPrivateAxesInputRevision)) return {};
+    void rowsById;
+    // A later edit of the input must not erase an already-generated private axis.
     const axes = reply.metadata?.theaterPrivateAxes;
     return Object.fromEntries(storyCastIdsFromMessage(reply).flatMap(id => {
         const axis = readAxis(axes?.[id]);
