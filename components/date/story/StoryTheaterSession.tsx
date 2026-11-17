@@ -906,6 +906,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     : { groups: [], body: assertStoryRerollBody(generated), axes: undefined };
             const castIds = new Set(storyCastIds(groups));
             const castActors = requestActors.filter(actor => castIds.has(actor.id));
+            const mirrorActors = entry.writesToCharacterMemory && castTurn && !outOfStory
+                ? (groups.length ? castActors : requestActors) : [];
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
             // 不能将未完成的出演元数据与预设开头拼成一段假正文。
             if (castTurn && !body.replace(/<[^>]*>/g, '').trim()) {
@@ -944,15 +946,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 const finalTimes = new Map(castActors.map(actor => [
                     actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, timelineByActor.get(actor.id), content),
                 ]));
-                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes, previousUser);
+                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, finalTimes);
             } else {
-                if (userMessageId && (!turnInput || turnInput.content.trim() !== text)) throw new Error('本轮输入已被修改，请刷新后重试');
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
-                }, turnInput, groups, entry.writesToCharacterMemory && groups.length
+                }, userMessageId, groups, mirrorActors.length
                     ? (id, original) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
-                    : undefined);
+                    : undefined, mirrorActors.map(actor => actor.id));
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -960,7 +961,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             await loadMessages();
             if (outOfStory) return;
             if (entry.writesToCharacterMemory) {
-                if (!isReroll && castActors.length) void applyActorMemoryPipeline(castActors);
+                if (!isReroll && mirrorActors.length) void applyActorMemoryPipeline(mirrorActors);
                 if (!isReroll && !castTurn) await archiveIfNeeded();
             } else void archiveIfNeeded();
         } catch (error: any) {

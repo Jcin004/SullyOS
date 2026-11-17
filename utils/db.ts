@@ -1040,7 +1040,7 @@ export const DB = {
   /** Commit the central reply and both sets of text mirrors together. */
   commitStoryTheaterTurn: async (
       reply: Omit<Message, 'id'>,
-      pending: Message | undefined,
+      inputId: number,
       groups: string[][],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
       mirrorRecipientIds?: readonly string[],
@@ -1073,33 +1073,28 @@ export const DB = {
         const saveOriginal = (original: Message, existing: Record<string, number> = {}) => {
             const recipients = makeMirror ? actorIds : [];
             const mirrors = new Map(Object.entries(existing));
-            if (mirrors.size && (mirrors.size !== recipients.length || recipients.some(id => !mirrors.has(id)))) {
-                throw new Error('本轮已有不同的记忆接收者，原记录已保留');
-            }
             const finish = () => store.put({ ...original, metadata: {
                 ...original.metadata,
-                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : groups.length ? { theaterCastGroups: groups } : {}),
+                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true }
+                    : groups.length && !original.metadata?.theaterCastGroups ? { theaterCastGroups: groups } : {}),
                 ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
                 ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
             } });
             const missing = recipients.filter(id => !mirrors.has(id));
             if (!makeMirror || missing.length === 0) { finish(); return; }
+            let remaining = missing.length;
             for (const actorId of missing) add(makeMirror(actorId, original), id => {
                 mirrors.set(actorId, id);
-                if (mirrors.size === recipients.length) finish();
+                if (--remaining === 0) finish();
             });
         };
-        const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
-        latest.onsuccess = () => guarded(() => {
-            const cursor = latest.result;
-            const current = cursor?.value as Message | undefined;
-            if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
-            if (pending ? !current || current.id !== pending.id || current.role !== 'user' || current.content !== pending.content
-                || current.metadata?.theaterInputRevision !== pending.metadata?.theaterInputRevision : current) {
-                throw new Error('剧情已在别处修改或推进，请刷新后重试');
-            }
+        const saveReply = () => add(reply, id => saveOriginal({ ...reply, id }));
+        if (!inputId) { saveReply(); return; }
+        const input = store.get(inputId);
+        input.onsuccess = () => guarded(() => {
+            const current = input.result as Message | undefined;
             if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);
-            add(reply, id => saveOriginal({ ...reply, id }));
+            saveReply();
         });
     });
   },

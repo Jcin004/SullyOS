@@ -13,6 +13,10 @@ export function validStoryCastLimits({ minGroups, maxGroups }: StoryCastLimits):
 }
 
 const groupKey = (group: readonly string[]) => JSON.stringify([...group].sort());
+const groupPairs = (group: readonly string[]) => {
+    const ids = [...new Set(group)].sort();
+    return ids.flatMap((id, index) => ids.slice(index + 1).map(other => JSON.stringify([id, other])));
+};
 export const storyCastIds = (groups: readonly (readonly string[])[]) => [...new Set(groups.flat())];
 export const storyCastFromMessage = (message?: Message): string[][] | undefined => {
     const value: unknown = message?.metadata?.theaterCastGroups;
@@ -28,21 +32,18 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
     const pick = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     const count = pick(Math.min(limits.minGroups, capacity), Math.min(limits.maxGroups, capacity));
     const minSize = Math.ceil(Math.log2(count + 1));
-    const people = new Map<string, number>();
-    const groups = new Map<string, number>();
+    const pairWeights = new Map<string, number>();
     recent.slice(-6).reverse().forEach((turn, index) => {
         const weight = (6 - index) / 6;
-        for (const group of turn) {
-            for (const id of new Set(group)) people.set(id, (people.get(id) ?? 0) + weight);
-            const key = groupKey(group);
-            groups.set(key, (groups.get(key) ?? 0) + weight);
+        for (const pair of new Set(turn.flatMap(groupPairs))) {
+            pairWeights.set(pair, (pairWeights.get(pair) ?? 0) + weight);
         }
     });
     let best: string[][] = [];
     let bestScore = -1;
     for (let sample = 0; sample < 24; sample++) {
         const size = pick(minSize, candidates.length);
-        const selected = candidates.map(id => ({ id, rank: -Math.log(1 - random()) * (1 + (people.get(id) ?? 0)) }))
+        const selected = candidates.map(id => ({ id, rank: random() }))
             .sort((a, b) => a.rank - b.rank).slice(0, size).map(row => row.id);
         const proposed = selected.slice(0, count).map(id => [id]);
         for (const id of selected.slice(count)) proposed[pick(0, proposed.length - 1)].push(id);
@@ -56,7 +57,7 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
             const key = groupKey(group);
             if (!used.has(key)) { used.add(key); proposed.push(group); }
         }
-        const repetition = proposed.reduce((sum, group) => sum + (groups.get(groupKey(group)) ?? 0), 0);
+        const repetition = proposed.flatMap(groupPairs).reduce((sum, pair) => sum + (pairWeights.get(pair) ?? 0), 0);
         const score = random() / (1 + repetition / count);
         if (score > bestScore) { best = proposed; bestScore = score; }
     }
@@ -84,7 +85,7 @@ export function buildStoryCastInstruction(
     ].filter(Boolean).join('\n');
 }
 
-export const STORY_CAST_TENDENCY = '本轮关注候选人物之间的关系与交流机会。结合人物当前生活、私轴、性格、关系和剧情进展安排人物行动，让角色之间形成各自的交流与生活联系。';
+export const STORY_CAST_TENDENCY = '随机建议只影响本轮对交流机会的关注。人物根据性格、当前事务、私轴、关系和剧情进展，自然决定是否交流、与谁交流。';
 export const STORY_PRIVATE_AXES_RULE = [
     '读取各角色最近的私轴，人物从自身经历、人格、关系和环境中展开本轮行动。',
     '本轮剧情全部写完后，最后输出 <private_axes>JSON</private_axes>。JSON 以本轮出演角色 ID 为键，每个值为一段简短文字。',

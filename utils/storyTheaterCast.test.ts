@@ -23,28 +23,25 @@ describe('剧场选角协议', () => {
         expect(() => assertStoryRerollBody(discussion)).toThrow('本轮只需返回正文');
     });
 
-    it('随机建议可变化，降低近期熟面孔和固定搭档的权重', () => {
+    it('随机建议降低近期固定搭档的权重，即使两人曾在不同大小的组里互动', () => {
         const pairLimits = normalizeStoryCastLimits({ maxGroups: 1 });
-        const recent = Array.from({ length: 6 }, () => [['a', 'b']]);
+        const recent = Array.from({ length: 6 }, (_, index) => [index % 2 ? ['a', 'b', 'c'] : ['d', 'b', 'a']]);
         const sample = (history: string[][][]) => Array.from({ length: 120 }, (_, i) =>
-            drawStoryCastGroups(ids, pairLimits, history, seededRandom(7121 * (i + 1)))[0].sort().join(''));
+            drawStoryCastGroups(ids, pairLimits, history, seededRandom(7121 * (i + 1)))[0]);
         const unweighted = sample([]);
         const weighted = sample(recent);
-        expect(new Set(weighted).size).toBeGreaterThan(2);
-        expect(weighted.filter(group => group === 'ab').length).toBeLessThan(unweighted.filter(group => group === 'ab').length);
-        expect(weighted.filter(group => group.includes('a')).length).toBeLessThan(unweighted.filter(group => group.includes('a')).length);
+        const repeatsPair = (group: string[]) => group.includes('a') && group.includes('b');
+        expect(new Set(weighted.map(group => group.sort().join(''))).size).toBeGreaterThan(2);
+        expect(weighted.filter(repeatsPair).length).toBeLessThan(unweighted.filter(repeatsPair).length);
     });
 
-    it('同一轮跨组出现的角色比只在一组中出现的角色降权更多', () => {
+    it('角色的单独出场次数不影响随机交流建议', () => {
         const oneGroup = { minGroups: 1, maxGroups: 1 };
-        // 两份历史都只有一轮、两个组和相同的角色集合，也都没有单人组。
-        const sample = (history: string[][][]) => Array.from({ length: 120 }, (_, i) => {
-            const random = seededRandom(7121 * (i + 1));
-            let calls = 0;
-            const singleActorDraw = () => calls++ === 0 || (calls - 2) % 6 === 0 ? 0 : random();
-            return drawStoryCastGroups(ids, oneGroup, history, singleActorDraw)[0][0];
-        }).filter(id => id === 'a').length;
-        expect(sample([[['a', 'b'], ['a', 'c', 'd']]])).toBeLessThan(sample([[['a', 'b'], ['b', 'c', 'd']]]));
+        const sample = (history: string[][][]) => Array.from({ length: 120 }, (_, index) =>
+            drawStoryCastGroups(ids, oneGroup, history, seededRandom(7121 * (index + 1))));
+        const paired = [[['a', 'b']], [['c', 'a'], ['a', 'd']]];
+        const frequentLead = paired.map(turn => [...turn, ['a']]);
+        expect(sample(frequentLead)).toEqual(sample(paired));
     });
 
     it('完整保留正文协议并剥离名单', () => {
@@ -74,7 +71,9 @@ describe('剧场选角协议', () => {
             `\uFEFF${fence}xml\n${protocol}\n正文\n${fence}`,
             `${fence}xml\n${protocol}\n${fence}\n正文`,
         ]) expect(parseStoryCastReply(output, ids)).toEqual({ groups, axes: { a: axis, b: axis }, body: '正文' });
-        expect(drawStoryCastGroups(['a', 'b'], range, [], seededRandom(3))).toHaveLength(3);
+        const proposals = drawStoryCastGroups(['a', 'b'], range, [], seededRandom(3));
+        expect(proposals).toHaveLength(3);
+        expect(proposals.filter(group => group.includes('a'))).toHaveLength(2);
         expect(parseStoryCastReply(axes(['a', 'b']) + '正文', ids, groups).groups).toEqual(groups);
         expect(parseStoryCastReply(axes(['a']) + '正文', ids, groups).axes).toEqual({ a: axis });
         expect(parseStoryCastReply(axes(['a', 'c']) + '正文', ids, groups).axes).toEqual({ a: axis });
@@ -118,7 +117,8 @@ describe('剧场选角协议', () => {
         const instruction = buildStoryCastInstruction([{ id: 'a', name: '角色A' }], [['a']], '<scene_header>');
         expect(instruction).toContain('候选角色（只用 ID 填写名单）：[["a","角色A"]]');
         expect(instruction).toContain('本轮随机建议组合（优先考虑能自然成立的组合）：[["a"]]');
-        expect(instruction).toContain('本轮关注候选人物之间的关系与交流机会。结合人物当前生活、私轴、性格、关系和剧情进展安排人物行动，让角色之间形成各自的交流与生活联系。');
+        expect(instruction).toContain('随机建议只影响本轮对交流机会的关注。');
+        expect(instruction).toContain('人物根据性格、当前事务、私轴、关系和剧情进展，自然决定是否交流、与谁交流。');
         expect(instruction).toContain('同一角色可出现在多个组。');
         expect(instruction).not.toMatch(/每组成员|每组至少|整轮去重|单人组|仅允许名单|重组|从候选中决定/);
         const cast = instruction.indexOf('先独立输出 <turn_cast>');
