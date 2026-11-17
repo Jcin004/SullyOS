@@ -999,7 +999,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ]));
                 await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes, previousUser);
             } else {
-                if (userMessageId && (!turnInput || turnInput.content.trim() !== text)) throw new Error('本轮输入已被修改，请刷新后重试');
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
