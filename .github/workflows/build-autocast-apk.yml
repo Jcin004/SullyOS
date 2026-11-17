@@ -88,14 +88,14 @@ jobs:
       - name: Prepare APK output
         run: |
           mkdir -p apk-output
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Interaction-Scheduler-20261115.apk
-          sha256sum apk-output/SullyOS-Interaction-Scheduler-20261115.apk
-          ls -lh apk-output/SullyOS-Interaction-Scheduler-20261115.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Unified-Story-20261117.apk
+          sha256sum apk-output/SullyOS-Unified-Story-20261117.apk
+          ls -lh apk-output/SullyOS-Unified-Story-20261117.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-Interaction-Scheduler-20261115-APK
-          path: apk-output/SullyOS-Interaction-Scheduler-20261115.apk
+          name: SullyOS-Unified-Story-20261117-APK
+          path: apk-output/SullyOS-Unified-Story-20261117.apk
           if-no-files-found: error
           retention-days: 14
