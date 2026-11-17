@@ -753,11 +753,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const generatedPlan = castTurn && !fixedCastIds?.length
                 ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory, Math.random, primaryActor?.id)
                 : undefined;
-            const selectedCastIds = castTurn ? (fixedCastIds?.length ? fixedCastIds : generatedPlan?.castIds ?? []) : [];
+            const selectedCastIds = castTurn
+                ? (fixedCastIds?.length ? fixedCastIds : generatedPlan?.castIds?.length ? generatedPlan.castIds : actors.map(actor => actor.id))
+                : [];
             const interactionTendencies = castTurn
                 ? (fixedCastIds?.length ? fixedTendencies : generatedPlan?.tendencies ?? [])
                 : [];
-            if (castTurn && !selectedCastIds.length) throw new Error('无法生成有效出演名单，请检查出演人数与交流倾向组数设置。');
             const requestActors = rerollOutOfStory ? [] : castTurn
                 ? characters.filter(actor => selectedCastIds.includes(actor.id)) : actors;
             if (castTurn && requestActors.length !== selectedCastIds.length) throw new Error('原出演名单中有角色已不存在，无法沿用名单重写');
