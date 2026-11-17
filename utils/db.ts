@@ -1073,6 +1073,9 @@ export const DB = {
         const saveOriginal = (original: Message, existing: Record<string, number> = {}) => {
             const recipients = makeMirror ? actorIds : [];
             const mirrors = new Map(Object.entries(existing));
+            if (mirrors.size && (mirrors.size !== recipients.length || recipients.some(id => !mirrors.has(id)))) {
+                throw new Error('本轮已有不同的记忆接收者，原记录已保留');
+            }
             const finish = () => store.put({ ...original, metadata: {
                 ...original.metadata,
                 ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : castIds.length ? {
@@ -1090,20 +1093,18 @@ export const DB = {
                 if (mirrors.size === recipients.length) finish();
             });
         };
-        // Follow the original theater's save semantics: finish the generated reply even
-        // if the input was edited while the model was writing. Update that input by ID.
-        if (pending?.id) {
-            const request = store.get(pending.id);
-            request.onsuccess = () => guarded(() => {
-                const current = request.result as Message | undefined;
-                if (current?.role === 'user' && current.metadata?.source === 'story_theater') {
-                    saveOriginal(current, current.metadata?.theaterMirrorIds);
-                }
-                add(reply, id => saveOriginal({ ...reply, id }));
-            });
-        } else {
+        const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
+        latest.onsuccess = () => guarded(() => {
+            const cursor = latest.result;
+            const current = cursor?.value as Message | undefined;
+            if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+            // 输入原地编辑后 ID 不变，镜像使用刚从数据库读出的正文。
+            if (pending ? !current || current.id !== pending.id || current.role !== 'user' : current) {
+                throw new Error('剧情已在别处推进，请刷新后重试');
+            }
+            if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);
             add(reply, id => saveOriginal({ ...reply, id }));
-        }
+        });
     });
   },
 

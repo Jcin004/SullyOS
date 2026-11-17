@@ -153,7 +153,6 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <div className='grid grid-cols-2 gap-2'>
                         {([
                             ['minGroups', '最少交流倾向组数'], ['maxGroups', '最多交流倾向组数'],
-
                         ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
                             {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
                                 onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}

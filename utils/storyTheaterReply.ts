@@ -25,9 +25,7 @@ export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故
 export async function replaceStoryTheaterReply(
     original: Message, content: string, metadata: Record<string, unknown>, requireLatest = false,
     timelineByActor?: ReadonlyMap<string, number | undefined>,
-    input?: Message,
 ): Promise<void> {
-    void input;
     const mirrorIds = Object.values((original.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(id => Number.isFinite(id) && id > 0);
     const ids = [...new Set([original.id, ...mirrorIds])];
     const db = await openDB();

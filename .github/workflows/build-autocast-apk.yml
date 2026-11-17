@@ -17,6 +17,11 @@ on:
       - utils/storyTheaterCast.ts
       - utils/storyTheaterCast.test.ts
       - utils/storyTheaterSessionCast.test.ts
+      - utils/storyTheaterRelationships.ts
+      - utils/storyTheaterRelationships.test.ts
+      - utils/storyTheaterReply.ts
+      - utils/storyTheaterTurn.test.ts
+      - utils/storyTheaterContextSettings.test.ts
       - utils/storyPresetGroups.test.ts
       - utils/db.ts
       - components/date/story/StoryTheaterEditor.tsx
@@ -63,7 +68,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify story memory and API response handling
-        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts utils/storyPresetGroups.test.ts utils/storyTheaterRelationships.test.ts utils/storyTheaterTurn.test.ts utils/storyTheaterContextSettings.test.ts utils/meetingReading.test.ts
+        run: pnpm exec vitest run utils/storyTheater utils/storyPresetGroups.test.ts utils/meetingReading.test.ts utils/safeApi.stream.test.ts utils/memoryPalace/longMemoryInput.test.ts
 
       - name: Build Capacitor web assets
         run: |

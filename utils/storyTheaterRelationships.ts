@@ -38,7 +38,7 @@ export interface StoryRelationshipPanel {
 }
 
 export const STORY_RELATIONSHIP_PROMPT = [
-    '按本剧场所选主要角色 U，记录每位其他出演角色 C 与 U 的两个方向。U 是出演角色，由角色 ID 确定，与用户执笔身份分别处理。',
+    '主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。',
     'FL 关系联结：信任、默契、熟悉、共同经历。可靠的陪伴、理解和合作可加深联结，失信、排斥和不适可削弱联结，依据具体相处缓慢变化。',
     'RI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。',
     'DI 失序扰动：具体事件让情绪、注意力或行动节奏偏移，如冒犯、挑衅、胜负、尴尬、惊讶或社交压力。普通好奇不计入。事件仍造成扰动时记 active，结束当轮记 ended；没有扰动事件则省略 phase 和 strength，由程序回落。',
@@ -144,7 +144,7 @@ export function getStoryRelationshipBaseline(
     let skippedTurns = 0;
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i];
-        if (message.role !== 'assistant') continue;
+        if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
         const raw = [...message.content.matchAll(panelPattern)].at(-1)?.[1];
         const panel = raw && parseStoryRelationshipPanel(raw);
         if (panel) {
@@ -172,9 +172,9 @@ export function getStoryRelationshipBaseline(
 }
 
 export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel): string {
-    if (!baseline) return '本剧场尚未选择主要角色，本轮省略关系面板。';
+    if (!baseline) return '本轮没有主要角色出演，省略关系面板。';
     return [
-        '在正文和其他附加模块之后输出唯一一组 <relationship_panel>JSON 对象</relationship_panel>。沿用下列 primaryId 及每条 fromId、toId；所有方向各写一次。数值只承接下列同一角色 ID 和方向的基线。历史正文、事件盒与回忆只提供事件和认知。',
+        '剧情模式在正文和其他附加模块之后输出唯一一组 <relationship_panel>JSON 对象</relationship_panel>；场外模式不输出关系面板。沿用下列 primaryId 及每条 fromId、toId；所有方向各写一次。数值只承接下列同一角色 ID 和方向的基线。历史正文、事件盒与回忆只提供事件和认知。',
         '各方向在 axes 内分别写 FL、RI、DI。沿用已存在的轴，变化时返回整数 delta，由程序据基线计算。首次从角色卡及已发生事件独立估计整数 score，缺少证据时填 0。为数值变化提供 trigger（事件）和 evidence（该人物的反应或推断）。',
         'DI 的 active 或 ended 需有 trigger、evidence 和 strength（mild / moderate / strong）；无事件时留空，由程序衰减。state_note 沿用下面主要角色自己的记录或按本轮事实更新。',
         '示例轴字段："axes":{"FL":{"score":20,"delta":2,"trigger":"接住了她的邀请","evidence":"她愿意把下一次见面的安排交给对方"},"RI":{"score":0},"DI":{"score":0}}',

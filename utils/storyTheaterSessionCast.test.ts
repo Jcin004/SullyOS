@@ -6,6 +6,7 @@ import StoryTheaterSession from '../components/date/story/StoryTheaterSession';
 import type { CharacterProfile, StoryTheaterEntry } from '../types';
 import { DB } from './db';
 import { createBlankStoryPreset, createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
+import { STORY_RELATIONSHIP_PROMPT_ID } from './storyTheaterRelationships';
 import { moveStoryInLibrary, saveStoryLibrary, STORY_LIBRARY_STORAGE_KEY, type StoryLibrary } from './storyTheaterLibrary';
 
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, archive: vi.fn(), toast: vi.fn() }));
@@ -67,14 +68,14 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     const root = createRoot(container);
     let entry: StoryTheaterEntry = {
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
-        characterIds: actors.map(actor => actor.id), castLimits: { minGroups: 1, maxGroups: 1, minPeople: 2, maxPeople: 2 }, writesToCharacterMemory: true, carryCharacterMemory: true,
+        characterIds: actors.map(actor => actor.id), castLimits: { minGroups: 1, maxGroups: 1, minPeople: 99, maxPeople: 1 }, writesToCharacterMemory: true, carryCharacterMemory: true,
         selectedWorldbookIds: ['test-worldbook'],
         characterMemoryDates: { [a.id]: '2026-04-10T09:00', [b.id]: '2026-04-11T09:00', [c.id]: '2026-04-10T09:00' },
     };
     let second = { ...entry, id: 'other-cast-session', title: '第二剧场' };
-    const render = (id: string) => act(async () => {
+    const render = (id: string, onEntryChange: (next: StoryTheaterEntry) => void | Promise<void> = () => {}) => act(async () => {
         root.render(createElement(StoryTheaterSession, {
-            key: id, entry: id === second.id ? second : entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+            key: id, entry: id === second.id ? second : entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange,
         }));
     });
     const advance = () => container.querySelector<HTMLButtonElement>('button.story-send-button')!;
@@ -94,7 +95,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await vi.waitFor(async () => {
             await flush();
             expect(fetch).toHaveBeenCalledTimes(calls);
-            expect(container.querySelector('button[aria-label="继续当前剧情"]')?.hasAttribute('disabled')).toBe(false);
+            expect(advance().querySelector('.animate-spin')).toBeNull();
         });
     };
     const setInput = (text: string) => act(async () => {
@@ -104,7 +105,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     });
     const payload = (index: number) => JSON.parse(String(fetch.mock.calls[index][1]?.body)).messages as { role: string; content: string }[];
     const promptText = (index: number) => payload(index).map(row => row.content).join('\n');
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.25);
     try {
         await DB.saveStoryTheater(entry);
         await DB.saveStoryTheater(second);
@@ -125,12 +126,15 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(checked()).toEqual([a.name, b.name]);
         expect(mocks.toast.mock.calls.some(([message]) => String(message).includes('出演名单无效'))).toBe(false);
 
+        await setInput('我在窗边坐下。');
         await send(advance(), 3);
         await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, b.id, a.id, c.id]));
         expect(checked()).toEqual([a.name, c.name]);
+        expect((await DB.getMessagesByCharId(thread, true)).at(-1)?.metadata.theaterInteractionGroups)
+            .toEqual([[a.id, c.id]]);
         expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>', '我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
         expect(await timeline(a.id)).toEqual([at(10), at(10), at(10), at(13)]);
-        expect(await timeline(b.id)).toEqual([at(11), at(10)]);
+        expect(await timeline(b.id)).toEqual([at(11), at(11)]);
         expect(await contents(b.id)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
         expect(await contents(c.id)).toHaveLength(2);
         expect(payload(2).at(-1)?.role).toBe('user');
@@ -216,7 +220,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             expect(row.metadata.theaterTimelineTimestamp).toBeUndefined();
         }
         expect(await Promise.all(actors.map(actor => DB.getMessagesByCharId(actor.id, true)))).toEqual(actorHistory);
-        expect(archiveCalls).toBe(6);
+        expect(archiveCalls).toBe(8);
         expect(mocks.archive).toHaveBeenCalledTimes(archiveCalls);
         expect(await timeline(c.id)).toEqual([at(10), at(13), at(13), at(18)]);
 
@@ -275,7 +279,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await setInput('移回后的新一轮。');
         await send(advance(), 14);
         expect(promptText(13)).toContain('来源剧场：剧情选角验证');
-        expect(promptText(13)).not.toMatch(/第一幕暗号|我在窗边坐下/);
+        expect(promptText(13)).not.toContain('第一幕暗号');
+        expect(promptText(13)).toContain('越界回复');
         for (const [id] of watermarks) localStorage.removeItem(`mp_lastMsgId_${id}`);
 
         await setInput('本剧场长输入' + '长'.repeat(26_000));
@@ -318,6 +323,50 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await setInput('出戏聊聊？');
         await send(advance(), 19);
         expect(container.textContent).toContain('我们聊聊这一段。');
+
+        entry = {
+            ...entry, id: 'cast-fallback-session', castModeEnabled: true,
+            castLimits: { minGroups: 99, maxGroups: 99, minPeople: 1, maxPeople: 1 },
+        };
+        preset.document = {
+            ...preset.document,
+            prompts: [...preset.document.prompts, { id: STORY_RELATIONSHIP_PROMPT_ID, name: '关系', enabled: true, role: 'system', content: '' }],
+        };
+        const saveEntry = async (next: StoryTheaterEntry) => {
+            await DB.saveStoryTheater(next);
+            entry = next;
+        };
+        await render(entry.id, saveEntry);
+        const picker = container.querySelector<HTMLSelectElement>('select[aria-label="关系三轴主要角色"]')!;
+        expect(picker.value).toBe(a.id);
+        await act(async () => {
+            picker.value = b.id;
+            picker.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        expect((await DB.getStoryTheaters()).find(row => row.id === entry.id)?.primaryCharacterId).toBe(b.id);
+        await render(entry.id, saveEntry);
+        const castFallbackThread = storyTheaterThreadId(entry.id);
+        const serializedPanel = '<relationship_panel>' + JSON.stringify({
+            primaryId: b.id,
+            relationships: [{ fromId: b.id, toId: a.id, axes: {
+                FL: { score: 5, trigger: '递来纸条', evidence: '伸手接下' },
+            } }],
+        }) + '</relationship_panel>';
+        fetch.mockImplementationOnce(async () => reply(serializedPanel, [[a.id]]));
+        await setInput('她递来纸条。');
+        await send(advance(), 20);
+        expect(await contents(castFallbackThread)).toEqual(['她递来纸条。']);
+        expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain('未生成有效剧情正文');
+        fetch.mockImplementationOnce(async () => reply('<story_text>他伸手接下纸条。</story_text>' + serializedPanel, [[a.id]]));
+        await send(advance(), 21);
+        expect(promptText(20)).toContain('"primaryId":"' + b.id + '"');
+        expect(container.textContent).toContain('关系记录 · ' + b.name);
+        expect(checked()).toEqual(actors.map(actor => actor.name));
+        for (const actor of actors) {
+            const rows = (await DB.getMessagesByCharId(actor.id, true)).filter(row => row.metadata.theaterId === entry.id);
+            expect(rows).toHaveLength(2);
+            expect(rows[1].content).toContain('他伸手接下纸条。');
+        }
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

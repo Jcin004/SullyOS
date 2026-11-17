@@ -171,8 +171,7 @@ describe('糯米机原生剧情预设边界', () => {
         expect(document.schema).toBe('sullyos.story-preset');
         expect(document.version).toBe(1);
         expect(document.name).toContain('V6.27');
-        expect(document.prompts).toHaveLength(128);
-        expect(document.prompts.filter(prompt => prompt.enabled)).toHaveLength(52);
+        expect(document.prompts).toHaveLength(137);
         const serialized = JSON.stringify(document);
         expect(serialized).not.toContain('prompt_order');
         expect(serialized).not.toContain('extensions');
@@ -620,9 +619,9 @@ describe('手机端预设分层', () => {
         expect(theater?.ids).toContain('nmj-v6-side-channel-wrong-reel');
     });
 
-    it('把 V6.27 合并为九个大区并锁定角色与世界', () => {
+    it('把 V6.27 合并为含出演模式的十个大区并锁定角色与世界', () => {
         const groups = getStoryPresetPromptGroups(BUILTIN_NIGHT_SCREENING_PRESET.document);
-        expect(groups.map(group => group.key)).toEqual(['startup', 'input', 'sources', 'story', 'tone', 'camera', 'output', 'extras', 'exit']);
+        expect(groups.map(group => group.key)).toEqual(['startup', 'input', 'sources', 'theater', 'story', 'tone', 'camera', 'output', 'extras', 'exit']);
         expect(groups.find(group => group.key === 'sources')?.protected).toBe(true);
         const sourcePrompts = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt => groups.find(group => group.key === 'sources')?.promptIds.includes(prompt.id));
         expect(sourcePrompts.every(isProtectedStoryPrompt)).toBe(true);

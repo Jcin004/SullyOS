@@ -1057,6 +1057,7 @@ export const buildStoryIdentityGuard = (
     identityName: string,
     characterNames: string[],
     autoCast = false,
+    relationshipAxes = false,
 ): string => {
     const identity = identityName.trim() && identityName.trim() !== '你' ? identityName.trim() : '当前用户侧角色（未命名）';
     const cast = characterNames.filter(Boolean).join('、') || '暂无其他角色';
@@ -1068,7 +1069,7 @@ export const buildStoryIdentityGuard = (
             : '- 当前预设使用自定义人称；服从预设明确写出的叙述规则，但仍遵守下面的身份绑定。';
     return [
         '### 糯米机运行时身份与人称锚点（覆盖旧楼层的写法，不覆盖角色卡事实）',
-        `- 用户侧剧情身份：${identity}。${autoCast ? '本轮候选角色' : '本轮参与角色'}：${cast}。关系协议中的 U 只指「${identity}」，C 只指本轮实际出演角色。`,
+        `- 用户侧剧情身份：${identity}。${autoCast ? '本轮候选角色' : '本轮参与角色'}：${cast}。${relationshipAxes ? '' : `关系协议中的 U 只指「${identity}」，C 只指本轮实际出演角色。`}`,
         '- 生成回复的一方不属于故事人物。系统指令为方便表达而出现的“你”，只是执行语法，不能据此把生成端写进故事，也不能把故事里的“你”解释成生成端自己。',
         '- 用户最新输入仍按实际句法辨认说话人与受话人；但在最终输出的叙事旁白、场景条和关系面板中，未另行点名的“你／你的”只允许指用户侧剧情身份。',
         perspectiveRule,

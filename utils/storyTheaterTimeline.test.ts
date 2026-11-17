@@ -70,7 +70,7 @@ describe('剧情与现实收发时间分离', () => {
         expect(mirror.timestamp).toBe(realTime);
         expect(mirror.metadata).toMatchObject({ source: 'story_theater_memory', theaterCentralId: 101,
             theaterTimestampVersion: 1, theaterReceivedAt: realTime });
-        expect(mirror.metadata.theaterTimelineTimestamp).toBeGreaterThan(realTime);
+        expect(mirror.metadata.theaterTimelineTimestamp).toBe(new Date('2026-10-10T06:30:00').getTime());
     });
 
     it.each([futureTime, new Date('2020-01-01T00:00:00Z').getTime()])('旧副本时间 %s 按中央记录修复，保留正文、ID和其他元数据', async timestamp => {

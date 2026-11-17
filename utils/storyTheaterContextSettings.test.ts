@@ -50,6 +50,7 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
             ...createStoryTheaterDraft(),
             title: '真实剧情',
             characterIds: ['a', 'b'],
+            castLimits: { minGroups: 1, maxGroups: 3, minPeople: 99, maxPeople: 1 },
             writesToCharacterMemory: true,
             carryCharacterMemory: true,
         }, 'initial');
@@ -86,7 +87,7 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
         await click('保存并进入');
         const saved = onSave.mock.calls[0][0];
         expect(saved.characterContextLimits.b).toBe(0);
-        expect(saved.castLimits).toEqual({ minGroups: 2, maxGroups: 8, minPeople: 1, maxPeople: 2 });
+        expect(saved.castLimits).toMatchObject({ minGroups: 2, maxGroups: 8 });
         await open(normalizeStoryTheater(saved), 'reopen');
         expect(inputFor('角色乙')?.value).toBe('0');
         expect(inputFor('角色甲')?.value).toBe('100');

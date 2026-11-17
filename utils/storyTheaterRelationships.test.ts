@@ -84,7 +84,7 @@ describe('剧场双向关系三轴', () => {
         expect(normalizeStoryTheater({ ...draft, primaryCharacterId: a.id, characterIds: [b.id] }).primaryCharacterId).toBeUndefined();
         const old = '<story_text>旧事发生。</story_text><affinity_panel><affinity_person><character_id>a</character_id><c_to_u_score>83</c_to_u_score><trust>91</trust><possessive_pull>77</possessive_pull><state_note>终于愿意听完</state_note></affinity_person></affinity_panel>';
         expect(parseStoryDisplayBlocks(old).map(block => block.kind)).toEqual(['story', 'affinity']);
-        expect(buildStoryRelationshipGuide()).toContain('尚未选择主要角色');
+        expect(buildStoryRelationshipGuide()).toContain('省略关系面板');
         expect(reconcileStoryRelationships(old)).toBe('<story_text>旧事发生。</story_text>');
         const prior = baseline([message(old)]);
         expect(prior.state_note).toBe('终于愿意听完');
@@ -116,6 +116,8 @@ describe('剧场双向关系三轴', () => {
             FL: { score: 57 }, RI: { score: 23 }, DI: { score: idle, delta: idle - ended },
         });
         expect(baseline([message(first), message('没有面板', 2)]).relationships[1].axes.DI?.score).toBe(ended);
+        expect(baseline([message(first), { ...message('场外讨论', 2), metadata: { theaterOutOfStory: true } }])
+            .relationships[1].axes.DI?.score).toBe(80);
     });
 
     it('丢弃损坏的关系面板，保留正文与已建立的关系', () => {

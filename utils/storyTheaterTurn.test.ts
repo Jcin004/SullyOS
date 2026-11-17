@@ -25,22 +25,22 @@ describe('剧场整轮提交', () => {
         }, input, ['actor'], mirrors(theater));
         const [savedInput, savedReply] = await read(user.charId);
         const oldAxis = { actor: '修表；缺零件；去找工具' };
-        expect(storyPrivateAxesFromMessage(savedReply, new Map([[savedInput.id, savedInput]]))).toEqual(oldAxis);
+        expect(storyPrivateAxesFromMessage(savedReply)).toEqual(oldAxis);
 
         await replaceStoryTheaterReply(savedInput, '新输入', { theaterInputRevision: 'new-input' });
         const edited = (await read(user.charId))[0];
-        expect(storyPrivateAxesFromMessage(savedReply, new Map([[edited.id, edited]]))).toEqual(oldAxis);
+        expect(storyPrivateAxesFromMessage((await read(user.charId))[1])).toEqual(oldAxis);
 
         const revisedAxis = { ...axis, next: '先问师傅' };
         await replaceStoryTheaterReply(savedReply, '新正文', {
             theaterPrivateAxes: { actor: revisedAxis }, theaterPrivateAxesInputRevision: 'new-input',
-        }, true, undefined, edited);
+        }, true);
         const revised = (await read(user.charId))[1];
-        expect(storyPrivateAxesFromMessage(revised, new Map([[edited.id, edited]])))
+        expect(storyPrivateAxesFromMessage(revised))
             .toEqual({ actor: '修表；缺零件；先问师傅' });
         expect((await read('actor')).map(row => row.content)).toEqual(['新输入', '新正文']);
         await DB.deleteMessages([edited.id, edited.metadata.theaterMirrorIds.actor]);
-        expect(storyPrivateAxesFromMessage(revised, new Map()))
+        expect(storyPrivateAxesFromMessage((await read(user.charId))[0]))
             .toEqual({ actor: '修表；缺零件；先问师傅' });
     });
 
@@ -70,7 +70,11 @@ describe('剧场整轮提交', () => {
         expect(await read(user.charId)).toEqual([pending]);
 
         await replaceStoryTheaterReply(pending, '编辑后的用户原文', { theaterInputRevision: 'edited' });
-        await DB.commitStoryTheaterTurn(reply, pending, cast, makeMirror);
+        const outcomes = await Promise.allSettled([
+            DB.commitStoryTheaterTurn(reply, pending, cast, makeMirror),
+            DB.commitStoryTheaterTurn(reply, pending, cast, makeMirror),
+        ]);
+        expect(outcomes.map(outcome => outcome.status).sort()).toEqual(['fulfilled', 'rejected']);
         const [centralUser, centralReply] = await read(user.charId);
         expect(centralUser.content).toBe('编辑后的用户原文');
         expect(centralReply.content).toBe('完整回复');

@@ -428,9 +428,8 @@ function readAxis(value: unknown): StoryPrivateAxis | undefined {
     return legacy.length ? legacy.join('；') : undefined;
 }
 
-export function storyPrivateAxesFromMessage(reply: Message, rowsById: ReadonlyMap<number, Message>): StoryPrivateAxes {
+export function storyPrivateAxesFromMessage(reply: Message): StoryPrivateAxes {
     if (!reply.metadata?.theaterPrivateAxes || reply.metadata.theaterOutOfStory) return {};
-    void rowsById;
     // A later edit of the input must not erase an already-generated private axis.
     const axes = reply.metadata?.theaterPrivateAxes;
     return Object.fromEntries(storyCastIdsFromMessage(reply).flatMap(id => {

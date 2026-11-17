@@ -47,11 +47,15 @@ it('story output renders FL RI DI directions in the relationship panel', () => {
         { fromId: 'a', toId: 'b', fromName: '阿泽', toName: '阿遥', axes: {
             FL: { score: 22 }, RI: { score: 4 }, DI: { score: 11, delta: 2, trigger: '对方突然插话', evidence: '他停了半秒' },
         } },
+        { fromId: 'b', toId: 'a', fromName: '阿遥', toName: '阿泽', axes: { FL: { score: 13 } } },
     ] };
-    const content = '<story_text>灯亮了。</story_text><relationship_panel>' + JSON.stringify(panel) + '</relationship_panel>';
+    const content = '<story_text>灯亮了。</story_text><relationship_panel>' + JSON.stringify(panel) + '</relationship_panel>'
+        + '<affinity_panel><affinity_person><character_id>a</character_id><state_note>旧面板记录</state_note></affinity_person></affinity_panel>';
     const rendered = renderToStaticMarkup(React.createElement(StoryOutput, { content, affinityInputs: [] }));
     expect(rendered).toContain('关系记录 · 阿泽');
     expect(rendered).toContain('阿泽 → 阿遥');
+    expect(rendered).toContain('阿遥 → 阿泽');
+    expect(rendered).toContain('旧面板记录');
     expect(rendered).toContain('FL · 关系联结');
     expect(rendered).toContain('RI · 恋爱性心动');
     expect(rendered).toContain('DI · 失序扰动');
@@ -73,6 +77,12 @@ it('reading shows previous encounters, prepends without jumping to the bottom, a
     };
     const height = vi.spyOn(HTMLElement.prototype,'scrollHeight','get').mockImplementation(function(this:HTMLElement){return this.querySelectorAll('[data-date-message-id]').length*100;});
     const viewport = vi.spyOn(HTMLElement.prototype,'clientHeight','get').mockReturnValue(500);
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        const page = this.closest<HTMLElement>('.meeting-reading-page');
+        if (page === this) return new DOMRect(0, 0, 300, 500);
+        const rows = Array.from(page?.querySelectorAll('[data-date-message-id]') ?? []);
+        return new DOMRect(0, rows.indexOf(this) * 100 - (page?.scrollTop ?? 0), 300, 100);
+    });
     let beforePaint=0;
     function Reading({messages}:{messages:any[]}){
         React.useLayoutEffect(()=>{beforePaint=host.querySelector<HTMLDivElement>('.meeting-reading-page')?.scrollTop??0;});
@@ -96,5 +106,5 @@ it('reading shows previous encounters, prepends without jumping to the bottom, a
         expect(page.scrollTop).toBe(5040);
         // Current encounter has no reply: old history must not enable reroll.
         expect(host.querySelector('button[title="重新生成"]')).toBeNull();
-    } finally { await act(async()=>root.unmount()); host.remove(); height.mockRestore(); viewport.mockRestore(); }
+    } finally { await act(async()=>root.unmount()); host.remove(); bounds.mockRestore(); height.mockRestore(); viewport.mockRestore(); }
 });

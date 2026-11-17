@@ -25,7 +25,6 @@ import {
     buildTheaterPersona,
     compileStoryPreset,
     prepareStoryGenerationSettings,
-    reconcileStoryAffinityScores,
     dedupeTheaterWorldbooks,
     describeEmptyStoryCompletion,
     describeStoryApiError,
@@ -365,7 +364,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const rowsById = useMemo(() => new Map(messages.map(message => [message.id, message])), [messages]);
     const [axisViewer, setAxisViewer] = useState<{ messageId: number; actorId: string } | null>(null);
     const axisMessage = axisViewer && rowsById.get(axisViewer.messageId);
-    const displayedAxis = axisViewer && axisMessage && storyPrivateAxesFromMessage(axisMessage, rowsById)[axisViewer.actorId];
+    const displayedAxis = axisViewer && axisMessage && storyPrivateAxesFromMessage(axisMessage)[axisViewer.actorId];
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
     const [memoryStatus, setMemoryStatus] = useState('');
@@ -751,7 +750,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
             const generatedPlan = castTurn && !fixedCastIds?.length
-                ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory, Math.random, primaryActor?.id)
+                ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory, Math.random,
+                    relationshipsEnabled || entry.primaryCharacterId ? primaryActor?.id : undefined)
                 : undefined;
             const selectedCastIds = castTurn
                 ? (fixedCastIds?.length ? fixedCastIds : generatedPlan?.castIds?.length ? generatedPlan.castIds : actors.map(actor => actor.id))
@@ -801,8 +801,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
-            const relationshipBaseline = relationshipsEnabled && primaryActor
-                ? getStoryRelationshipBaseline(history, primaryActor, actors)
+            const relationshipBaseline = relationshipsEnabled && primaryActor && requestActors.some(actor => actor.id === primaryActor.id)
+                ? getStoryRelationshipBaseline(history, primaryActor, requestActors)
                 : undefined;
             const unarchivedHistory = history.filter(message => !mirrorArchived(message, promptEntry));
             const visibleHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
@@ -810,10 +810,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 : unarchivedHistory;
             const previousAxes = new Map<string, StoryPrivateAxis>();
             if (castTurn) {
-                const historyById = new Map(history.map(message => [message.id, message]));
                 for (const message of [...history].reverse()) {
                     if (message.role !== 'assistant') continue;
-                    const axes = storyPrivateAxesFromMessage(message, historyById);
+                    const axes = storyPrivateAxesFromMessage(message);
                     for (const actor of requestActors) {
                         if (axes[actor.id] && !previousAxes.has(actor.id)) previousAxes.set(actor.id, axes[actor.id]);
                     }
@@ -859,7 +858,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn && !fixedCastIds?.length) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
-            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn && !fixedCastIds?.length);
+            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn && !fixedCastIds?.length, relationshipsEnabled);
             const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
             const hasPresetHistory = effectivePreset.document.prompts.some(prompt => prompt.enabled && prompt.marker === 'history');
             const historyRows = hasPresetHistory ? visibleHistory
@@ -868,7 +867,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...message,
                 content: '[' + (message.metadata?.theaterOutOfStory
                     ? message.role === 'user' ? '场外对话 · 用户' : '场外对话 · AI'
-                    : message.role === 'user' ? promptIdentityName + '给出的推进（用户侧）' : '上一层剧场正文') + ']\n' + (relationshipsEnabled ? stripStoryRelationshipPanels(message.content) : message.content),
+                    : message.role === 'user' ? promptIdentityName + '给出的推进（用户侧）' : '上一层剧场正文') + ']\n'
+                    + (relationshipsEnabled && message.role === 'assistant' && !message.metadata?.theaterOutOfStory
+                        ? stripStoryRelationshipPanels(message.content) : message.content),
             })));
             const pendingTurn = { role: 'user' as const, content: modelInput };
             let compiled!: ReturnType<typeof compileStoryPreset>;
@@ -964,8 +965,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const mirrorRecipientIds = castTurn && !outOfStory ? selectedCastIds : [];
             const mirrorActors = requestActors.filter(actor => mirrorRecipientIds.includes(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
-            // 不能将未完成的出演元数据与预设开头拼成一段假正文。
-            if (castTurn && !body.replace(/<[^>]*>/g, '').trim()) {
+            const prose = relationshipsEnabled && !outOfStory ? stripStoryRelationshipPanels(body) : body;
+            if ((castTurn || relationshipsEnabled) && !prose.replace(/<[^>]*>/g, '').trim()) {
                 throw new Error('本轮未生成有效剧情正文，已保留用户输入，可重试。');
             }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
@@ -998,7 +999,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 const finalTimes = new Map(castActors.map(actor => [
                     actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, timelineByActor.get(actor.id), content),
                 ]));
-                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes, previousUser);
+                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes);
             } else {
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
