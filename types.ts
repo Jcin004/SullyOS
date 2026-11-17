@@ -2307,6 +2307,8 @@ export interface StoryTheaterEntry {
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];
+    /** 关系面板的主要角色，独立于用户执笔身份。 */
+    primaryCharacterId?: string;
     castLimits?: StoryCastLimits;
     castModeEnabled?: boolean;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
