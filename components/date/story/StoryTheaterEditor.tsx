@@ -59,7 +59,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         return characters.filter(char => participantIds.has(char.id));
     }, [characters, draft.characterIds, draft.mask]);
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
-    const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
+    const castLimits = normalizeStoryCastLimits({ minGroups: draft.castLimits?.minGroups, maxGroups: draft.castLimits?.maxGroups }, actors.length);
     const validCastLimits = validStoryCastLimits(castLimits);
     const castEnabled = draft.castModeEnabled !== false;
     const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
@@ -149,11 +149,11 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <Toggle label='出演模式' value={castEnabled} onChange={value => update('castModeEnabled', value)} />
                 </div>
                 {castEnabled && <fieldset className='mt-4'>
-                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
+                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮随机建议组数</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
                             ['minGroups', '最少交流倾向组数'], ['maxGroups', '最多交流倾向组数'],
-                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'], 
+
                         ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
                             {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
                                 onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}
