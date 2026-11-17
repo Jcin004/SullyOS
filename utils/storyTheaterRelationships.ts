@@ -28,6 +28,7 @@ interface Relationship {
     toName: string;
     axes: Partial<Record<Axis, AxisValue>>;
     relation_note?: string;
+    relation_fragments?: string[];
 }
 
 export interface StoryRelationshipPanel {
@@ -37,7 +38,7 @@ export interface StoryRelationshipPanel {
     relationships: Relationship[];
 }
 
-export const STORY_RELATIONSHIP_PROMPT = [
+const PREVIOUS_STORY_RELATIONSHIP_PROMPT = [
     '主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。',
     'FL 关系联结：信任、默契、熟悉、共同经历。可靠的陪伴、理解和合作可加深联结，失信、排斥和不适可削弱联结，依据具体相处缓慢变化。',
     'RI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。',
@@ -49,10 +50,17 @@ export const STORY_RELATIONSHIP_PROMPT = [
     '沿用主要角色自身的 state_note，记录其内在拉扯、选择代价或已形成的新理解。只在有新事实时更新。各方向可用 relation_note 记录当前的关系质地。',
 ].join('\n');
 
+export const STORY_RELATIONSHIP_PROMPT = [
+    'FL 关系联结：友谊、信任和默契。RI 恋爱性心动：具体的恋爱吸引，友情和竞争性占有本身不提高 RI。DI 失序扰动：事件打乱情绪、注意或行动，扰动结束后回落。',
+    '两个方向分别按人物的亲历和反应独立更新三轴，缺少依据的轴不加分。',
+].join('\n');
+
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
 
 const legacyPanelPattern = /<affinity_panel\b[^>]*>([\s\S]*?)<\/affinity_panel\s*>/gi;
 const legacyPersonPattern = /<affinity_person\b[^>]*>([\s\S]*?)<\/affinity_person\s*>/gi;
+const axesPanelPattern = /<affinity_panel\b[^>]*\bmode\s*=\s*["']three_axes["'][^>]*>([\s\S]*?)<\/affinity_panel\s*>/gi;
+export const isStoryThreeAxisPanel = (opening: string) => /\bmode\s*=\s*["']three_axes["']/i.test(opening);
 
 const shortText = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 400) : '';
 const integer = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined;
@@ -61,6 +69,72 @@ const pairKey = (fromId: string, toId: string) => JSON.stringify([fromId, toId])
 
 const encodePanel = (value: unknown) => JSON.stringify(value)
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+
+const xml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const unxml = (text: string) => text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const rawFields = (source: string, tag: string) =>
+    [...source.matchAll(new RegExp('<' + tag + '\\b[^>]*>([\\s\\S]*?)<\\/' + tag + '\\s*>', 'gi'))]
+        .map(match => match[1].trim());
+const fields = (source: string, tag: string) => rawFields(source, tag).map(unxml);
+const field = (source: string, tag: string) => fields(source, tag)[0] || '';
+const fieldInt = (source: string, tag: string) => {
+    const value = field(source, tag);
+    return /^[+-]?\d+$/.test(value) ? integer(Number(value)) : undefined;
+};
+const tag = (key: string, value: string | number | undefined) =>
+    value === undefined || value === '' ? '' : '<' + key + '>' + xml(String(value)) + '</' + key + '>';
+const strengthOf = (value: unknown): Strength | undefined =>
+    value === 'mild' || value === 'moderate' || value === 'strong' ? value : undefined;
+
+function readThreeAxisPanel(body: string): StoryRelationshipPanel | undefined {
+    const primaryId = field(body, 'primary_id');
+    if (!primaryId) return undefined;
+    const relationships = [...body.matchAll(legacyPersonPattern)].flatMap(([, person]): Relationship[] => {
+        const fromId = field(person, 'from_id');
+        const toId = field(person, 'to_id');
+        if (!fromId || !toId || fromId === toId || ![fromId, toId].includes(primaryId)) return [];
+        const axes: Relationship['axes'] = {};
+        for (const axis of STORY_RELATIONSHIP_AXES) {
+            const source = rawFields(person, axis)[0] || '';
+            const score = fieldInt(source, 'score');
+            const delta = fieldInt(source, 'delta');
+            if (score === undefined && delta === undefined) continue;
+            const phase = field(source, 'phase');
+            axes[axis] = {
+                score: clamp(score ?? 0), delta,
+                trigger: shortText(field(source, 'trigger')), evidence: shortText(field(source, 'evidence')),
+                strength: strengthOf(field(source, 'strength')), phase: phase === 'active' || phase === 'ended' ? phase : undefined,
+            };
+        }
+        return [{
+            fromId, toId, fromName: field(person, 'from_name') || fromId, toName: field(person, 'to_name') || toId,
+            axes, relation_note: shortText(field(person, 'relation_note')),
+            relation_fragments: fields(person, 'relation_fragment').map(shortText).filter(Boolean).slice(0, 3),
+        }];
+    });
+    const primaryNote = body.replace(legacyPersonPattern, '');
+    return { primaryId, primaryName: field(body, 'primary_name') || primaryId, state_note: shortText(field(primaryNote, 'state_note')), relationships };
+}
+
+export function serializeStoryThreeAxisPanel(panel: StoryRelationshipPanel): string {
+    return [
+        '<affinity_panel mode="three_axes">', tag('primary_id', panel.primaryId), tag('primary_name', panel.primaryName),
+        tag('state_note', panel.state_note),
+        ...panel.relationships.flatMap(row => [
+            '<affinity_person>', tag('from_id', row.fromId), tag('to_id', row.toId), tag('from_name', row.fromName), tag('to_name', row.toName),
+            ...STORY_RELATIONSHIP_AXES.flatMap(axis => {
+                const value = row.axes[axis];
+                if (!value) return [];
+                return ['<' + axis + '>' + tag('score', value.score) + tag('delta', value.delta)
+                    + tag('trigger', value.trigger) + tag('evidence', value.evidence)
+                    + tag('strength', value.strength) + tag('phase', value.phase) + '</' + axis + '>'];
+            }),
+            tag('relation_note', row.relation_note), ...(row.relation_fragments ?? []).map(value => tag('relation_fragment', value)),
+            '</affinity_person>',
+        ]),
+        '</affinity_panel>',
+    ].filter(Boolean).join('\n');
+}
 
 function readPanel(body: string): StoryRelationshipPanel | undefined {
     let value;
@@ -73,7 +147,8 @@ function readPanel(body: string): StoryRelationshipPanel | undefined {
     return value;
 }
 
-export function parseStoryRelationshipPanel(body: string): StoryRelationshipPanel | undefined {
+export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json' = 'json'): StoryRelationshipPanel | undefined {
+    if (format === 'xml') return readThreeAxisPanel(body);
     const value = readPanel(body);
     if (!value) return undefined;
     return {
@@ -102,17 +177,20 @@ export function parseStoryRelationshipPanel(body: string): StoryRelationshipPane
                 fromName: shortText(row.fromName) || row.fromId,
                 toName: shortText(row.toName) || row.toId,
                 axes, relation_note: shortText(row.relation_note),
+                relation_fragments: Array.isArray(row.relation_fragments) ? row.relation_fragments.map(shortText).filter(Boolean).slice(0, 3) : undefined,
             }];
         }),
     };
 }
 
-function readLegacyStateNote(content: string, primaryId: string): string {
+function readLegacyStateNote(content: string, primary: Actor): string {
     for (const [, panel] of content.matchAll(legacyPanelPattern)) {
         for (const [, person] of panel.matchAll(legacyPersonPattern)) {
             const id = /<character_id>([^<]+)<\/character_id>/i.exec(person)?.[1]?.trim();
-            if (id === primaryId) return shortText(/<state_note>([^<]+)<\/state_note>/i.exec(person)?.[1]);
+            if (id === primary.id) return shortText(field(person, 'state_note'));
         }
+        // 根级旧面板只在名字明确匹配时承接自我记录；不换算关系分数。
+        if (field(panel, 'active_char') === primary.name) return shortText(field(panel, 'state_note'));
     }
     return '';
 }
@@ -145,8 +223,9 @@ export function getStoryRelationshipBaseline(
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i];
         if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
-        const raw = [...message.content.matchAll(panelPattern)].at(-1)?.[1];
-        const panel = raw && parseStoryRelationshipPanel(raw);
+        const xml = [...message.content.matchAll(axesPanelPattern)].at(-1)?.[1];
+        const json = [...message.content.matchAll(panelPattern)].at(-1)?.[1];
+        const panel = xml ? parseStoryRelationshipPanel(xml, 'xml') : json ? parseStoryRelationshipPanel(json) : undefined;
         if (panel) {
             if (!stateNote && panel.primaryId === primary.id) stateNote = panel.state_note || '';
             for (const previous of panel.relationships) {
@@ -164,26 +243,31 @@ export function getStoryRelationshipBaseline(
                 }
             }
         }
-        if (!stateNote && !panel) stateNote = readLegacyStateNote(message.content, primary.id);
+        if (!stateNote && !panel) stateNote = readLegacyStateNote(message.content, primary);
         if (stateNote && relationships.every(row => STORY_RELATIONSHIP_AXES.every(axis => row.axes[axis]))) break;
         skippedTurns++;
     }
     return { primaryId: primary.id, primaryName: primary.name, state_note: stateNote, relationships };
 }
 
+export function restrictStoryRelationshipsToCast(baseline: StoryRelationshipPanel | undefined, actors: ReadonlySet<string>): StoryRelationshipPanel | undefined {
+    if (!baseline || !actors.has(baseline.primaryId)) return undefined;
+    return { ...baseline, relationships: baseline.relationships.filter(row => actors.has(row.fromId) && actors.has(row.toId)) };
+}
+
 export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, useActualCast = false): string {
-    if (!baseline) return '本轮没有主要角色出演，省略关系面板。';
+    if (!baseline) return '';
+    const example = baseline.relationships[0];
     return [
-        '剧情模式在正文和其他附加模块之后输出唯一一组 <relationship_panel>JSON 对象</relationship_panel>；场外模式不输出关系面板。',
+        '剧情收尾使用一份三轴关系面板；场外省略。',
         useActualCast
-            ? '主要角色出现在 <turn_cast> 中时才输出关系面板。沿用下列 primaryId，只记录双方都在本轮出演名单中的方向，每个方向各写一次。'
-            : '沿用下列 primaryId 及每条 fromId、toId；所有方向各写一次。',
-        '数值只承接下列同一角色 ID 和方向的基线。历史正文、事件盒与回忆只提供事件和认知。',
-        '各方向在 axes 内分别写 FL、RI、DI。沿用已存在的轴，变化时返回整数 delta，由程序据基线计算。首次从角色卡及已发生事件独立估计整数 score，缺少证据时填 0。为数值变化提供 trigger（事件）和 evidence（该人物的反应或推断）。',
-        'DI 的 active 或 ended 需有 trigger、evidence 和 strength（mild / moderate / strong）；无事件时留空，由程序衰减。state_note 沿用下面主要角色自己的记录或按本轮事实更新。',
-        '示例轴字段："axes":{"FL":{"score":20,"delta":2,"trigger":"接住了她的邀请","evidence":"她愿意把下一次见面的安排交给对方"},"RI":{"score":0},"DI":{"score":0}}',
-        '本轮身份和基线：',
-        encodePanel(baseline),
+            ? '仅在主要角色列入 <turn_cast> 时输出面板；双方都出演才写这对关系的两个方向。主要角色独处可只写自我记录。'
+            : '主要角色在正文中出场时可写自我记录；双方都出场才写这对关系的两个方向。',
+        '沿用下方各方向基线：已有轴填 delta；首次填 score，缺少依据填 0。变化写 trigger（事件）和 evidence（人物反应）。DI 有扰动时写 phase（active / ended）和 strength（mild / moderate / strong）。',
+        '格式：<affinity_panel mode="three_axes"><primary_id>' + xml(baseline.primaryId) + '</primary_id><state_note>主要角色的新理解或选择代价（可选）</state_note>',
+        ...(example ? ['<affinity_person><from_id>' + xml(example.fromId) + '</from_id><to_id>' + xml(example.toId) + '</to_id><FL><score>0</score></FL><RI><delta>0</delta></RI><DI><delta>0</delta></DI><relation_note>关系天气</relation_note><relation_fragment>本轮事实碎片（可选）</relation_fragment></affinity_person>'] : []),
+        '</affinity_panel>',
+        '方向基线：' + encodePanel(baseline),
     ].join('\n');
 }
 
@@ -216,28 +300,32 @@ function reconcileAxis(axis: Axis, previous: AxisValue | undefined, proposed?: A
 
 /** Store a canonical panel with the reply, so reroll and archive use the same immutable turn boundary. */
 export function reconcileStoryRelationships(content: string, baseline?: StoryRelationshipPanel): string {
-    const raw = [...content.matchAll(panelPattern)].at(-1)?.[1];
-    const parsed = raw && readPanel(raw);
+    const panels = [...content.matchAll(axesPanelPattern)];
+    const old = [...content.matchAll(panelPattern)];
+    const parsed = panels.length === 1 ? readThreeAxisPanel(panels[0][1])
+        : panels.length === 0 && old.length === 1 ? readPanel(old[0][1]) : undefined;
     const prose = stripStoryRelationshipPanels(content);
     if (!baseline) return prose;
     const proposal = parsed && parsed.primaryId === baseline.primaryId ? parsed : undefined;
-    const changes = new Map(proposal?.relationships
+    if (!proposal) return prose;
+    const changes = new Map(proposal.relationships
         .filter(row => typeof row?.fromId === 'string' && typeof row.toId === 'string')
         .map(row => [pairKey(row.fromId, row.toId), row]));
-    const relationships = baseline.relationships.map(row => {
+    const relationships = baseline.relationships.flatMap(row => {
         const proposed = changes.get(pairKey(row.fromId, row.toId));
+        if (!proposed) return [];
         const axes: Relationship['axes'] = {};
         for (const axis of STORY_RELATIONSHIP_AXES) {
             const value = reconcileAxis(axis, row.axes[axis], proposed?.axes?.[axis]);
             if (value) axes[axis] = value;
         }
-        return { ...row, axes, relation_note: shortText(proposed?.relation_note) || row.relation_note };
-    }).filter(row => Object.keys(row.axes).length || row.relation_note);
+        const relation_fragments = Array.isArray(proposed.relation_fragments)
+            ? proposed.relation_fragments.map(shortText).filter(Boolean).slice(0, 3) : undefined;
+        return [{ ...row, axes, relation_note: shortText(proposed.relation_note) || row.relation_note, relation_fragments }];
+    }).filter(row => Object.keys(row.axes).length || row.relation_note || row.relation_fragments?.length);
     const stateNote = shortText(proposal?.state_note) || baseline.state_note;
     if (!stateNote && relationships.length === 0) return prose;
-    return prose + '\n\n<relationship_panel>\n' + encodePanel({
-        ...baseline, state_note: stateNote, relationships,
-    }) + '\n</relationship_panel>';
+    return prose + '\n\n' + serializeStoryThreeAxisPanel({ ...baseline, state_note: stateNote, relationships });
 }
 
 export function formatStoryRelationshipPanel(panel: StoryRelationshipPanel): string {
@@ -253,11 +341,12 @@ export function formatStoryRelationshipPanel(panel: StoryRelationshipPanel): str
                 return [axis + ' ' + STORY_RELATIONSHIP_LABELS[axis] + '：' + value.score + delta + (evidence ? ' · ' + evidence : '')];
             }),
             row.relation_note || '',
+            ...(row.relation_fragments ?? []),
         ].filter(Boolean).join('\n')),
     ].filter(Boolean).join('\n\n');
 }
 
-export function upgradeStoryRelationshipPrompts(document: StoryTheaterPresetDocument): StoryTheaterPresetDocument {
+export function getPreviousStoryRelationshipDocument(document: StoryTheaterPresetDocument): StoryTheaterPresetDocument {
     if (!document.prompts.some(prompt => prompt.id === STORY_RELATIONSHIP_PROMPT_ID)) return document;
     return {
         ...document,
@@ -265,7 +354,7 @@ export function upgradeStoryRelationshipPrompts(document: StoryTheaterPresetDocu
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))
             .map(prompt => {
                 if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID) {
-                    return { ...prompt, name: '💗双向关系｜FL · RI · DI', content: STORY_RELATIONSHIP_PROMPT };
+                    return { ...prompt, name: '💗双向关系｜FL · RI · DI', content: PREVIOUS_STORY_RELATIONSHIP_PROMPT };
                 }
                 let { name, content } = prompt;
                 if (prompt.id === 'nmj-v65-section-affinity-start') name = '🧩↓双向关系｜FL · RI · DI';

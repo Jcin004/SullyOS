@@ -86,14 +86,19 @@ export const storyInteractionTendenciesFromMessage = (message?: Message): string
     return cleanInteractionGroups(storyCastFromMessage(message), new Set(castIds));
 };
 
+const confirmedGroups = (value: unknown, castIds: readonly string[]): string[][] => {
+    const allowed = new Set(castIds);
+    return Array.isArray(value) ? cleanInteractionGroups(value.filter(group => Array.isArray(group)
+        && group.every(id => typeof id === 'string' && allowed.has(id))), allowed, 2) : [];
+};
+
 export const storyActualInteractionGroupsFromMessage = (message?: Message): string[][] => {
-    const castIds = storyCastIdsFromMessage(message);
-    const candidateIds = uniqueIds(message?.metadata?.theaterCandidateIds);
-    return cleanInteractionGroups(message?.metadata?.theaterInteractionGroups, new Set(candidateIds.length ? candidateIds : castIds), 2);
+    if (message?.metadata?.theaterOutOfStory) return [];
+    return confirmedGroups(message?.metadata?.theaterInteractionGroups, storyCastIdsFromMessage(message));
 };
 
 export const storyInteractionHistoryFromMessage = (message?: Message): StoryInteractionHistoryEntry | undefined => {
-    if (!message || message.role !== 'assistant') return undefined;
+    if (!message || message.role !== 'assistant' || message.metadata?.theaterOutOfStory) return undefined;
     const castIds = storyCastIdsFromMessage(message);
     const tendencies = storyInteractionTendenciesFromMessage(message);
     if (!castIds.length && !tendencies.length) return undefined;
@@ -259,33 +264,6 @@ function weightedChoice<T>(items: readonly T[], weightOf: (item: T) => number, r
     return items[items.length - 1];
 }
 
-export function collectUnrealizedStoryTendencies(history: readonly StoryInteractionHistoryEntry[], limit = 8): string[][] {
-    const recent = history.slice(-8);
-    const latestActual = new Map<string, number>();
-    const missedEvents = new Map<string, { pair: string[]; index: number; score: number }[]>();
-    recent.forEach((turn, index) => {
-        const decay = (index + 1) / Math.max(1, recent.length);
-        const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
-        for (const key of actual) latestActual.set(key, index);
-        for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
-            const key = pairKey(a, b);
-            if (actual.has(key)) continue;
-            const events = missedEvents.get(key) ?? [];
-            events.push({ pair: [a, b], index, score: decay });
-            missedEvents.set(key, events);
-        }
-    });
-    return [...missedEvents.entries()]
-        .map(([key, events]) => ({
-            pair: events[events.length - 1].pair,
-            score: events.filter(event => event.index > (latestActual.get(key) ?? -1)).reduce((sum, event) => sum + event.score, 0),
-        }))
-        .filter(item => item.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(0, limit))
-        .map(item => item.pair);
-}
-
 /**
  * Sample actors for attention tendencies. Actual exchanges lower a pair's
  * future weight; tendencies that were not realized receive a temporary exploration boost.
@@ -303,27 +281,16 @@ export function drawStoryInteractionPlan(
     const appearances = new Map<string, number>();
     const actualPairs = new Map<string, number>();
     const legacyPairs = new Map<string, number>();
-    const missedPairs = new Map<string, number>();
-    const latestActual = new Map<string, number>();
-    const latestMissed = new Map<string, number>();
     history.slice(-8).forEach((turn, index, recent) => {
         const decay = (index + 1) / Math.max(1, recent.length);
         for (const id of turn.castIds) appearances.set(id, (appearances.get(id) ?? 0) + decay);
         const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
         for (const key of actual) {
             actualPairs.set(key, (actualPairs.get(key) ?? 0) + decay);
-            latestActual.set(key, index);
         }
         for (const [a, b] of (turn.legacyTendencies ?? []).flatMap(groupPairs)) {
             const key = pairKey(a, b);
             legacyPairs.set(key, (legacyPairs.get(key) ?? 0) + decay);
-        }
-        for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
-            const key = pairKey(a, b);
-            if (!actual.has(key)) {
-                missedPairs.set(key, (missedPairs.get(key) ?? 0) + decay);
-                latestMissed.set(key, index);
-            }
         }
     });
 
@@ -347,10 +314,7 @@ export function drawStoryInteractionPlan(
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
         const legacy = legacyPairs.get(key) ?? 0;
-        const lastMissed = latestMissed.get(key) ?? -1;
-        const lastActual = latestActual.get(key) ?? -1;
-        const missed = lastMissed > lastActual ? missedPairs.get(key) ?? 0 : 0;
-        return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9 + legacy * 0.3));
+        return Math.max(0.12, 1 / (1 + actual * 0.9 + legacy * 0.3));
     };
     const selected: string[][] = [];
     const remaining = [...options];
@@ -530,20 +494,11 @@ export function parseStoryTheaterReply(text: string, candidateIds: readonly stri
             }
         } catch { /* 名单无效时仍保存正文。 */ }
     }
-    const allowed = new Set(castIds);
-    const interactions: string[][] = [];
-    const seen = new Set<string>();
-    for (const match of response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)) {
-        try {
-            const raw: unknown = JSON.parse(unwrapFence(match[1]));
-            if (!Array.isArray(raw)) continue;
-            const groups = cleanInteractionGroups(raw.filter(group => Array.isArray(group)
-                && group.every(id => typeof id === 'string' && allowed.has(id))), allowed, 2);
-            for (const group of groups) {
-                const key = groupKey(group);
-                if (!seen.has(key)) { seen.add(key); interactions.push(group); }
-            }
-        } catch { /* 互动记录无效时不影响正文与私轴。 */ }
+    let interactions: string[][] = [];
+    const reports = [...response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)];
+    if (reports.length === 1) {
+        try { interactions = confirmedGroups(JSON.parse(unwrapFence(reports[0][1])), castIds); }
+        catch { /* 互动记录无效时保留正文与私轴。 */ }
     }
     const axes: StoryPrivateAxes = {};
     for (const match of response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)) {

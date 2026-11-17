@@ -27,7 +27,7 @@ describe('剧情自定义大区', () => {
         const scoped = document.prompts.filter(prompt => prompt.scope);
         expect(scoped.length).toBe(7);
         const off = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: ['角色'], slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
-        expect(off.messages.map(row => row.content).join('\n')).not.toContain('根据用户最新输入选择剧情模式');
+        expect(off.messages.map(row => row.content).join('\n')).not.toContain('本轮模式：');
         const on = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: ['角色'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
@@ -41,31 +41,30 @@ describe('剧情自定义大区', () => {
             },
         });
         const contents = on.messages.map(row => row.content);
-        const modeIndex = contents.findIndex(value => value.includes('根据用户最新输入选择剧情模式'));
-        const castIndex = contents.findIndex(value => value.includes('本轮候选角色（ID、姓名）'));
-        const tendencyIndex = contents.findIndex(value => value.includes('本轮交流倾向：'));
-        const continuityIndex = contents.findIndex(value => value.includes('保持人物的时间、位置'));
-        const outputIndex = contents.findIndex(value => value.includes('剧情模式按顺序输出'));
-        const recordIndex = contents.findIndex(value => value.includes('在 <turn_cast> 之后输出 <interaction_result>'));
-        const axesIndex = contents.findIndex(value => value.includes('读取并承接各角色最近的私轴'));
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex].every(index => index >= 0)).toBe(true);
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex])].sort((a, b) => a - b));
+        const modeIndex = contents.findIndex(value => value.includes('本轮模式：'));
+        const castIndex = contents.findIndex(value => value.includes('候选角色（ID、姓名）'));
+        const tendencyIndex = contents.findIndex(value => value.includes('本轮随机交流倾向：'));
+        const outputIndex = contents.findIndex(value => value.includes('剧情模式先写完整正文'));
+        const recordIndex = contents.findIndex(value => value.includes('直接交谈或有针对性的实际互动'));
+        const axesIndex = contents.findIndex(value => value.includes('最近的私轴：'));
+        expect([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex].every(index => index >= 0)).toBe(true);
+        expect([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex])].sort((a, b) => a - b));
         expect(contents.join('\n')).toContain('剧情续写');
         expect(contents.join('\n')).toContain('继续整理行李');
         expect(contents.join('\n')).toContain('<interaction_result>');
-        expect(contents.join('\n')).toContain('本轮交流倾向：');
+        expect(contents.join('\n')).toContain('本轮随机交流倾向：');
         expect(contents.join('\n')).toContain('背景角色B');
         expect(contents.join('\n')).toContain('<scene_header>');
-        expect(contents[outputIndex]).toMatch(/完整剧情正文[\s\S]*<turn_cast>[\s\S]*<interaction_result>[\s\S]*<private_axes>/);
+        expect(contents[outputIndex]).toMatch(/完整正文[\s\S]*<turn_cast>[\s\S]*<interaction_result>[\s\S]*<private_axes>/);
         const outOfStory = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: [],
             slots: { actors: '', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
             storyTheaterMode: 'out_of_story',
             storyTheaterValues: { theater_mode_state: '场外重写' },
         });
-        expect(outOfStory.messages.map(row => row.content).join('\n')).toContain('场外模式只输出');
-        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('本轮候选角色（ID、姓名）');
-        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('在 <turn_cast> 之后输出 <interaction_result>');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).toContain('只输出 <out_of_story>');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('候选角色（ID、姓名）');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('<interaction_result>');
     });
 
     it('旧预设在解析时补入出演模式区，不覆盖已有提示词', () => {
@@ -96,9 +95,9 @@ describe('剧情自定义大区', () => {
         };
         const imported = parseStoryTheaterPreset(JSON.stringify(legacy), 'older-theater.json');
         const cast = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')!;
-        expect(cast.content).toContain('正文完成后，用 <turn_cast>');
-        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('实际发生的直接交流');
-        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')?.content).toContain('将倾向组作为本轮注意力偏置');
+        expect(cast.content).toContain('独处、沉默或独立行动');
+        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('有针对性的实际互动');
+        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')?.content).toContain('多人和重叠组提示可选的交流方向');
         const promptOrder = imported.document.prompts.map(prompt => prompt.id);
         expect(promptOrder.indexOf('custom-theater-note')).toBeGreaterThan(promptOrder.indexOf('nmj-v67-theater-cast'));
         expect(promptOrder.indexOf('custom-theater-note')).toBeLessThan(promptOrder.indexOf('nmj-v67-theater-continuity'));
@@ -114,7 +113,7 @@ describe('剧情自定义大区', () => {
         const migratedProtocol = parseStoryTheaterPreset(JSON.stringify(previousProtocol), 'previous-code-cast.json');
         expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content).toBe(cast.content);
         expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')?.content)
-            .toMatch(/完整剧情正文[\s\S]*<turn_cast>/);
+            .toMatch(/完整正文[\s\S]*<turn_cast>/);
 
         const edited = {
             ...legacy,

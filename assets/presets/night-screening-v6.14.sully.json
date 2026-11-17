@@ -186,7 +186,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater",
-                        "content": "根据用户最新输入选择剧情模式或场外模式。用户要求继续、推进剧情或给出角色行动时，执行剧情模式；用户明确讨论设定、写作或退出剧情时，执行场外模式。每轮只执行一种模式。\n本轮模式：{{theater_mode_state}}\n场外模式时，不执行出演、正文和私轴协议。"
+                        "content": "本轮模式：{{theater_mode_state}}。用户推进剧情或给出角色行动时续写；明确讨论设定或写作时进入场外。"
                     },
                     {
                         "id": "nmj-v67-theater-cast",
@@ -194,7 +194,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "本轮候选角色（ID、姓名）：{{theater_candidate_data}}\n正文完成后，用 <turn_cast> 输出实际出场的候选角色 ID 一维 JSON 数组，包含独处、沉默或独立行动的角色。仅被提及的角色与用户执笔的身份不列入。没有候选角色出场时输出 []。"
+                        "content": "候选角色（ID、姓名）：{{theater_candidate_data}}\n出演包括在正文中独处、沉默或独立行动的角色。仅被提及的角色和用户执笔身份不列入。"
                     },
                     {
                         "id": "nmj-v67-theater-interaction-bias",
@@ -202,7 +202,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n将倾向组作为本轮注意力偏置。写作时主动留意组内人物的动作、话语和可回应之处，优先让他们有机会相互注意、接话、加入或转移交流。\n不要把倾向组写成固定搭档或必须完成的任务；遇到自然契机时优先沿这些方向展开，条件不合适时允许未实现。\n近期反复交流的搭档降低默认优先级，除非当前情境确实更适合他们继续交流。\n多人组关注同一段共同讨论；重叠组允许交流对象转移。单人组只表示独立关注，不安排对话。\n保留人物自己的目的、注意力和行动，不为凑齐交流而制造无关对话。"
+                        "content": "本轮随机交流倾向：{{theater_interaction_tendencies}}\n单人组关注独立行动；多人和重叠组提示可选的交流方向。"
                     },
                     {
                         "id": "nmj-v67-theater-continuity",
@@ -210,7 +210,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "保持人物的时间、位置、动作和身体状态连续。人物加入、离开或转向另一段交流时，写出动作与空间衔接。"
+                        "content": ""
                     },
                     {
                         "id": "nmj-v67-theater-output",
@@ -218,7 +218,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater",
-                        "content": "剧情模式按顺序输出：\n1. 从预设起始文本开始的完整剧情正文。\n2. <turn_cast>实际出演角色 ID 的 JSON 一维数组</turn_cast>。\n3. <interaction_result>JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}"
+                        "content": "剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、<interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。场外只输出 <out_of_story>正文</out_of_story>。"
                     },
                     {
                         "id": "nmj-v67-theater-interaction-record",
@@ -226,7 +226,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "在 <turn_cast> 之后输出 <interaction_result>JSON 二维数组</interaction_result>，只记录出演角色在本轮正文中实际发生的直接交流。两人交流记为一组；多人直接参与同一段交流时记为一组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。"
+                        "content": "按正文中实际发生的直接交谈或有针对性的实际互动分组，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计；无互动写 []。"
                     },
                     {
                         "id": "nmj-v67-theater-private-axes",
@@ -234,7 +234,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "读取并承接各角色最近的私轴：\n{{theater_previous_axes}}\n剧情结束后，为本轮出演名单中的每位角色更新一条简短私轴，记录角色自己的生活事务、思考、外界影响和行动。保留仍在继续的事项和念头。使用 JSON 对象，以角色 ID 为键，值为简短文字，放在 <private_axes> 中。直接输出标签与 JSON，不加代码围栏或说明。"
+                        "content": "最近的私轴：{{theater_previous_axes}}\n按出演角色 ID 写简短私轴，续记其自己的事务、想法和行动。"
                     },
                     {
                         "id": "nmj-v67-section-theater-end",

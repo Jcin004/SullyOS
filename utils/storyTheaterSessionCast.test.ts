@@ -33,11 +33,12 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     const [a, b, c] = actors;
     Object.assign(mocks.state, {
         characters: actors, userProfile: { name: '本人' }, theme: {},
-        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' },
+        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'theater-fixture-api-key' },
         memoryPalaceConfig: { embedding: { baseUrl: 'https://example.invalid', apiKey: 'mock' } },
         addToast: mocks.toast,
     });
     const preset = createBlankStoryPreset('验收预设');
+    preset.document.prompts[0].content += ' 检查隐藏 theater-fixture-api-key。';
     preset.document.assistantPrefill = '<story_text>';
     const privateAxes = (ids: string[], note = '整理旧线索') => '<private_axes>' + JSON.stringify(Object.fromEntries(
         ids.map(id => [id, note]),
@@ -122,7 +123,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(pending.metadata.theaterCastIds).toBeUndefined();
         await send(advance(), 2);
         expect(await contents(thread)).toEqual(['我在窗边坐下。', '<story_text>越界回复</story_text>']);
-        const tendencies = (call: number) => payload(call).find(row => row.content.startsWith('本轮交流倾向：'))?.content;
+        const tendencies = (call: number) => payload(call).find(row => row.content.startsWith('本轮随机交流倾向：'))?.content;
         expect(tendencies(0)).toBeTruthy();
         expect(tendencies(1)).toBe(tendencies(0));
         const invalidReply = (await DB.getMessagesByCharId(thread, true)).at(-1)!;
@@ -143,10 +144,24 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(await contents(b.id)).toEqual([]);
         expect(await contents(c.id)).toHaveLength(2);
         expect(payload(2).at(-1)?.role).toBe('user');
-        expect(promptText(2)).toContain('本轮候选角色');
+        expect(promptText(2)).toContain('候选角色（ID、姓名）');
         expect(promptText(2)).toContain('演员设定c');
-        expect(promptText(2)).toContain('本轮交流倾向');
-        expect(promptText(2)).toContain('剧情正文起始文本');
+        expect(promptText(2)).not.toContain('尚未实现的交流倾向');
+        const previewButton = Array.from(container.querySelectorAll('button')).find(button => button.textContent === '查看本次发送的提示词')!;
+        await act(async () => previewButton.click());
+        const preview = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="发送消息与预设原文"]')!.value;
+        expect(preview).toContain('【预设原文】');
+        expect(preview).toContain('{{theater_interaction_tendencies}}');
+        expect(preview).toContain(tendencies(2));
+        expect(preview).toContain('运行时注入');
+        expect(preview).toContain('演员设定c');
+        expect(preview).not.toContain('Authorization');
+        expect(promptText(2)).toContain('theater-fixture-api-key');
+        expect(preview).not.toContain('theater-fixture-api-key');
+        expect(preview).toContain('[已隐藏]');
+        await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="关闭提示词"]')!.click());
+        expect(promptText(2)).toContain('本轮随机交流倾向');
+        expect(promptText(2)).toContain('完整正文（起始：');
         expect(payload(2).map(row => row.content).join('\n').match(/城南钟楼已经停摆/g)).toHaveLength(1);
         expect(container.textContent).toContain('第一幕暗号');
         expect(container.textContent).not.toContain('<turn_cast>');
@@ -186,7 +201,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             .toEqual(beforeRewrite.map(row => row.metadata.theaterMirrorIds[c.id]));
         expect(afterRewrite[1].metadata.theaterPrivateAxes).toEqual({ [a.id]: '整理旧线索', [c.id]: '整理旧线索' });
         expect(mocks.archive).toHaveBeenCalledTimes(4);
-        expect(promptText(4)).toContain('本轮候选角色');
+        expect(promptText(4)).toContain('候选角色（ID、姓名）');
         expect(tendencies(4)).toBe(tendencies(3));
         expect(promptText(4)).toContain('整理旧线索');
 

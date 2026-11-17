@@ -171,7 +171,7 @@ describe('糯米机原生剧情预设边界', () => {
         expect(document.schema).toBe('sullyos.story-preset');
         expect(document.version).toBe(1);
         expect(document.name).toContain('V6.27');
-        expect(document.prompts).toHaveLength(137);
+        expect(document.prompts).toHaveLength(139);
         const serialized = JSON.stringify(document);
         expect(serialized).not.toContain('prompt_order');
         expect(serialized).not.toContain('extensions');
@@ -180,30 +180,34 @@ describe('糯米机原生剧情预设边界', () => {
         expect(serialized).not.toContain('{{getvar::');
     });
 
-    it('默认开启项都有真实发送内容或原生插槽，且关系与组合输出协议没有旧结构冲突', () => {
+    it('内置原文保留旧关系协议，发送三轴时只替换关系记账规则', () => {
         const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
-        const enabled = document.prompts.filter(prompt => prompt.enabled);
+        const enabled = document.prompts.filter(prompt => prompt.enabled && prompt.id !== 'nmj-v67-theater-continuity');
         expect(new Set(document.prompts.map(prompt => prompt.id)).size).toBe(document.prompts.length);
         expect(enabled.every(prompt => Boolean(prompt.marker || prompt.content.trim()))).toBe(true);
         const affinity = document.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
-        expect(affinity.content).toContain('FL 关系联结');
-        expect(affinity.content).toContain('RI 恋爱性心动');
-        expect(affinity.content).toContain('DI 失序扰动');
-        expect(affinity.content).not.toContain('<affinity_person>');
+        expect(affinity.content).toContain('<affinity_person>');
+        const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
+        const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
+        expect(axes.content).toContain('RI 恋爱性心动');
+        expect(axes.content).toContain('DI 失序扰动');
+        expect(sent.origins.get(axes)?.presetText).toBe(affinity.content);
+        expect(sent.messages.map(message => message.content).join('\n')).not.toContain('<c_to_u_score>');
         const scene = document.prompts.find(prompt => prompt.id === 'nmj-v3-scene-header')!;
         expect(scene.content).toContain('幕后与余波”（幕后暗格后紧接镜头债）');
         expect(scene.content).not.toContain('幕后暗格、世界线、镜头债');
         const exit = document.prompts.find(prompt => prompt.id === 'nmj-v3-exit-check')!;
-        expect(exit.content).toContain('启用双向关系时，检查两个方向各自的证据和三轴变化');
+        expect(sent.messages.some(message => message.content.includes('启用双向关系时，检查两个方向各自的证据和三轴变化'))).toBe(true);
         expect(exit.content).toContain('幕后与余波（幕后暗格 → 镜头债）');
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(preflight.content).toContain('以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI');
+        expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI'))).toBe(true);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
 
-    it('旧 V6.14 快捷覆盖只继承开关，正文与新增层升级到 V6.27', () => {
+    it('内置预设覆盖保留用户的正文、顺序和开关', () => {
         const legacyOverride = {
             ...BUILTIN_NIGHT_SCREENING_PRESET.document,
             name: '糯米鸡｜夜班放映室 V6.14',
@@ -216,8 +220,8 @@ describe('糯米机原生剧情预设边界', () => {
         const resolved = resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacyOverride);
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-second')).toMatchObject({ enabled: false });
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')).toMatchObject({ enabled: true });
-        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toContain('本条与“第二人称”误同时开启时，本条优先');
-        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')?.enabled).toBe(true);
+        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toBe('旧第三人称正文');
+        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')).toBeUndefined();
     });
 
     it('拒绝其它应用的 prompt/completion JSON', () => {

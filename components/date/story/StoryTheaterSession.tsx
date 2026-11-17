@@ -33,6 +33,7 @@ import {
     formatSharedStoryHistory,
     formatStoryActorContexts,
     formatStoryTheaterExport,
+    formatStoryRequestPreview,
     getActiveStoryMiniTheaterPrompt,
     getPendingStoryRetryInput,
     getStoryCharacterContextLimit,
@@ -54,11 +55,11 @@ import {
     type StoryGenerationSettings,
 } from '../../../utils/storyTheater';
 import {
-    buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships,
+    buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
     STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
     stripStoryRelationshipPanels,
 } from '../../../utils/storyTheaterRelationships';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, collectUnrealizedStoryTendencies, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, type StoryInteractionHistoryEntry, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, type StoryInteractionHistoryEntry, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -177,11 +178,11 @@ const affinityNumber = (lines: DisplayLine[], labels: string[]): number | undefi
     return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : undefined;
 };
 
-const StoryAffinityGroup: React.FC<{ group: DisplayGroup }> = ({ group }) => {
+const StoryAffinityGroup: React.FC<{ group: DisplayGroup; axisLabels?: readonly string[] }> = ({ group, axisLabels = AFFINITY_DIMENSIONS }) => {
     const cToU = affinityNumber(group.lines, ['角色对你的温度', '关系温度']);
     const uToC = affinityNumber(group.lines, ['你对角色的温度', '你的关系温度']);
-    const dimensions = AFFINITY_DIMENSIONS.map(label => ({ label, value: affinityNumber(group.lines, [label]) })).filter(item => item.value !== undefined);
-    const compactLabels = new Set<string>(['角色对你的温度', '关系温度', '你对角色的温度', '你的关系温度', ...AFFINITY_DIMENSIONS]);
+    const dimensions = axisLabels.map(label => ({ label, value: affinityNumber(group.lines, [label]) })).filter(item => item.value !== undefined);
+    const compactLabels = new Set<string>(['角色对你的温度', '关系温度', '你对角色的温度', '你的关系温度', ...axisLabels]);
     const notes = group.lines.filter(line => !compactLabels.has(line.label || ''));
     return <section className='py-4 first:pt-0'>
         <div className='text-[11px] font-bold text-rose-700'>{group.title || '主要角色'}</div>
@@ -189,10 +190,16 @@ const StoryAffinityGroup: React.FC<{ group: DisplayGroup }> = ({ group }) => {
             <div className='rounded-xl bg-rose-50 px-3 py-2'><div className='text-[8px] font-bold text-rose-400'>{group.title || '角色'} → 你</div><div className='mt-0.5 text-lg font-serif font-semibold text-rose-700'>{cToU ?? '—'}<span className='ml-1 text-[8px] font-sans text-rose-300'>/ 100</span></div></div>
             <div className='rounded-xl bg-violet-50 px-3 py-2'><div className='text-[8px] font-bold text-violet-400'>你 → {group.title || '角色'}</div><div className='mt-0.5 text-lg font-serif font-semibold text-violet-700'>{uToC ?? '—'}<span className='ml-1 text-[8px] font-sans text-violet-300'>/ 100</span></div></div>
         </div>}
-        {dimensions.length > 0 && <div className='mt-3 grid gap-2'>{dimensions.map(item => <div key={item.label} className='grid grid-cols-[56px_1fr_24px] items-center gap-2'><span className='text-[8px] font-bold text-slate-400'>{item.label}</span><span className='h-1.5 rounded-full bg-slate-200 overflow-hidden'><i className='block h-full rounded-full bg-gradient-to-r from-violet-300 to-rose-400' style={{ width: `${item.value}%` }} /></span><span className='text-[8px] text-right tabular-nums text-slate-400'>{item.value}</span></div>)}</div>}
+        {dimensions.length > 0 && <div className='mt-3 grid gap-2'>{dimensions.map(item => <div key={item.label} className='grid grid-cols-[minmax(56px,auto)_1fr_24px] items-center gap-2'><span className='text-[8px] font-bold text-slate-400'>{item.label}</span><span className='h-1.5 rounded-full bg-slate-200 overflow-hidden'><i className='block h-full rounded-full bg-gradient-to-r from-violet-300 to-rose-400' style={{ width: `${item.value}%` }} /></span><span className='text-[8px] text-right tabular-nums text-slate-400'>{item.value}</span></div>)}</div>}
         {notes.length > 0 && <div className='mt-3'><LabeledRows lines={notes} /></div>}
     </section>;
 };
+
+const StoryAffinityDetails: React.FC<{ title: string; preview: string; children: React.ReactNode }> = ({ title, preview, children }) =>
+    <details className='group border-y border-rose-200'>
+        <summary className='list-none cursor-pointer py-3.5 flex items-center gap-3'><span className='w-8 h-8 rounded-full bg-rose-50 text-rose-500 grid place-items-center'><HeartStraight size={15} weight='fill' /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-rose-700'>{title}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{preview}</span></span><CaretDown size={13} className='text-rose-400 transition-transform group-open:rotate-180' /></summary>
+        <div className='pb-3 pl-11 divide-y divide-rose-100'>{children}</div>
+    </details>;
 
 interface DisplayGroup { title: string; lines: DisplayLine[]; }
 
@@ -286,30 +293,29 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
                 const options = replies.length > 0 ? replies : lines.filter(line => line.value).map(line => line.value);
                 return <section key={index} className='py-4 border-y border-slate-300'><div className='flex items-center gap-2 text-[10px] font-bold text-slate-600'><ArrowBendDownRight size={15} />下一步可以这样写</div><div className='mt-3 divide-y divide-slate-200'>{options.map((option, optionIndex) => <button key={optionIndex} onClick={() => onChoose?.(option)} className='w-full py-3 flex items-start gap-3 text-left'><span className='w-5 h-5 shrink-0 rounded-full bg-violet-100 text-violet-700 grid place-items-center text-[9px] font-bold'>{optionIndex + 1}</span><span className='text-[12px] leading-5 text-slate-700'>{option}</span></button>)}</div></section>;
             }
+
             if (block.relationship) {
                 const panel = block.relationship;
-                return <details key={index} className='group border-y border-rose-200'>
-                    <summary className='cursor-pointer py-3 text-xs font-bold text-rose-700'>关系记录 · {panel.primaryName}</summary>
-                    {panel.state_note && <div className='py-3 text-xs leading-6'><strong className='text-slate-600'>自我记录</strong><p>{panel.state_note}</p></div>}
-                    <div className='divide-y divide-rose-100'>
-                        {panel.relationships.map(row => <section key={JSON.stringify([row.fromId, row.toId])} className="py-3">
-                            <h4 className='text-xs font-bold text-slate-700'>{row.fromName} → {row.toName}</h4>
-                            <dl className='mt-2 space-y-2'>
-                                {STORY_RELATIONSHIP_AXES.map(axis => {
-                                    const value = row.axes[axis];
-                                    return value && <div key={axis} className='rounded-lg bg-rose-50 px-3 py-2 text-xs'>
-                                        <dt className='flex flex-wrap items-baseline justify-between gap-1 text-slate-700'>
-                                            <strong>{axis} · {STORY_RELATIONSHIP_LABELS[axis]}</strong>
-                                            <span>{value.score} / 100 {value.delta ? `（${value.delta > 0 ? '+' : ''}${value.delta}）` : ''}</span>
-                                        </dt>
-                                        {(value.trigger || value.evidence) && <dd className='mt-1 leading-5 text-slate-600'>{[value.trigger, value.evidence].filter(Boolean).join(' · ')}</dd>}
-                                    </div>;
-                                })}
-                            </dl>
-                            {row.relation_note && <p className='mt-2 text-xs leading-6 text-slate-600'>{row.relation_note}</p>}
-                        </section>)}
-                    </div>
-                </details>;
+                const axisLabels = STORY_RELATIONSHIP_AXES.map(axis => axis + ' · ' + STORY_RELATIONSHIP_LABELS[axis]);
+                const groups = panel.relationships.map(row => ({
+                    key: JSON.stringify([row.fromId, row.toId]),
+                    title: row.fromName + ' → ' + row.toName,
+                    lines: [
+                        ...STORY_RELATIONSHIP_AXES.flatMap((axis, i) => {
+                            const value = row.axes[axis];
+                            if (!value) return [];
+                            const note = [value.delta ? (value.delta > 0 ? '+' : '') + value.delta : '', value.trigger, value.evidence].filter(Boolean).join(' · ');
+                            return [{ label: axisLabels[i], value: String(value.score) },
+                                ...(note ? [{ label: axis + ' 本轮变化', value: note }] : [])];
+                        }),
+                        ...(row.relation_note ? [{ label: '关系天气', value: row.relation_note }] : []),
+                        ...(row.relation_fragments ?? []).map(value => ({ label: '关系碎片', value })),
+                    ],
+                }));
+                return <StoryAffinityDetails key={index} title={'关系记录 · ' + panel.primaryName} preview='FL · RI · DI'>
+                    {panel.state_note && <div className='py-3'><LabeledRows lines={[{ label: '自我记录', value: panel.state_note }]} /></div>}
+                    {groups.map(group => <StoryAffinityGroup key={group.key} group={group} axisLabels={axisLabels} />)}
+                </StoryAffinityDetails>;
             }
             if (block.kind === 'affinity') {
                 const personGroups = groupDisplayLines(lines, '人物', ['角色 ID']);
@@ -319,10 +325,9 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
                     const uToC = affinityNumber(group.lines, ['你对角色的温度', '你的关系温度']);
                     return `${group.title}${cToU !== undefined ? `→你 ${cToU}` : ''}${uToC !== undefined ? ` · 你→${group.title} ${uToC}` : ''}`;
                 }).join(' · ');
-                return <details key={index} className='group border-y border-rose-200'>
-                    <summary className='list-none cursor-pointer py-3.5 flex items-center gap-3'><span className='w-8 h-8 rounded-full bg-rose-50 text-rose-500 grid place-items-center'><HeartStraight size={15} weight='fill' /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-rose-700'>双向关系 · {groups.length} 位角色</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{preview || '展开查看逐角色温度与关系维度'}</span></span><CaretDown size={13} className='text-rose-400 transition-transform group-open:rotate-180' /></summary>
-                    <div className='pb-3 pl-11 divide-y divide-rose-100'>{groups.map((group, groupIndex) => <StoryAffinityGroup key={`${group.title}-${groupIndex}`} group={group} />)}</div>
-                </details>;
+                return <StoryAffinityDetails key={index} title={'双向关系 · ' + groups.length + ' 位角色'} preview={preview || '展开查看逐角色温度与关系维度'}>
+                    {groups.map((group, groupIndex) => <StoryAffinityGroup key={group.title + ':' + groupIndex} group={group} />)}
+                </StoryAffinityDetails>;
             }
             return <section key={index} className='pl-4 border-l-2 border-slate-300'><div className='text-[10px] font-bold text-slate-500'>{block.title || '附加信息'}</div><div className='mt-2'><LabeledRows lines={lines} /></div></section>;
         })}
@@ -370,6 +375,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [memoryStatus, setMemoryStatus] = useState('');
     const [contextTokens, setContextTokens] = useState(0);
     const [contextTokensExact, setContextTokensExact] = useState(false);
+    const [requestPreview, setRequestPreview] = useState('');
+    const [requestViewer, setRequestViewer] = useState(false);
     const [showAffinityInput, setShowAffinityInput] = useState(false);
     const [affinityDrafts, setAffinityDrafts] = useState<Record<string, AffinityDraft>>({});
     const [selectedAffinityActorId, setSelectedAffinityActorId] = useState('');
@@ -851,8 +858,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
-            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn, relationshipsEnabled);
-            const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
+            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, relationshipsEnabled);
+            const modelInput = relationshipsEnabled || rerollOutOfStory ? modelText : appendStoryAffinityInputs(modelText, affinityInputs);
             const hasPresetHistory = effectivePreset.document.prompts.some(prompt => prompt.enabled && prompt.marker === 'history');
             const historyRows = hasPresetHistory ? visibleHistory
                 : visibleHistory.slice(visibleHistory.map(message => message.metadata?.theaterOutOfStory === true).lastIndexOf(false) + 1);
@@ -878,13 +885,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         proposals: interactionTendencies,
                         previousAxes: Object.fromEntries(previousAxes),
                         previousInteractions: interactionHistory,
-                        unrealizedTendencies: collectUnrealizedStoryTendencies(interactionHistory),
                         modeState: rerollOutOfStory ? '场外重写' : (isContinueTurn || assistantOpening || isReroll ? '剧情续写' : '按最新输入判断'),
                         prefill: storyTheaterMode === 'story' ? effectivePreset.document.assistantPrefill : '',
                     }) : undefined;
                     compiled = compileStoryPreset({
                         preset: effectivePreset, userName: promptIdentityName, characterNames: requestActorNames,
                         historyMessages, storyTheaterMode, storyTheaterValues,
+                        relationshipMode: relationshipsEnabled ? (rerollOutOfStory ? 'skip' : 'axes') : undefined,
                         slots: {
                             actors: actorContext,
                             persona: [buildTheaterPersona(mask), maskMemoryContext].filter(Boolean).join('\n\n'),
@@ -904,7 +911,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
                     ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                     ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
-                    ...(relationshipsEnabled && !rerollOutOfStory ? [{ role: 'system' as const, content: buildStoryRelationshipGuide(relationshipBaseline, castTurn) }] : []),
+                    ...(relationshipBaseline && !rerollOutOfStory ? [{ role: 'system' as const, content: buildStoryRelationshipGuide(relationshipBaseline, castTurn) }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ];
@@ -918,6 +925,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
                     },
             });
+            compiled.origins.set(pendingTurn, { label: '本轮用户输入' });
+            for (const message of historyMessages) compiled.origins.set(message, { label: '运行时填入 · 剧场历史' });
             if (promptEntry.forceUserLastMessage && payload[payload.length - 1]?.role !== 'user') {
                 payload.push({ role: 'user', content: '请按以上要求继续本轮剧情。' });
             }
@@ -940,15 +949,22 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             let promptTokenCountExact = false;
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);
+            setRequestPreview(formatStoryRequestPreview(payload, compiled.origins, [apiConfig.apiKey,
+                memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey]));
             const generated = await callCompletion(payload, compiled.settings, reported => {
                 promptTokenCount = reported;
                 promptTokenCountExact = true;
                 setContextTokens(reported);
                 setContextTokensExact(true);
             });
-            const outOfStoryBody = (isReroll && !rerollOutOfStory) || isContinueTurn || assistantOpening ? undefined : parseOutOfStoryReply(generated);
+            const reportedOutOfStory = parseOutOfStoryReply(generated);
+            const outOfStoryBody = reportedOutOfStory === undefined ? undefined : stripStoryRelationshipPanels(reportedOutOfStory);
             const outOfStory = outOfStoryBody !== undefined;
-            if (rerollOutOfStory && !outOfStory) throw new Error('重写场外回复时需要继续使用场外模式。');
+            if (rerollOutOfStory && !outOfStoryBody) throw new Error('重写场外回复时需要继续使用场外模式。');
+            if (outOfStory && ((isReroll && !rerollOutOfStory) || isContinueTurn || assistantOpening)) {
+                throw new Error('本轮需要返回剧情正文。');
+            }
+            if (outOfStory && !outOfStoryBody) throw new Error('本轮没有场外正文，请重试。');
             const { castIds, interactions, body, axes } = outOfStory
                 ? { castIds: [], interactions: [], body: outOfStoryBody, axes: undefined }
                 : castTurn
@@ -967,11 +983,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const needsPrefill = prefill && !body.startsWith(prefill)
                 && (!castTurn || !hasNativeOpening);
             const rawContent = needsPrefill ? `${prefill}${body}` : body;
-            const turnRelationships = !castTurn ? relationshipBaseline
-                : relationshipBaseline && actualCast.has(relationshipBaseline.primaryId) ? {
-                    ...relationshipBaseline,
-                    relationships: relationshipBaseline.relationships.filter(row => actualCast.has(row.fromId) && actualCast.has(row.toId)),
-                } : undefined;
+            const turnRelationships = castTurn ? restrictStoryRelationshipsToCast(relationshipBaseline, actualCast) : relationshipBaseline;
             const content = relationshipsEnabled && !outOfStory
                 ? reconcileStoryRelationships(rawContent, turnRelationships)
                 : rawContent;
@@ -1035,7 +1047,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, primaryActor, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
+    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, primaryActor, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
 
     const choosePrimary = async (characterId: string) => {
         if (sendLock.current || archiveLock.current || !actors.some(actor => actor.id === characterId)) return;
@@ -1079,6 +1091,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='block mt-1 truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='block mt-1 truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>完整上下文</span><span className='block mt-1 truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${sending ? '本轮' : '上轮'}${displayedTokenInfo.exact ? '使用' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计全部内容'}</span></div>
+                        {requestPreview && <button type='button' onClick={() => setRequestViewer(true)} className='col-span-2 justify-self-start rounded-lg bg-violet-100 px-3 py-2 font-bold text-violet-700'>查看本次发送的提示词</button>}
                         <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
                         {relationshipsEnabled && actors.length > 0 && <label className='col-span-2 flex items-center gap-3'><span className='shrink-0 text-[9px] font-bold text-slate-500'>关系三轴主要角色</span><select aria-label='关系三轴主要角色' value={primaryActor?.id || ''} onChange={event => void choosePrimary(event.target.value)} disabled={sending} className='min-w-0 flex-1 rounded-lg border border-rose-200 bg-white px-2 py-1.5 text-[11px]'>{actors.map(actor => <option key={actor.id} value={actor.id}>{actor.name}</option>)}</select></label>}
@@ -1096,13 +1109,29 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             </div>)}
                         </div>
                         {currentTendencies.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>交流倾向：{currentTendencies.map((group, index) => `关注 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
-                        {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
+                        {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流（模型记录）：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
                         {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
                         {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
                     </fieldset>
                 </div>
             </details>
         </header>
+        {requestViewer && <div className='fixed inset-0 z-[290] grid place-items-center bg-black/40 p-4' onClick={() => setRequestViewer(false)}>
+            <section role='dialog' aria-modal='true' aria-label='本次发送的提示词' onClick={event => event.stopPropagation()} className='flex h-[80svh] w-full max-w-2xl flex-col gap-3 rounded-2xl bg-white p-4 text-slate-700'>
+                <div className='flex items-center justify-between gap-2'>
+                    <strong className='text-sm'>本次发送的提示词</strong>
+                    <div className='flex items-center gap-3'>
+                        <button type='button' className='text-xs font-bold text-violet-700' onClick={async () => {
+                            try { await navigator.clipboard.writeText(requestPreview); addToast('已复制提示词', 'success'); }
+                            catch { addToast('可在文本框内选中并复制', 'error'); }
+                        }}>复制全部</button>
+                        <button type='button' aria-label='关闭提示词' onClick={() => setRequestViewer(false)}><X size={18} /></button>
+                    </div>
+                </div>
+                <textarea aria-label='发送消息与预设原文' readOnly value={requestPreview} className='min-h-0 flex-1 resize-none rounded-xl bg-slate-50 p-3 font-mono text-xs leading-6' />
+            </section>
+        </div>}
+
 
         <main className='meeting-reading-page story-page-scroll flex-1 overflow-y-auto px-5 py-7'>
             <div className='max-w-2xl mx-auto'>

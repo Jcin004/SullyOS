@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, collectUnrealizedStoryTendencies, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage } from './storyTheaterCast';
 
 const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
@@ -242,7 +242,7 @@ describe('交流倾向随机调度', () => {
         expect(anchored.some(plan => !plan.castIds.includes('a'))).toBe(true);
     });
 
-    it('近期真实互动降低旧搭档权重，未实现倾向会暂时获得探索加成', () => {
+    it('近期真实互动降低旧搭档权重，未实现的倾向不改变抽取', () => {
         const actualHistory = Array.from({ length: 8 }, () => ({
             castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']],
         }));
@@ -255,11 +255,7 @@ describe('交流倾向随机调度', () => {
         const actual = sample(actualHistory);
         const missed = sample(missedHistory);
         expect(actual.filter(group => group === 'ab').length).toBeLessThan(baseline.filter(group => group === 'ab').length);
-        expect(missed.filter(group => group === 'ab').length).toBeGreaterThan(baseline.filter(group => group === 'ab').length);
-        expect(collectUnrealizedStoryTendencies(missedHistory)).toEqual([['a', 'b']]);
-        expect(collectUnrealizedStoryTendencies([...missedHistory, { castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']] }])).toEqual([]);
-        const expired = [...missedHistory, ...Array.from({ length: 8 }, () => ({ castIds: people, tendencies: [], actual: [] }))];
-        expect(collectUnrealizedStoryTendencies(expired)).toEqual([]);
+        expect(missed).toEqual(baseline);
     });
 
     it('从剧情结果中提取实际互动，过滤旁观者、无效角色和单人组', () => {
@@ -276,6 +272,10 @@ describe('交流倾向随机调度', () => {
             '她独自修表。<turn_cast>["a"]</turn_cast><interaction_result>[["a","d"]]</interaction_result>' + axes(['a', 'b']),
             ['a', 'b', 'c', 'd'],
         );
+        const watching = '<story_text>甲向乙点头；丙路过，丁只被提及。</story_text><turn_cast>["a","b","c"]</turn_cast>';
+        const valid = '<interaction_result>[["a","b"],["a","b","d"],["c"],["b","a"]]</interaction_result>';
+        expect(parseStoryTheaterReply(watching + valid, ['a', 'b', 'c', 'd']).interactions).toEqual([['a', 'b']]);
+        expect(parseStoryTheaterReply(watching + valid + '<interaction_result>[]</interaction_result>', ['a', 'b', 'c', 'd']).interactions).toEqual([]);
         expect(background).toEqual({ castIds: ['a'], interactions: [], axes: { a: axis }, body: '她独自修表。' });
         expect(() => assertStoryRerollBody('<interaction_result>[]</interaction_result>正文')).toThrow('本轮只需返回正文');
     });
@@ -306,11 +306,12 @@ describe('交流倾向随机调度', () => {
             },
         } as any;
         expect(storyCastIdsFromMessage(message)).toEqual(['a', 'b', 'c']);
-        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([['a', 'd']]);
+        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([]);
+        expect(message.metadata.theaterInteractionGroups).toEqual([['a', 'd']]);
         expect(storyInteractionHistoryFromMessage(message)).toEqual({
             castIds: ['a', 'b', 'c'],
             tendencies: [['a', 'b'], ['a', 'c'], ['c', 'd']],
-            actual: [['a', 'd']],
+            actual: [],
             legacyTendencies: [],
         });
         const legacy = {
