@@ -354,7 +354,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     // The old user-controlled affinity slider stays readable in archived entries; new turns use FL/RI/DI.
     const affinityEnabled = false;
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
-    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits, actors.length), [entry.castLimits, actors.length]);
+    const castLimits = useMemo(() => normalizeStoryCastLimits({ minGroups: entry.castLimits?.minGroups, maxGroups: entry.castLimits?.maxGroups }, actors.length), [entry.castLimits, actors.length]);
     const castEnabled = entry.castModeEnabled !== false;
     const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -751,7 +751,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
             const generatedPlan = castTurn && !fixedCastIds?.length
-                ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory)
+                ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory, Math.random, primaryActor?.id)
                 : undefined;
             const selectedCastIds = castTurn ? (fixedCastIds?.length ? fixedCastIds : generatedPlan?.castIds ?? []) : [];
             const interactionTendencies = castTurn
