@@ -1,6 +1,25 @@
-import type { CharacterProfile, Message } from '../types';
-import { openDB } from './db';
+import type { CharacterProfile, Message, StoryTheaterEntry } from '../types';
+import { DB, openDB } from './db';
 import { loadCharacterContextMessages } from './chatContextRange';
+import { storyTimelineTimestampForCharacter } from './storyTheater';
+
+export async function loadStoryMirrorTimeline(
+    entry: StoryTheaterEntry, actorId: string, newestFirst: readonly Message[],
+): Promise<number | undefined> {
+    for (const layer of newestFirst) {
+        const id = layer.metadata?.theaterMirrorIds?.[actorId];
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        const mirror = await DB.getMessageById(id);
+        const time: unknown = mirror?.metadata?.theaterTimelineTimestamp;
+        if (mirror?.charId === actorId && mirror.metadata?.source === 'story_theater_memory'
+            && mirror.metadata?.theaterId === entry.id
+            && (mirror.metadata.theaterCentralId == null || mirror.metadata.theaterCentralId === layer.id)
+            && typeof time === 'number' && Number.isFinite(new Date(time).getTime())) {
+            return storyTimelineTimestampForCharacter(entry, actorId, time);
+        }
+    }
+    return storyTimelineTimestampForCharacter(entry, actorId);
+}
 
 /** 本剧情原文已有独立历史槽位，角色镜像不得重复注入或带回待重写回复。 */
 export async function loadStoryActorContext(

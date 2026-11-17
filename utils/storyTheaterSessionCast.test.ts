@@ -412,3 +412,129 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         vi.unstubAllGlobals();
     }
 });
+
+it('楼层里可纠正出演、补写未出演候选人的私轴，并在生成中编辑本轮用户推进', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    const characters = [{ id: 'manual-ui-a', name: '小甲' }, { id: 'manual-ui-b', name: '小乙' }, { id: 'manual-ui-c', name: '小丙' }];
+    const [a, b, c] = characters;
+    Object.assign(mocks.state, {
+        characters, userProfile: { name: '本人' }, theme: {},
+        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' },
+        memoryPalaceConfig: {}, addToast: mocks.toast,
+    });
+    const entry = { ...createStoryTheaterDraft(), id: 'manual-edit-ui', characterIds: characters.map(actor => actor.id),
+        writesToCharacterMemory: true };
+    const preset = createBlankStoryPreset('人工编辑测试');
+    const result = (content: string) => new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+    let finishGeneration!: (response: Response) => void;
+    const deferred = new Promise<Response>(resolve => { finishGeneration = resolve; });
+    const fetch = vi.fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(result('<story_text>保留缺名单的正文</story_text><turn_cast>["越界"]</turn_cast>'))
+        .mockResolvedValueOnce(result('<story_text>角色开始交谈</story_text>'
+            + `<turn_cast>["${a.id}","${b.id}"]</turn_cast><interaction_result>[["${a.id}","${b.id}"]]</interaction_result>`
+            + `<private_axes>{"${a.id}":"AI 原私轴"}</private_axes>`))
+        .mockReturnValueOnce(deferred);
+    vi.stubGlobal('fetch', fetch);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (key: string) => act(async () => root.render(createElement(StoryTheaterSession, {
+        key, entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+    })));
+    const dialog = () => container.querySelector('[role="dialog"]')!;
+    const buttons = (scope: ParentNode = container) => Array.from(scope.querySelectorAll<HTMLButtonElement>('button'));
+    const press = (label: string, scope: ParentNode = container) => act(async () => {
+        const button = buttons(scope).find(node => node.getAttribute('aria-label') === label || node.textContent?.trim() === label);
+        expect(button).toBeTruthy();
+        button!.click();
+    });
+    const type = (selector: string, value: string, scope: ParentNode = container) => act(async () => {
+        const textarea = scope.querySelector<HTMLTextAreaElement>(selector)!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, value);
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const turnButtons = () => container.querySelectorAll<HTMLButtonElement>('[aria-label="编辑本轮出演名单及私轴"]');
+    const openTurn = (index: number) => act(async () => turnButtons()[index].click());
+    const rows = () => DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true);
+    const waitFor = (assertion: () => void | Promise<void>) => vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+        await assertion();
+    });
+    const submit = async (text: string) => {
+        await type('textarea', text);
+        await act(async () => { container.querySelector<HTMLButtonElement>('button.story-send-button')!.click(); });
+    };
+    const setAxis = async (name: string, value: string, initial: string) => {
+        await press(`查看${name}的私轴`, dialog());
+        await press('编辑私轴', dialog());
+        expect(dialog().querySelector('textarea')?.value).toBe(initial);
+        await type('textarea', value, dialog());
+        await press('保存私轴', dialog());
+        await waitFor(() => expect(dialog().querySelector('textarea')).toBeNull());
+        await press('关闭私轴', dialog());
+    };
+    const toggle = (index: number) => act(async () => dialog().querySelectorAll<HTMLInputElement>('input[type=checkbox]')[index].click());
+    const checked = () => Array.from(dialog().querySelectorAll<HTMLInputElement>('input:checked')).map(input => input.parentElement?.textContent);
+    const request = (call: number) => JSON.stringify(JSON.parse(String(fetch.mock.calls[call][1]?.body)).messages);
+    try {
+        await render('initial');
+        await submit('第一轮输入');
+        await waitFor(() => expect(turnButtons()).toHaveLength(1));
+        expect((await DB.getMessagesByCharId(a.id, true))).toEqual([]);
+        await openTurn(0);
+        expect(dialog().querySelectorAll('input[type=checkbox]')).toHaveLength(3);
+        expect(checked()).toEqual([]);
+        await setAxis(b.name, '小乙的候选私轴', '');
+        await toggle(0);
+        await press('保存出演名单', dialog());
+        await waitFor(() => expect(dialog()).toBeNull());
+        expect((await rows())[1].metadata.theaterCastIds).toEqual([a.id]);
+        expect((await rows())[1].content).toContain('保留缺名单的正文');
+
+        await submit('第二轮输入');
+        await waitFor(() => expect(turnButtons()).toHaveLength(2));
+        expect(request(1)).toContain('小乙的候选私轴');
+        await openTurn(1);
+        expect(checked()).toEqual([a.name, b.name]);
+        await setAxis(a.name, '更新小甲的私轴', 'AI 原私轴');
+        await setAxis(b.name, '', '');
+        await toggle(1);
+        await toggle(2);
+        await press('保存出演名单', dialog());
+        await waitFor(() => expect(dialog()).toBeNull());
+        await render('refreshed');
+        await waitFor(() => expect(turnButtons()).toHaveLength(2));
+        await openTurn(1);
+        expect(checked()).toEqual([a.name, c.name]);
+        expect((await rows())[3].metadata.theaterInteractionGroups).toEqual([]);
+        expect(await DB.getMessagesByCharId(b.id, true)).toEqual([]);
+        await press('关闭出演名单', dialog());
+
+        await submit('生成中的输入');
+        await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+        expect(request(2)).toContain('更新小甲的私轴');
+        expect(request(2)).not.toContain('小乙的候选私轴');
+        const pending = Array.from(container.querySelectorAll('.meeting-user-turn')).at(-1)!;
+        await act(async () => pending.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+        await act(async () => buttons().find(button => button.textContent?.includes('编辑这一层'))!.click());
+        await type('textarea', '生成中修订的输入', container.querySelector('.story-keyboard-sheet')!);
+        await press('保存这一层');
+        await waitFor(() => expect(container.textContent).toContain('生成中修订的输入'));
+        await act(async () => finishGeneration(result(`<story_text>第三轮正文</story_text><turn_cast>["${c.id}"]</turn_cast>`)));
+        await waitFor(() => expect(turnButtons()).toHaveLength(3));
+        const [, , , , input, reply] = await rows();
+        expect(input.content).toBe('生成中修订的输入');
+        expect(reply.metadata.theaterInputId).toBe(input.id);
+        expect(await DB.getMessageById(input.metadata.theaterMirrorIds[c.id])).toMatchObject({
+            content: input.content, metadata: { theaterCentralId: input.id },
+        });
+    } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+        vi.unstubAllGlobals();
+    }
+});

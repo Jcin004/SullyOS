@@ -71,10 +71,20 @@ const cleanInteractionGroups = (value: unknown, allowed: ReadonlySet<string>, mi
 /** 新版直接保存出演名单；旧消息从旧分组或记忆镜像中恢复。 */
 export const storyCastIdsFromMessage = (message?: Message): string[] => {
     const stored = message?.metadata?.theaterCastIds;
-    if (Array.isArray(stored)) return uniqueIds(stored);
+    if (Array.isArray(stored)) {
+        const ids = uniqueIds(stored);
+        const candidates = message?.metadata?.theaterCandidateIds;
+        return Array.isArray(candidates) && ids.some(id => !candidates.includes(id)) ? [] : ids;
+    }
     const legacy = storyCastFromMessage(message);
     if (legacy?.length) return storyCastIds(legacy);
     return uniqueIds(Object.keys((message?.metadata?.theaterMirrorIds || {}) as Record<string, unknown>));
+};
+
+export const storyTurnActorIds = (message?: Message): string[] => {
+    if (message?.role !== 'assistant' || message.type !== 'text' || message.metadata?.source !== 'story_theater'
+        || message.metadata.theaterOutOfStory) return [];
+    return [...new Set([...uniqueIds(message.metadata.theaterCandidateIds), ...storyCastIdsFromMessage(message)])];
 };
 
 export const storyInteractionTendenciesFromMessage = (message?: Message): string[][] => {
@@ -397,10 +407,31 @@ export function storyPrivateAxesFromMessage(reply: Message): StoryPrivateAxes {
     if (!reply.metadata?.theaterPrivateAxes || reply.metadata.theaterOutOfStory) return {};
     // A later edit of the input must not erase an already-generated private axis.
     const axes = reply.metadata?.theaterPrivateAxes;
-    return Object.fromEntries(storyCastIdsFromMessage(reply).flatMap(id => {
+    const allowed = new Set([...storyTurnActorIds(reply), ...storyCastIdsFromMessage(reply)]);
+    return Object.fromEntries([...allowed].flatMap(id => {
         const axis = readAxis(axes?.[id]);
         return axis ? [[id, axis]] : [];
     }));
+}
+
+/** An explicitly cleared axis supersedes earlier entries, just like a nonempty edit. */
+export function latestStoryPrivateAxes(history: readonly Message[], actorIds: readonly string[]): Map<string, StoryPrivateAxis> {
+    const axes = new Map<string, StoryPrivateAxis>();
+    const remaining = new Set(actorIds);
+    for (const message of [...history].reverse()) {
+        if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
+        const values = storyPrivateAxesFromMessage(message);
+        for (const id of remaining) {
+            if (Object.hasOwn(values, id)) {
+                axes.set(id, values[id]);
+                remaining.delete(id);
+            } else if (message.metadata?.theaterPrivateAxes?.[id] === '' && storyTurnActorIds(message).includes(id)) {
+                remaining.delete(id);
+            }
+        }
+        if (!remaining.size) break;
+    }
+    return axes;
 }
 
 export function parseOutOfStoryReply(text: string): string | undefined {

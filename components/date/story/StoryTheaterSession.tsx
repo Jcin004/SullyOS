@@ -1,6 +1,6 @@
 import {meetingAppearance} from '../../../utils/meetingAppearance';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { loadStoryActorContext, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
+import { loadStoryActorContext, loadStoryMirrorTimeline, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
 import { generateStoryArchiveSummary } from '../../../utils/storyTheaterArchive';
 import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
@@ -49,7 +49,6 @@ import {
     selectStoryArchiveBatch,
     storyTheaterMemoryRecipientIds,
     storyTheaterThreadId,
-    storyTimelineTimestampForCharacter,
     type StoryAffinityInput,
     type StoryApiMessage,
     type StoryGenerationSettings,
@@ -59,7 +58,7 @@ import {
     STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
     stripStoryRelationshipPanels,
 } from '../../../utils/storyTheaterRelationships';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, type StoryInteractionHistoryEntry, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, latestStoryPrivateAxes, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, storyTurnActorIds, type StoryInteractionHistoryEntry } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -370,6 +369,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const [axisViewer, setAxisViewer] = useState<{ messageId: number; actorId: string } | null>(null);
     const axisMessage = axisViewer && rowsById.get(axisViewer.messageId);
     const displayedAxis = axisViewer && axisMessage && storyPrivateAxesFromMessage(axisMessage)[axisViewer.actorId];
+    const [axisEdit, setAxisEdit] = useState<{ original: Message; draft: string } | null>(null);
+    const [castEdit, setCastEdit] = useState<{ original: Message; ids: string[] } | null>(null);
+    const [savingTurn, setSavingTurn] = useState(false);
+    const [turnEditError, setTurnEditError] = useState('');
+    const turnEditLock = useRef(false);
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
     const [memoryStatus, setMemoryStatus] = useState('');
@@ -399,10 +403,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
+    const messageRead = useRef(0);
 
     const loadMessages = useCallback(async () => {
+        const request = ++messageRead.current;
         const rows = await DB.getMessagesByCharId(threadId, true);
-        setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
+        if (request === messageRead.current) {
+            setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
+        }
     }, [threadId]);
 
     useEffect(() => { void loadMessages(); }, [loadMessages]);
@@ -417,6 +425,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setEditingMessage(null);
         setDeletingMessage(null);
         setAxisViewer(null);
+        setAxisEdit(null);
+        setCastEdit(null);
+        setTurnEditError('');
     }, [entry.id]);
     const patchAffinityDraft = useCallback((characterId: string, patch: Partial<AffinityDraft>) => {
         setAffinityDrafts(current => ({
@@ -497,6 +508,64 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setMutatingMessage(false);
         }
     }, [addToast, deletingMessage, entry.writesToCharacterMemory, loadMessages, mutatingMessage, relatedMessageIds]);
+
+    const openAxis = (message: Message, actorId: string) => {
+        setTurnEditError('');
+        setAxisEdit(null);
+        setAxisViewer({ messageId: message.id, actorId });
+    };
+    const closeAxis = () => {
+        if (turnEditLock.current) return;
+        setAxisEdit(null);
+        setAxisViewer(null);
+        setTurnEditError('');
+    };
+    const saveTurnEdit = async (save: () => Promise<void>, done: () => void) => {
+        if (turnEditLock.current) return;
+        turnEditLock.current = true;
+        setSavingTurn(true);
+        setTurnEditError('');
+        try {
+            await save();
+            await loadMessages();
+            done();
+            addToast('本轮记录已保存', 'success');
+        } catch (error) {
+            setTurnEditError(error instanceof Error ? error.message : String(error));
+        } finally {
+            turnEditLock.current = false;
+            setSavingTurn(false);
+        }
+    };
+    const saveCast = () => {
+        if (!castEdit) return;
+        const { original, ids } = castEdit;
+        void saveTurnEdit(async () => {
+            const mirrored = entry.writesToCharacterMemory || Object.keys(original.metadata?.theaterMirrorIds ?? {}).length > 0;
+            const timelines = new Map<string, number | undefined>();
+            if (mirrored) {
+                const rows = await DB.getMessagesByCharId(threadId, true);
+                const prior = rows.filter(row => row.id < original.id
+                    && row.id !== original.metadata?.theaterInputId && row.metadata?.source === 'story_theater').reverse();
+                await Promise.all(ids.filter(id => !original.metadata?.theaterMirrorIds?.[id]).map(async id => {
+                    timelines.set(id, await loadStoryMirrorTimeline(entry, id, prior));
+                }));
+                if (memoryRuns.current > 0) throw new Error('角色正在整理记忆，请稍后保存出演名单');
+            }
+            await DB.commitStoryTheaterTurn(original, undefined, ids, mirrored
+                ? (id, row) => createStoryTheaterMirrorMessage(entry, id, row, timelines.get(id)) : undefined, { castEdit: original });
+        }, () => setCastEdit(null));
+    };
+    const turnDetails = (message: Message) => {
+        if (!storyTurnActorIds(message).length) return null;
+        const names = storyCastIdsFromMessage(message).map(id => characters.find(actor => actor.id === id)?.name ?? '已移除角色');
+        return <button type='button' aria-label='编辑本轮出演名单及私轴'
+            onClick={() => { setTurnEditError(''); setCastEdit({ original: message, ids: storyCastIdsFromMessage(message) }); }}
+            className='mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-left text-xs text-violet-700'>
+            <PencilSimple size={14} className='shrink-0' />
+            <span className='truncate'>本轮出演名单 / 镜像记忆对象 · {names.join('、') || '未选角色'}</span>
+        </button>;
+    };
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending]);
     const pageCount = Math.max(1, Math.ceil(messages.length / STORY_PAGE_SIZE));
     useEffect(() => { setMessagePage(Math.max(0, pageCount - 1)); }, [messages.length, pageCount]);
@@ -719,7 +788,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     }, [addToast, apiConfig, castEnabled, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
 
     const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
-        if (sendLock.current || (!canStart && continueRequested) || (rerollTarget && memoryRuns.current > 0)) return;
+        if (sendLock.current || turnEditLock.current || (!canStart && continueRequested) || (rerollTarget && memoryRuns.current > 0)) return;
         sendLock.current = true;
         setSending(true);
         setRerollingId(rerollTarget?.id || null);
@@ -747,6 +816,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const fixedMessage = isReroll ? latest : retry ? latest : undefined;
             const rerollOutOfStory = isReroll && latest.metadata?.theaterOutOfStory === true;
             const savedCastMode = Array.isArray(fixedMessage?.metadata?.theaterInteractionTendencies)
+                || Array.isArray(fixedMessage?.metadata?.theaterCastIds)
                 || storyCastIdsFromMessage(fixedMessage).length > 0;
             const castTurn = !rerollOutOfStory && (isReroll ? savedCastMode : savedCastMode || castEnabled);
             const candidateIds = actors.map(actor => actor.id);
@@ -807,35 +877,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const visibleHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
                 ? limitFreeStoryHistory(unarchivedHistory, Math.max(2, entry.archiveAfter || 40))
                 : unarchivedHistory;
-            const previousAxes = new Map<string, StoryPrivateAxis>();
-            if (castTurn) {
-                for (const message of [...history].reverse()) {
-                    if (message.role !== 'assistant') continue;
-                    const axes = storyPrivateAxesFromMessage(message);
-                    for (const actor of requestActors) {
-                        if (axes[actor.id] && !previousAxes.has(actor.id)) previousAxes.set(actor.id, axes[actor.id]);
-                    }
-                    if (previousAxes.size === requestActors.length) break;
-                }
-            }
+            const previousAxes = latestStoryPrivateAxes(castTurn ? history : [], requestActors.map(actor => actor.id));
             const timelineByActor = new Map<string, number | undefined>();
             if (promptEntry.writesToCharacterMemory) {
                 const previousLayers = [...current].reverse()
                     .filter(message => !rerollTarget || message.id < rerollTarget.id && message.id !== userMessageId);
                 await Promise.all(requestActors.map(async actor => {
-                    let previous: number | undefined;
-                    for (const layer of previousLayers) {
-                        const id = layer.metadata?.theaterMirrorIds?.[actor.id];
-                        if (!Number.isSafeInteger(id) || id <= 0) continue;
-                        const mirror = await DB.getMessageById(id);
-                        const timestamp: unknown = mirror?.metadata?.theaterTimelineTimestamp;
-                        if (mirror?.charId === actor.id && mirror.metadata?.theaterId === promptEntry.id
-                            && typeof timestamp === 'number' && Number.isFinite(new Date(timestamp).getTime())) {
-                            previous = timestamp;
-                            break;
-                        }
-                    }
-                    timelineByActor.set(actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, previous));
+                    timelineByActor.set(actor.id, await loadStoryMirrorTimeline(promptEntry, actor.id, previousLayers));
                 }));
             }
             const initialTimeline = requestActors.flatMap(actor => {
@@ -1102,7 +1150,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             {actors.map(actor => <div key={actor.id} className='inline-flex items-center gap-1'>
                                 <label className='inline-flex items-center gap-1'><input type='checkbox' checked={currentCastIds.has(actor.id)} disabled />{actor.name}</label>
                                 {latestReply && currentCastIds.has(actor.id) && <button type='button' aria-label={`查看${actor.name}的私轴`}
-                                    onClick={() => setAxisViewer({ messageId: latestReply.id, actorId: actor.id })}
+                                    onClick={() => openAxis(latestReply, actor.id)}
                                     className='grid h-9 w-9 place-items-center rounded-full bg-violet-100 text-violet-700'>
                                     {actor.avatar ? <TokenImg value={actor.avatar} alt='' className='h-7 w-7 rounded-full object-cover' /> : actor.name.slice(0, 1)}
                                 </button>}
@@ -1168,12 +1216,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                     {message.role === 'user'
                                         ? <p className='text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p>
                                         : <StoryOutput content={message.content} affinityInputs={affinityInputsFromMessage(message, actors)} />}
+                                    {turnDetails(message)}
                                 </div>}
                             </details>;
                         }
                         if (message.role === 'user') return <section key={message.id} {...pressHandlersFor(message)} className='meeting-user-turn pl-4 border-l-2 border-violet-300'><div className='meeting-user-label text-[9px] tracking-[.16em] font-bold text-violet-500'>{message.metadata?.theaterOutOfStory ? '场外 · 你' : '你写下'}</div><p className='meeting-prose mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id && !cannotRerollStoryReply(message, entry);
-                        return <article key={message.id} {...pressHandlersFor(message)}>{message.metadata?.theaterOutOfStory ? <><div className='text-[10px] font-bold text-violet-500'>场外 · AI</div><p className='meeting-prose mt-2 whitespace-pre-wrap text-sm leading-7'>{message.content}</p></> : <StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} />}{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending || !!memoryStatus} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} {...pressHandlersFor(message)}>{message.metadata?.theaterOutOfStory ? <><div className='text-[10px] font-bold text-violet-500'>场外 · AI</div><p className='meeting-prose mt-2 whitespace-pre-wrap text-sm leading-7'>{message.content}</p></> : <StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} />}{turnDetails(message)}{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending || !!memoryStatus} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                 </div>
                 {pageCount > 1 && <StoryPagination className='mt-8' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
@@ -1233,15 +1282,63 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='mt-5 divide-y divide-slate-200 border-y border-slate-200'><button onClick={() => { setEditingMessage(messageMenu); setEditDraft(messageMenu.content); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><PencilSimple size={17} className='text-violet-600' /><span><strong className='block text-xs text-slate-700'>编辑这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '同步修改每位角色的陪伴记录' : '仅修改当前剧情内容'}</span></span></button><button onClick={() => { setDeletingMessage(messageMenu); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><Trash size={17} className='text-rose-500' /><span><strong className='block text-xs text-rose-600'>删除这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>不会自动删除相邻的推进或正文</span></span></button></div>
             </div>
         </div>}
-        {axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30' onClick={() => setAxisViewer(null)}>
+        {castEdit && !axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30'
+            onClick={() => !turnEditLock.current && setCastEdit(null)}>
+            <section role='dialog' aria-modal='true' aria-labelledby='story-turn-cast-title' onClick={event => event.stopPropagation()}
+                className='story-safe-sheet w-full max-w-lg max-h-[80%] overflow-y-auto overscroll-contain rounded-t-2xl bg-stone-50 p-5'>
+                <div className='flex items-center justify-between gap-3'>
+                    <h2 id='story-turn-cast-title' className='text-base font-semibold'>本轮出演名单 / 镜像记忆对象</h2>
+                    <button type='button' autoFocus disabled={savingTurn} onClick={() => setCastEdit(null)} aria-label='关闭出演名单' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
+                </div>
+                <p className='text-xs leading-5 text-slate-600'>{entry.writesToCharacterMemory || Object.keys(castEdit.original.metadata?.theaterMirrorIds ?? {}).length
+                    ? '勾选的角色会收到本轮剧情记忆，实际交流以模型记录为准。'
+                    : '本剧场独立保存记忆。实际交流以模型记录为准。'}</p>
+                <div className='my-3 divide-y divide-slate-200'>
+                    {storyTurnActorIds(castEdit.original).map(id => {
+                        const character = characters.find(actor => actor.id === id);
+                        const checked = castEdit.ids.includes(id);
+                        const name = character?.name ?? '已移除角色';
+                        return <div key={id} className='flex items-center justify-between gap-3 py-1'>
+                            <label className='flex min-h-10 flex-1 items-center gap-2 text-sm'>
+                                <input type='checkbox' checked={checked} disabled={savingTurn || (!character && !checked)}
+                                    onChange={() => setCastEdit(current => current && { ...current, ids: checked
+                                        ? current.ids.filter(actorId => actorId !== id) : [...current.ids, id] })} />
+                                {name}
+                            </label>
+                            <button type='button' disabled={savingTurn} onClick={() => openAxis(rowsById.get(castEdit.original.id) ?? castEdit.original, id)}
+                                aria-label={`查看${name}的私轴`} className='min-h-10 px-2 text-xs font-semibold text-violet-700'>私轴</button>
+                        </div>;
+                    })}
+                </div>
+                {turnEditError && <p role='alert' className='mb-3 text-xs text-rose-700'>{turnEditError}</p>}
+                <button type='button' disabled={savingTurn} onClick={saveCast}
+                    className='h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white disabled:opacity-40'>保存出演名单</button>
+            </section>
+        </div>}
+        {axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30' onClick={closeAxis}>
             <section role='dialog' aria-modal='true' aria-labelledby='story-axis-title' onClick={event => event.stopPropagation()}
-                className='story-safe-sheet w-full max-w-lg max-h-[80%] overflow-y-auto rounded-t-2xl bg-stone-50 p-5'>
+                className='story-safe-sheet story-keyboard-sheet w-full max-w-lg max-h-[80%] overflow-y-auto overscroll-contain rounded-t-2xl bg-stone-50 p-5'>
                 <div className='flex items-center justify-between gap-3'>
                     <h2 id='story-axis-title' className='text-base font-semibold'>{characters.find(actor => actor.id === axisViewer.actorId)?.name ?? '角色'}的本轮私轴</h2>
-                    <button type='button' autoFocus onClick={() => setAxisViewer(null)} aria-label='关闭私轴' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
+                    <button type='button' autoFocus disabled={savingTurn} onClick={closeAxis} aria-label='关闭私轴' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
                 </div>
-                {displayedAxis ? <p className='whitespace-pre-wrap break-words text-sm leading-6 text-slate-600'>{displayedAxis}</p>
-                    : <p className='text-sm text-slate-500'>本轮没有有效的私轴记录。</p>}
+                {axisEdit ? <>
+                    <textarea autoFocus aria-label='角色私轴' value={axisEdit.draft} disabled={savingTurn}
+                        onChange={event => setAxisEdit({ ...axisEdit, draft: event.target.value })}
+                        className='mt-2 min-h-28 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6' />
+                    <p className='mt-1 text-xs text-slate-500'>留空保存即可清空本轮私轴。</p>
+                    {turnEditError && <p role='alert' className='mt-2 text-xs text-rose-700'>{turnEditError}</p>}
+                    <button type='button' disabled={savingTurn} onClick={() => void saveTurnEdit(
+                        () => DB.updateStoryTheaterPrivateAxis(axisEdit.original, axisViewer.actorId, axisEdit.draft),
+                        () => setAxisEdit(null),
+                    )} className='mt-3 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white disabled:opacity-40'>保存私轴</button>
+                </> : <>
+                    {displayedAxis ? <p className='whitespace-pre-wrap break-words text-sm leading-6 text-slate-600'>{displayedAxis}</p>
+                        : <p className='text-sm text-slate-500'>本轮没有私轴记录。</p>}
+                    {axisMessage && storyTurnActorIds(axisMessage).includes(axisViewer.actorId) &&
+                        <button type='button' onClick={() => setAxisEdit({ original: axisMessage, draft: displayedAxis || '' })}
+                            className='mt-3 min-h-10 rounded-xl border border-violet-200 px-3 text-xs font-semibold text-violet-700'>编辑私轴</button>}
+                </>}
             </section>
         </div>}
         {editingMessage && <div className='fixed inset-0 z-[75] flex items-end overflow-y-auto overscroll-contain bg-slate-900/30' onClick={() => !mutatingMessage && setEditingMessage(null)}>
