@@ -1070,6 +1070,7 @@ export const DB = {
         const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
         const inserted: [string, number][] = [];
+        const addedActors = new Set<string>();
         let failure: unknown;
         const guarded = (action: () => void) => {
             try { action(); } catch (error) { failure = error; tx.abort(); }
@@ -1124,7 +1125,8 @@ export const DB = {
             for (const actorId of actorIds) {
                 const id = mirrors.get(actorId);
                 const kept = recipients.has(actorId);
-                const next = makeMirror && kept && (!castEdit || !id) ? makeMirror(actorId, original) : undefined;
+                const next = makeMirror && kept && (!castEdit || (!id && addedActors.has(actorId)))
+                    ? makeMirror(actorId, original) : undefined;
                 if (!id) {
                     if (!next) { mirrors.delete(actorId); saved(); continue; }
                     const insert = () => add(next, newId => { mirrors.set(actorId, newId); saved(); });
@@ -1220,6 +1222,7 @@ export const DB = {
                 if (!allowed.length || new Set(castIds).size !== castIds.length || castIds.some(id => !allowed.includes(id))) {
                     throw new Error('只能选择本轮候选角色');
                 }
+                for (const id of castIds) if (!existingCast.includes(id)) addedActors.add(id);
                 const saveReply = () => saveOriginal(current);
                 const saveInput = (input?: Message) => {
                     if (!input || input.charId !== current.charId || input.id >= current.id || input.role !== 'user'

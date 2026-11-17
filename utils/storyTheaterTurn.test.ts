@@ -64,12 +64,23 @@ describe('人工编辑本轮', () => {
         }
         if (kind === '来源不符') await DB.updateMessageMetadata(id, current => ({ ...current, theaterId: 'another' }));
         if (kind === '独立元数据修改') await DB.updateMessageMetadata(id, current => ({ ...current, annotation: '自留笔记' }));
-        if (kind === '已归档') await DB.saveAsset('mp_hwm_v1_' + a, { msgId: id });
+        if (kind === '已归档') await DB.saveAssetRaw('mp_hwm_v1_' + a, { msgId: id });
         if (kind === '未链接镜像') await DB.saveMessage(mirrors(theater)(b, reply));
         const before = await Promise.all([read(a), read(b)]);
         await expect(editCast(reply, [b])).rejects.toThrow('原记录已保留');
         expect(await read(reply.charId)).toEqual([input, reply]);
         expect(await Promise.all([read(a), read(b)])).toEqual(before);
+    });
+
+    it('重复保存保留清理历史时已移除的镜像状态', async () => {
+        const actor = 'manual-history-cleanup';
+        const [input, reply] = await seedTurn('manual-history-cleanup', [actor]);
+        await DB.deleteMessage(reply.metadata.theaterMirrorIds[actor]);
+        await DB.updateMessageMetadata(reply.id, current => ({ ...current, theaterMirrorIds: {} }));
+        const afterCleanup = (await DB.getMessageById(reply.id))!;
+        await editCast(afterCleanup, [actor]);
+        expect(await read(actor)).toMatchObject([{ id: input.metadata.theaterMirrorIds[actor] }]);
+        expect((await DB.getMessageById(reply.id))?.metadata.theaterMirrorIds).toEqual({});
     });
 
     it('旧分组与相邻旧输入可编辑，已有存档正文保留，空名单后仍可补回角色', async () => {
