@@ -215,6 +215,7 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
                 ? { type: 'custom', id: entry.mask.id }
                 : { type: 'user' },
         characterIds: Array.isArray(entry.characterIds) ? entry.characterIds.filter(Boolean) : [],
+        primaryCharacterId: entry.primaryCharacterId && entry.characterIds?.includes(entry.primaryCharacterId) ? entry.primaryCharacterId : undefined,
         writesToCharacterMemory: entry.writesToCharacterMemory === true,
         castModeEnabled: entry.castModeEnabled !== false,
         characterMemoryDates: entry.characterMemoryDates || {},
