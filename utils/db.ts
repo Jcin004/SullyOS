@@ -1037,16 +1037,17 @@ export const DB = {
     });
   },
 
-  /** Commit the central reply and both sets of text mirrors together. */
+  /** Commit the central reply and both sets of text mirrors together, including a changed cast on rewrite. */
   commitStoryTheaterTurn: async (
       reply: Omit<Message, 'id'>,
       pending: Message | undefined,
       castIds: string[],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
-      mirrorRecipientIds?: readonly string[],
+      replaceReply?: Message,
   ): Promise<void> => {
     const db = await openDB();
-    const actorIds = [...new Set(mirrorRecipientIds ?? castIds)];
+    const recipients = new Set(makeMirror ? castIds : []);
+    const useActualCast = Array.isArray(reply.metadata?.theaterCastIds);
     return new Promise((resolve, reject) => {
         const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
@@ -1070,40 +1071,93 @@ export const DB = {
                 after(id);
             });
         };
-        const saveOriginal = (original: Message, existing: Record<string, number> = {}) => {
-            const recipients = makeMirror ? actorIds : [];
-            const mirrors = new Map(Object.entries(existing));
-            if (mirrors.size && (mirrors.size !== recipients.length || recipients.some(id => !mirrors.has(id)))) {
-                throw new Error('本轮已有不同的记忆接收者，原记录已保留');
+        const saveOriginal = (original: Message, done: () => void = () => {}) => {
+            const existing = original.metadata?.theaterMirrorIds as Record<string, number> | undefined;
+            const mirrors = new Map(Object.entries(existing ?? {}));
+            const finish = () => {
+                store.put({ ...original, metadata: {
+                    ...original.metadata,
+                    ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : useActualCast || castIds.length ? {
+                        theaterCastIds: reply.metadata?.theaterCastIds ?? castIds,
+                        theaterCandidateIds: reply.metadata?.theaterCandidateIds ?? castIds,
+                        ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
+                    } : {}),
+                    ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
+                    ...(mirrors.size || existing ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
+                } });
+                done();
+            };
+            const actorIds = new Set([...mirrors.keys(), ...recipients]);
+            let remaining = actorIds.size;
+            if (!remaining) { finish(); return; }
+            const saved = () => { if (--remaining === 0) finish(); };
+            for (const actorId of actorIds) {
+                const id = mirrors.get(actorId);
+                const next = makeMirror && recipients.has(actorId) ? makeMirror(actorId, original) : undefined;
+                if (!id) {
+                    if (next) add(next, newId => { mirrors.set(actorId, newId); saved(); });
+                    else { mirrors.delete(actorId); saved(); }
+                    continue;
+                }
+                const request = store.get(id);
+                request.onsuccess = () => guarded(() => {
+                    const oldMirror = request.result as Message | undefined;
+                    const oldContent = original.id === replaceReply?.id ? replaceReply.content : original.content;
+                    const linkedId = oldMirror?.metadata?.theaterCentralId;
+                    if (oldMirror && (oldMirror.charId !== actorId
+                        || oldMirror.metadata?.source !== 'story_theater_memory'
+                        || (linkedId == null
+                            ? oldMirror.metadata?.theaterId !== original.metadata?.theaterId || oldMirror.content !== oldContent
+                            : linkedId !== original.id))) {
+                        throw new Error('角色镜像与原文不匹配，原记录已保留');
+                    }
+                    if (next) {
+                        if (!oldMirror) { add(next, newId => { mirrors.set(actorId, newId); saved(); }); return; }
+                        if (original.id === replaceReply?.id) {
+                            if (oldMirror.content !== oldContent) throw new Error('这条回复已被修改，请刷新后重试');
+                            store.put({ ...oldMirror, content: next.content, metadata: {
+                                ...oldMirror.metadata, theaterTimelineTimestamp: next.metadata?.theaterTimelineTimestamp,
+                            } });
+                        }
+                    } else {
+                        if (oldMirror) store.delete(id);
+                        mirrors.delete(actorId);
+                    }
+                    saved();
+                });
             }
-            const finish = () => store.put({ ...original, metadata: {
-                ...original.metadata,
-                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : castIds.length ? {
-                    theaterCastIds: reply.metadata?.theaterCastIds ?? castIds,
-                    theaterCandidateIds: reply.metadata?.theaterCandidateIds ?? castIds,
-                    ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
-                } : {}),
-                ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
-                ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
-            } });
-            const missing = recipients.filter(id => !mirrors.has(id));
-            if (!makeMirror || missing.length === 0) { finish(); return; }
-            for (const actorId of missing) add(makeMirror(actorId, original), id => {
-                mirrors.set(actorId, id);
-                if (mirrors.size === recipients.length) finish();
-            });
         };
         const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
         latest.onsuccess = () => guarded(() => {
             const cursor = latest.result;
             const current = cursor?.value as Message | undefined;
             if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+            if (replaceReply) {
+                if (!current || current.id !== replaceReply.id) throw new Error('剧情已在别处推进，原回复已保留');
+                if (current.content !== replaceReply.content || current.metadata?.theaterInputRevision !== replaceReply.metadata?.theaterInputRevision) {
+                    throw new Error('这条回复已被修改，请刷新后重试');
+                }
+                const saveReply = () => saveOriginal({
+                    ...current, content: reply.content, metadata: { ...current.metadata, ...reply.metadata },
+                });
+                if (!pending) { saveReply(); return; }
+                const inputRequest = store.get(pending.id);
+                inputRequest.onsuccess = () => guarded(() => {
+                    const input = inputRequest.result as Message | undefined;
+                    if (!input || input.charId !== current.charId || input.role !== 'user') {
+                        throw new Error('本轮的用户原文已删除，无法按原输入重写');
+                    }
+                    saveOriginal(input, saveReply);
+                });
+                return;
+            }
             // 输入原地编辑后 ID 不变，镜像使用刚从数据库读出的正文。
             if (pending ? !current || current.id !== pending.id || current.role !== 'user' : current) {
                 throw new Error('剧情已在别处推进，请刷新后重试');
             }
-            if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);
-            add(reply, id => saveOriginal({ ...reply, id }));
+            const saveReply = () => add(reply, id => saveOriginal({ ...reply, id }));
+            if (current) saveOriginal(current, saveReply);
+            else saveReply();
         });
     });
   },

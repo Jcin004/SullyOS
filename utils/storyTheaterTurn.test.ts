@@ -91,4 +91,24 @@ describe('剧场整轮提交', () => {
             .rejects.toThrow('已在别处推进');
         expect((await read('atomic-a'))[1].content).toBe('完整回复');
     });
+
+    it('重写换人时，新增镜像失败会回滚已经移除的原出演镜像', async () => {
+        const theater = 'rewrite-atomic';
+        const user = original(theater, 'user', '原输入');
+        const pending = { ...user, id: await DB.saveMessage(user) };
+        const reply = original(theater, 'assistant', '原正文');
+        const makeMirror = mirrors(theater);
+        await DB.commitStoryTheaterTurn(reply, pending, ['rewrite-a'], makeMirror);
+        const before = await read(user.charId);
+        const previousMirrors = await read('rewrite-a');
+        await expect(DB.commitStoryTheaterTurn({
+            ...reply, content: '改写正文', metadata: { ...reply.metadata, theaterCastIds: ['rewrite-b'] },
+        }, before[0], ['rewrite-b'], (actor, row) => {
+            if (row.role === 'assistant') throw new Error('模拟重写镜像失败');
+            return makeMirror(actor, row);
+        }, before[1])).rejects.toThrow('模拟重写镜像失败');
+        expect(await read(user.charId)).toEqual(before);
+        expect(await read('rewrite-a')).toEqual(previousMirrors);
+        expect(await read('rewrite-b')).toEqual([]);
+    });
 });

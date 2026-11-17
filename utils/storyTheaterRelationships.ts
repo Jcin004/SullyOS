@@ -171,10 +171,14 @@ export function getStoryRelationshipBaseline(
     return { primaryId: primary.id, primaryName: primary.name, state_note: stateNote, relationships };
 }
 
-export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel): string {
+export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, useActualCast = false): string {
     if (!baseline) return '本轮没有主要角色出演，省略关系面板。';
     return [
-        '剧情模式在正文和其他附加模块之后输出唯一一组 <relationship_panel>JSON 对象</relationship_panel>；场外模式不输出关系面板。沿用下列 primaryId 及每条 fromId、toId；所有方向各写一次。数值只承接下列同一角色 ID 和方向的基线。历史正文、事件盒与回忆只提供事件和认知。',
+        '剧情模式在正文和其他附加模块之后输出唯一一组 <relationship_panel>JSON 对象</relationship_panel>；场外模式不输出关系面板。',
+        useActualCast
+            ? '主要角色出现在 <turn_cast> 中时才输出关系面板。沿用下列 primaryId，只记录双方都在本轮出演名单中的方向，每个方向各写一次。'
+            : '沿用下列 primaryId 及每条 fromId、toId；所有方向各写一次。',
+        '数值只承接下列同一角色 ID 和方向的基线。历史正文、事件盒与回忆只提供事件和认知。',
         '各方向在 axes 内分别写 FL、RI、DI。沿用已存在的轴，变化时返回整数 delta，由程序据基线计算。首次从角色卡及已发生事件独立估计整数 score，缺少证据时填 0。为数值变化提供 trigger（事件）和 evidence（该人物的反应或推断）。',
         'DI 的 active 或 ended 需有 trigger、evidence 和 strength（mild / moderate / strong）；无事件时留空，由程序衰减。state_note 沿用下面主要角色自己的记录或按本轮事实更新。',
         '示例轴字段："axes":{"FL":{"score":20,"delta":2,"trigger":"接住了她的邀请","evidence":"她愿意把下一次见面的安排交给对方"},"RI":{"score":0},"DI":{"score":0}}',

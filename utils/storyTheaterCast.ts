@@ -70,8 +70,8 @@ const cleanInteractionGroups = (value: unknown, allowed: ReadonlySet<string>, mi
 
 /** 新版直接保存出演名单；旧消息从旧分组或记忆镜像中恢复。 */
 export const storyCastIdsFromMessage = (message?: Message): string[] => {
-    const stored = uniqueIds(message?.metadata?.theaterCastIds);
-    if (stored.length) return stored;
+    const stored = message?.metadata?.theaterCastIds;
+    if (Array.isArray(stored)) return uniqueIds(stored);
     const legacy = storyCastFromMessage(message);
     if (legacy?.length) return storyCastIds(legacy);
     return uniqueIds(Object.keys((message?.metadata?.theaterMirrorIds || {}) as Record<string, unknown>));
@@ -79,11 +79,11 @@ export const storyCastIdsFromMessage = (message?: Message): string[] => {
 
 export const storyInteractionTendenciesFromMessage = (message?: Message): string[][] => {
     const castIds = storyCastIdsFromMessage(message);
-    const allowed = new Set(castIds);
+    const candidateIds = uniqueIds(message?.metadata?.theaterCandidateIds);
     const stored = message?.metadata?.theaterInteractionTendencies;
-    if (Array.isArray(stored)) return cleanInteractionGroups(stored, allowed);
+    if (Array.isArray(stored)) return cleanInteractionGroups(stored, new Set(candidateIds.length ? candidateIds : castIds));
     // 旧消息中的分组用于重写时还原原计划，不计作已发生的实际互动。
-    return cleanInteractionGroups(storyCastFromMessage(message), allowed);
+    return cleanInteractionGroups(storyCastFromMessage(message), new Set(castIds));
 };
 
 export const storyActualInteractionGroupsFromMessage = (message?: Message): string[][] => {
@@ -95,12 +95,13 @@ export const storyActualInteractionGroupsFromMessage = (message?: Message): stri
 export const storyInteractionHistoryFromMessage = (message?: Message): StoryInteractionHistoryEntry | undefined => {
     if (!message || message.role !== 'assistant') return undefined;
     const castIds = storyCastIdsFromMessage(message);
-    if (!castIds.length) return undefined;
+    const tendencies = storyInteractionTendenciesFromMessage(message);
+    if (!castIds.length && !tendencies.length) return undefined;
     const allowed = new Set(castIds);
     const hasActualInteractionField = Array.isArray(message.metadata?.theaterInteractionGroups);
     return {
         castIds,
-        tendencies: cleanInteractionGroups(message.metadata?.theaterInteractionTendencies, allowed),
+        tendencies: Array.isArray(message.metadata?.theaterInteractionTendencies) ? tendencies : [],
         actual: storyActualInteractionGroupsFromMessage(message),
         legacyTendencies: hasActualInteractionField ? [] : cleanInteractionGroups(storyCastFromMessage(message), allowed, 2),
     };
@@ -286,7 +287,7 @@ export function collectUnrealizedStoryTendencies(history: readonly StoryInteract
 }
 
 /**
- * Select the cast and then schedule attention tendencies. Actual exchanges lower a pair's
+ * Sample actors for attention tendencies. Actual exchanges lower a pair's
  * future weight; tendencies that were not realized receive a temporary exploration boost.
  */
 export function drawStoryInteractionPlan(
@@ -508,18 +509,36 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     return { groups, axes, body };
 }
 
-export function parseStoryTheaterReply(text: string, candidateIds: readonly string[], axisIds: readonly string[] = candidateIds): {
+export function parseStoryTheaterReply(text: string, candidateIds: readonly string[]): {
+    castIds: string[];
     interactions: string[][];
     axes: StoryPrivateAxes;
     body: string;
 } {
     const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
-    const allowed = new Set(candidateIds);
+    const candidates = new Set(candidateIds);
+    const castMatches = [...response.matchAll(/<turn_cast\b[^>]*>([\s\S]*?)<\/turn_cast\s*>/gi)];
+    let castIds: string[] = [];
+    const legacy = !castTag.test(response) ? readLegacySceneHeaderGroups(response, candidates) : undefined;
+    if (legacy) castIds = storyCastIds(legacy.groups);
+    if (castMatches.length === 1) {
+        try {
+            const raw: unknown = JSON.parse(unwrapFence(castMatches[0][1]));
+            if (Array.isArray(raw)) {
+                const ids = raw.every(Array.isArray) ? raw.flat() : raw;
+                if (ids.every(id => typeof id === 'string' && candidates.has(id))) castIds = uniqueIds(ids);
+            }
+        } catch { /* 名单无效时仍保存正文。 */ }
+    }
+    const allowed = new Set(castIds);
     const interactions: string[][] = [];
     const seen = new Set<string>();
     for (const match of response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)) {
         try {
-            const groups = cleanInteractionGroups(JSON.parse(unwrapFence(match[1])), allowed, 2);
+            const raw: unknown = JSON.parse(unwrapFence(match[1]));
+            if (!Array.isArray(raw)) continue;
+            const groups = cleanInteractionGroups(raw.filter(group => Array.isArray(group)
+                && group.every(id => typeof id === 'string' && allowed.has(id))), allowed, 2);
             for (const group of groups) {
                 const key = groupKey(group);
                 if (!seen.has(key)) { seen.add(key); interactions.push(group); }
@@ -531,20 +550,17 @@ export function parseStoryTheaterReply(text: string, candidateIds: readonly stri
         try {
             const raw = JSON.parse(unwrapFence(match[1])) as unknown;
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-            for (const id of axisIds) {
+            for (const id of castIds) {
                 const axis = readAxis((raw as Record<string, unknown>)[id]);
                 if (axis && !axes[id]) axes[id] = axis;
             }
         } catch { /* 私轴为可选数据。 */ }
     }
-    let body = response
-        .replace(/<turn_cast\b[^>]*>[\s\S]*?<\/turn_cast\s*>/gi, '')
-        .replace(/<interaction_result\b[^>]*>[\s\S]*?<\/interaction_result\s*>/gi, '')
-        .replace(/<interaction_result\b[^>]*>[\s\S]*$/i, '')
-        .replace(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi, '')
-        .replace(/<private_axes\b[^>]*>[\s\S]*$/i, '')
+    const body = (legacy ? response.replace(legacy.fragment, '') : response)
+        .replace(/<(turn_cast|interaction_result|private_axes)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+        .replace(/<(?:turn_cast|interaction_result|private_axes)\b[\s\S]*?(?=<(?:scene_header|story_text)\b|$)/gi, '')
         .trim();
-    return { interactions, axes, body };
+    return { castIds, interactions, axes, body };
 }
 
 export function assertStoryRerollBody(text: string): string {
