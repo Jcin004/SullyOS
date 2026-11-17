@@ -42,6 +42,21 @@ it('story novel mode keeps prose outside a collapsed supplement; none keeps the 
     expect(host.textContent).not.toContain('场景与补充');
 });
 
+it('story output renders FL RI DI directions in the relationship panel', () => {
+    const panel = { primaryId: 'a', primaryName: '阿泽', state_note: '等对方把话说完', relationships: [
+        { fromId: 'a', toId: 'b', fromName: '阿泽', toName: '阿遥', axes: {
+            FL: { score: 22 }, RI: { score: 4 }, DI: { score: 11, delta: 2, trigger: '对方突然插话', evidence: '他停了半秒' },
+        } },
+    ] };
+    const content = '<story_text>灯亮了。</story_text><relationship_panel>' + JSON.stringify(panel) + '</relationship_panel>';
+    const rendered = renderToStaticMarkup(React.createElement(StoryOutput, { content, affinityInputs: [] }));
+    expect(rendered).toContain('关系记录 · 阿泽');
+    expect(rendered).toContain('阿泽 → 阿遥');
+    expect(rendered).toContain('FL · 关系联结');
+    expect(rendered).toContain('RI · 恋爱性心动');
+    expect(rendered).toContain('DI · 失序扰动');
+});
+
 it('reading shows previous encounters, prepends without jumping to the bottom, and keeps scroll position for new replies', async () => {
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const host = document.createElement('div'); document.body.append(host);
