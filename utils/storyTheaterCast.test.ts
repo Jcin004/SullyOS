@@ -230,6 +230,18 @@ describe('交流倾向随机调度', () => {
         expect(twoPersonPlan.tendencies.every(group => group.length >= 1 && group.length <= 2)).toBe(true);
     });
 
+    it('主要角色频繁出演时不被人物出场权重压低，重复搭档仍按实际交流降权', () => {
+        const history = Array.from({ length: 8 }, () => ({ castIds: ['a', 'b'], tendencies: [['a', 'b']], actual: [['a', 'b']] }));
+        const limits = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 2, maxPeople: 2 }, 4);
+        const samples = (primary?: string) => Array.from({ length: 160 }, (_, index) =>
+            drawStoryInteractionPlan(people, limits, history, seed(index), primary));
+        const ordinary = samples();
+        const anchored = samples('a');
+        expect(anchored.filter(plan => plan.castIds.includes('a')).length)
+            .toBeGreaterThan(ordinary.filter(plan => plan.castIds.includes('a')).length);
+        expect(anchored.some(plan => !plan.castIds.includes('a'))).toBe(true);
+    });
+
     it('近期真实互动降低旧搭档权重，未实现倾向会暂时获得探索加成', () => {
         const actualHistory = Array.from({ length: 8 }, () => ({
             castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']],
