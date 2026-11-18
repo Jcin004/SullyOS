@@ -46,9 +46,10 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     const reply = (body: string, groups?: string[][]) => {
         const castIds = groups ? [...new Set(groups.flat())] : [];
         const interactions = (groups ?? []).filter(group => group.length > 1);
+        const name = (id: string) => actors.find(actor => actor.id === id)?.name ?? id;
         return new Response(JSON.stringify({
             choices: [{ message: { content: body + (groups
-                ? '<turn_cast>' + JSON.stringify(castIds) + '</turn_cast><interaction_result>' + JSON.stringify(interactions) + '</interaction_result>'
+                ? '<turn_cast>' + JSON.stringify(castIds.map(name)) + '</turn_cast><interaction_result>' + JSON.stringify(interactions.map(group => group.map(name))) + '</interaction_result>'
                     + privateAxes(actors.map(actor => actor.id))
                 : '') } }],
         }));
@@ -132,6 +133,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(tendencies(1)).toBe(tendencies(0));
         const invalidReply = (await DB.getMessagesByCharId(thread, true)).at(-1)!;
         expect(invalidReply.metadata.theaterCastIds).toEqual([]);
+        expect(invalidReply.metadata.theaterCastStatus).toBe('invalid');
+        expect(container.textContent).toContain('出演名单格式错误或姓名无法唯一匹配');
         expect(invalidReply.metadata.theaterPrivateAxes).toBeUndefined();
         expect(mocks.archive).not.toHaveBeenCalled();
         expect(await Promise.all(actors.map(actor => contents(actor.id)))).toEqual([[], [], []]);
@@ -143,6 +146,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(checked()).toEqual([a.name, c.name]);
         expect((await DB.getMessagesByCharId(thread, true)).at(-1)?.metadata.theaterInteractionGroups)
             .toEqual([[a.id, c.id]]);
+        expect((await DB.getMessagesByCharId(thread, true)).at(-1)?.metadata)
+            .toMatchObject({ theaterCastStatus: 'reported', theaterInteractionStatus: 'reported' });
         expect(await contents(a.id)).toEqual(['我在窗边坐下。', '<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>']);
         expect(await timeline(a.id)).toEqual([at(10), at(13)]);
         expect(await contents(b.id)).toEqual([]);
@@ -417,6 +422,81 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     }
 });
 
+it('报告状态保存并显示，重名与简称不误写镜像，刷新后可继续使用姓名报告', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    const characters = [{ id: 'names-a', name: '林青' }, { id: 'names-b', name: '林青' }, { id: 'names-c', name: '陈远' }];
+    Object.assign(mocks.state, { characters, userProfile: { name: '本人' }, theme: {},
+        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' },
+        memoryPalaceConfig: {}, addToast: mocks.toast });
+    const entry = { ...createStoryTheaterDraft(), id: 'name-report-ui', characterIds: characters.map(actor => actor.id),
+        writesToCharacterMemory: true };
+    const preset = createBlankStoryPreset('姓名报告测试');
+    const reports = [
+        { report: '<turn_cast>["林青","陈远"]</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>',
+            cast: [], castStatus: 'invalid', interactionStatus: 'invalid', label: '出演名单格式错误或姓名无法唯一匹配' },
+        { report: '<turn_cast>["陈"]</turn_cast>', cast: [], castStatus: 'invalid', interactionStatus: 'unreported', label: '模型未报告实际交流' },
+        { report: '', cast: [], castStatus: 'unreported', interactionStatus: 'unreported', label: '模型未报告出演名单' },
+        { report: '<turn_cast>[]</turn_cast><interaction_result>[]</interaction_result>', cast: [], castStatus: 'empty', interactionStatus: 'empty', label: '模型明确报告无直接交流（[]）' },
+        { report: '<turn_cast>["names-a","names-c"]</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>',
+            cast: ['names-a', 'names-c'], castStatus: 'reported', interactionStatus: 'invalid', label: '实际交流格式错误或成员无法确认' },
+        { report: '<turn_cast>["陈远"]</turn_cast><interaction_result>[]</interaction_result><private_axes>{"names-c":"独自整理行李"}</private_axes>',
+            cast: ['names-c'], castStatus: 'reported', interactionStatus: 'empty', label: '模型明确报告无直接交流（[]）' },
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    reports.forEach(({ report }, index) => fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: `<story_text>第${index}轮有效正文</story_text>` + report } }],
+    }))));
+    vi.stubGlobal('fetch', fetch);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (key: string) => act(async () => root.render(createElement(StoryTheaterSession, {
+        key, entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+    })));
+    const waitFor = (assertion: () => void | Promise<void>) => vi.waitFor(async () => {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+        await assertion();
+    });
+    try {
+        await render('start');
+        for (const [index, expected] of reports.entries()) {
+            await act(async () => {
+                const textarea = container.querySelector('textarea')!;
+                Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, '推进' + index);
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+            await act(async () => container.querySelector<HTMLButtonElement>('.story-send-button')!.click());
+            await waitFor(() => expect(container.textContent).toContain('第' + index + '轮有效正文'));
+            const rows = await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true);
+            const reply = rows.at(-1)!;
+            expect(reply.metadata).toMatchObject({ theaterCastIds: expected.cast, theaterCastStatus: expected.castStatus,
+                theaterInteractionStatus: expected.interactionStatus, theaterInteractionGroups: [] });
+            expect(container.textContent).toContain(expected.label);
+            expect(container.textContent).not.toContain('<turn_cast>');
+            for (const actor of characters) {
+                const mirrors = (await DB.getMessagesByCharId(actor.id, true))
+                    .filter(row => row.metadata.theaterId === entry.id && (row.metadata.theaterCentralId === reply.id || row.metadata.theaterCentralId === rows.at(-2)!.id));
+                expect(mirrors).toHaveLength(expected.cast.includes(actor.id) ? 2 : 0);
+            }
+            if (index === 3) {
+                await render('reload');
+                await waitFor(() => expect(container.textContent).toContain('模型明确报告无人出演（[]）'));
+            }
+        }
+        expect((await DB.getMessagesByCharId('names-b', true))).toEqual([]);
+        expect((await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)?.metadata.theaterPrivateAxes)
+            .toEqual({ 'names-c': '独自整理行李' });
+    } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+        vi.unstubAllGlobals();
+    }
+});
+
 it('楼层里可纠正出演、补写未出演候选人的私轴，并在生成中编辑本轮用户推进', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -437,7 +517,7 @@ it('楼层里可纠正出演、补写未出演候选人的私轴，并在生成�
     const fetch = vi.fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(result('<story_text>保留缺名单的正文</story_text><turn_cast>["越界"]</turn_cast>'))
         .mockResolvedValueOnce(result('<story_text>角色开始交谈</story_text>'
-            + `<turn_cast>["${a.id}","${b.id}"]</turn_cast><interaction_result>[["${a.id}","${b.id}"]]</interaction_result>`
+            + `<turn_cast>["${a.name}","${b.name}"]</turn_cast><interaction_result>[["${a.name}","${b.name}"]]</interaction_result>`
             + `<private_axes>{"${a.id}":"AI 原私轴"}</private_axes>`))
         .mockReturnValueOnce(deferred);
     vi.stubGlobal('fetch', fetch);
@@ -495,6 +575,8 @@ it('楼层里可纠正出演、补写未出演候选人的私轴，并在生成�
         await press('保存出演名单', dialog());
         await waitFor(() => expect(dialog()).toBeNull());
         expect((await rows())[1].metadata.theaterCastIds).toEqual([a.id]);
+        expect((await rows())[1].metadata.theaterCastStatus).toBe('manual');
+        expect(container.textContent).toContain('出演名单已手动更正');
         expect((await rows())[1].content).toContain('保留缺名单的正文');
 
         await submit('第二轮输入');

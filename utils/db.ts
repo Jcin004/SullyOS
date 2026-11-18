@@ -1066,6 +1066,14 @@ export const DB = {
     const replaceReply = replacement && 'id' in replacement ? replacement : undefined;
     const recipients = new Set(makeMirror || castEdit ? castIds : []);
     const useActualCast = Array.isArray(reply.metadata?.theaterCastIds);
+    if (!castEdit && useActualCast) {
+        const stored = storyCastIdsFromMessage({ ...reply, id: 0 });
+        const status = reply.metadata?.theaterCastStatus;
+        if (new Set(castIds).size !== castIds.length || castIds.length !== stored.length || castIds.some(id => !stored.includes(id))
+            || (castIds.length > 0 && ['unreported', 'invalid', 'empty'].includes(status))) {
+            throw new Error('出演名单尚未确认，未写入角色镜像');
+        }
+    }
     return new Promise((resolve, reject) => {
         const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
@@ -1097,6 +1105,7 @@ export const DB = {
                 const castPatch = castEdit ? {
                     theaterCastIds: castIds,
                     ...(original.role === 'assistant' ? {
+                        theaterCastStatus: 'manual',
                         // Retain the identifiable options of old turns that only had cast groups or backlinks.
                         theaterCandidateIds: original.metadata?.theaterCandidateIds ?? storyTurnActorIds(original),
                         ...(Array.isArray(original.metadata?.theaterInteractionGroups) ? {

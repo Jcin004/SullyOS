@@ -1,5 +1,38 @@
 import type { Message, StoryCastLimits } from '../types';
 
+export type StoryReportStatus = 'unreported' | 'invalid' | 'empty' | 'reported';
+type StoryStoredReportStatus = StoryReportStatus | 'manual' | 'legacy';
+export interface StoryCandidate { id: string; name: string }
+
+/** Old saves collapsed missing, invalid and empty reports; do not infer an explicit []. */
+export function storyReportStatusFromMessage(message: Message | undefined, kind: 'cast' | 'interaction'): StoryStoredReportStatus {
+    const status = message?.metadata?.[kind === 'cast' ? 'theaterCastStatus' : 'theaterInteractionStatus'];
+    if (['unreported', 'invalid', 'empty', 'reported', ...(kind === 'cast' ? ['manual'] : [])].includes(status)) return status;
+    const stored = message?.metadata?.[kind === 'cast' ? 'theaterCastIds' : 'theaterInteractionGroups'];
+    return Array.isArray(stored) || (kind === 'cast' && storyCastIdsFromMessage(message).length > 0) ? 'legacy' : 'unreported';
+}
+
+export function storyReportStatusLabel(message: Message | undefined, kind: 'cast' | 'interaction'): string {
+    const status = storyReportStatusFromMessage(message, kind);
+    if (kind === 'cast') return {
+        unreported: '模型未报告出演名单，可手动更正', invalid: '出演名单格式错误或姓名无法唯一匹配，可手动更正',
+        empty: '模型明确报告无人出演（[]）', reported: '模型已报告出演名单', manual: '出演名单已手动更正',
+        legacy: '历史出演名单（未保存报告状态）',
+    }[status];
+    if (status === 'reported' && !storyActualInteractionGroupsFromMessage(message).length) {
+        return '原报告已有交流，当前出演名单内无有效交流组';
+    }
+    return {
+        unreported: '模型未报告实际交流', invalid: '实际交流格式错误或成员无法确认',
+        empty: '模型明确报告无直接交流（[]）', reported: '模型已报告实际交流',
+        legacy: '历史交流记录（未保存报告状态）', manual: '',
+    }[status];
+}
+
+export function storyReportSummary(message: Message): string {
+    return `${storyReportStatusLabel(message, 'cast')}；${storyReportStatusLabel(message, 'interaction')}`;
+}
+
 export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolSize = Number.MAX_SAFE_INTEGER): StoryCastLimits {
     return {
         minGroups: value?.minGroups ?? 1,
@@ -467,7 +500,7 @@ function readJsonArrayAt(text: string, start: number): { value: unknown; end: nu
         }
     }
 }
-function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>): { groups: string[][]; fragment: string } | undefined {
+function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>): { groups: string[][]; fragment: string; value: unknown } | undefined {
     const header = /<scene_header\b[^>]*>/i.exec(text);
     if (!header) return;
     let start = header.index + header[0].length;
@@ -475,7 +508,7 @@ function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>)
     const parsed = readJsonArrayAt(text, start);
     if (!parsed) return;
     const groups = sanitizeStoryCastGroups(parsed.value, allowed);
-    return groups.length ? { groups, fragment: text.slice(start, parsed.end) } : undefined;
+    return { groups, fragment: text.slice(start, parsed.end), value: parsed.value };
 }
 export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits, fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
     void limits;
@@ -505,32 +538,82 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     return { groups, axes, body };
 }
 
-export function parseStoryTheaterReply(text: string, candidateIds: readonly string[]): {
+/** Names and old IDs share one exact lookup. Collisions across the two namespaces are ambiguous too. */
+function storyCandidateResolver(candidates: readonly (string | StoryCandidate)[]): (value: unknown) => string {
+    const lookup = new Map<string, Set<string>>();
+    for (const candidate of candidates) {
+        const { id, name } = typeof candidate === 'string' ? { id: candidate, name: '' } : candidate;
+        for (const key of [id, name]) {
+            if (!key) continue;
+            const matches = lookup.get(key) ?? new Set<string>();
+            matches.add(id);
+            lookup.set(key, matches);
+        }
+    }
+    return value => {
+        const matches = typeof value === 'string' ? lookup.get(value) : undefined;
+        if (matches?.size !== 1) throw new Error('角色姓名或 ID 无法唯一匹配');
+        return [...matches][0];
+    };
+}
+
+function readStoryReport(response: string, tag: 'turn_cast' | 'interaction_result'): { status: StoryReportStatus; value?: unknown } {
+    const tags = [...response.matchAll(new RegExp(`<\\/?${tag}\\b`, 'gi'))];
+    if (!tags.length) return { status: 'unreported' };
+    const matches = [...response.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}\\s*>`, 'gi'))];
+    if (tags.length !== 2 || matches.length !== 1) return { status: 'invalid' };
+    try { return { status: 'reported', value: JSON.parse(unwrapFence(matches[0][1])) }; }
+    catch { return { status: 'invalid' }; }
+}
+
+function resolveStoryCast(value: unknown, resolve: (value: unknown) => string): string[] {
+    if (!Array.isArray(value)) throw new Error('出演名单必须是数组');
+    // Historic two-dimensional ID rosters are still accepted, including overlapping groups.
+    const members = value.length && value.every(Array.isArray)
+        ? value.flatMap(group => {
+            if (!group.length) throw new Error('出演分组为空');
+            return group;
+        }) : value;
+    return [...new Set(members.map(resolve))];
+}
+
+export function parseStoryTheaterReply(text: string, candidateActors: readonly (string | StoryCandidate)[]): {
     castIds: string[];
+    castStatus: StoryReportStatus;
     interactions: string[][];
+    interactionStatus: StoryReportStatus;
     axes: StoryPrivateAxes;
     body: string;
 } {
     const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
-    const candidates = new Set(candidateIds);
-    const castMatches = [...response.matchAll(/<turn_cast\b[^>]*>([\s\S]*?)<\/turn_cast\s*>/gi)];
+    const candidates = new Set(candidateActors.map(actor => typeof actor === 'string' ? actor : actor.id));
+    const resolve = storyCandidateResolver(candidateActors);
+    const castReport = readStoryReport(response, 'turn_cast');
     let castIds: string[] = [];
     const legacy = !castTag.test(response) ? readLegacySceneHeaderGroups(response, candidates) : undefined;
-    if (legacy) castIds = storyCastIds(legacy.groups);
-    if (castMatches.length === 1) {
+    let castStatus = castReport.status;
+    if (castStatus === 'reported' || legacy) {
         try {
-            const raw: unknown = JSON.parse(unwrapFence(castMatches[0][1]));
-            if (Array.isArray(raw)) {
-                const ids = raw.every(Array.isArray) ? raw.flat() : raw;
-                if (ids.every(id => typeof id === 'string' && candidates.has(id))) castIds = uniqueIds(ids);
-            }
-        } catch { /* 名单无效时仍保存正文。 */ }
+            castIds = resolveStoryCast(legacy ? legacy.value : castReport.value, resolve);
+            castStatus = castIds.length ? 'reported' : 'empty';
+        } catch { castStatus = 'invalid'; }
     }
     let interactions: string[][] = [];
-    const reports = [...response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)];
-    if (reports.length === 1) {
-        try { interactions = confirmedGroups(JSON.parse(unwrapFence(reports[0][1])), castIds); }
-        catch { /* 互动记录无效时保留正文与私轴。 */ }
+    const interactionReport = readStoryReport(response, 'interaction_result');
+    let interactionStatus = interactionReport.status;
+    if (interactionStatus === 'reported') {
+        try {
+            const raw = interactionReport.value;
+            if (!Array.isArray(raw)) throw new Error('交流记录必须是二维数组');
+            const groups = raw.map(group => {
+                if (!Array.isArray(group) || group.length < 2) throw new Error('交流组至少有两人');
+                const ids = group.map(resolve);
+                if (new Set(ids).size !== ids.length || ids.some(id => !castIds.includes(id))) throw new Error('交流成员无效');
+                return ids;
+            });
+            interactions = confirmedGroups(groups, castIds);
+            interactionStatus = raw.length ? 'reported' : 'empty';
+        } catch { interactionStatus = 'invalid'; }
     }
     const axes: StoryPrivateAxes = {};
     for (const match of response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)) {
@@ -546,8 +629,9 @@ export function parseStoryTheaterReply(text: string, candidateIds: readonly stri
     const body = (legacy ? response.replace(legacy.fragment, '') : response)
         .replace(/<(turn_cast|interaction_result|private_axes)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
         .replace(/<(?:turn_cast|interaction_result|private_axes)\b[\s\S]*?(?=<(?:scene_header|story_text)\b|$)/gi, '')
+        .replace(/<\/(?:turn_cast|interaction_result|private_axes)\b[^<>]*(?:>|(?=<)|$)/gi, '')
         .trim();
-    return { castIds, interactions, axes, body };
+    return { castIds, castStatus, interactions, interactionStatus, axes, body };
 }
 
 export function assertStoryRerollBody(text: string): string {

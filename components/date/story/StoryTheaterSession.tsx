@@ -57,7 +57,7 @@ import {
     STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
     stripStoryRelationshipPanels,
 } from '../../../utils/storyTheaterRelationships';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, latestStoryPrivateAxes, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, storyTurnActorIds, type StoryInteractionHistoryEntry } from '../../../utils/storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, latestStoryPrivateAxes, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, storyReportSummary, storyTurnActorIds, type StoryInteractionHistoryEntry } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -564,12 +564,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const turnDetails = (message: Message) => {
         if (!storyTurnActorIds(message).length) return null;
         const names = storyCastIdsFromMessage(message).map(id => characters.find(actor => actor.id === id)?.name ?? '已移除角色');
-        return <button type='button' aria-label='编辑本轮出演名单及私轴'
+        return <div className='mt-3 text-xs text-violet-700'><div>{storyReportSummary(message)}</div><button type='button' aria-label='编辑本轮出演名单及私轴'
             onClick={() => { setTurnEditError(''); setCastEdit({ original: message, ids: storyCastIdsFromMessage(message) }); }}
             className='mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-left text-xs text-violet-700'>
             <PencilSimple size={14} className='shrink-0' />
             <span className='truncate'>本轮出演名单 / 镜像记忆对象 · {names.join('、') || '未选角色'}</span>
-        </button>;
+        </button></div>;
     };
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending]);
     const pageCount = Math.max(1, Math.ceil(messages.length / STORY_PAGE_SIZE));
@@ -1026,11 +1026,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 throw new Error('本轮需要返回剧情正文。');
             }
             if (outOfStory && !outOfStoryBody) throw new Error('本轮没有场外正文，请重试。');
-            const { castIds, interactions, body, axes } = outOfStory
-                ? { castIds: [], interactions: [], body: outOfStoryBody, axes: undefined }
+            const { castIds, castStatus, interactions, interactionStatus, body, axes } = outOfStory
+                ? { castIds: [], castStatus: undefined, interactions: [], interactionStatus: undefined, body: outOfStoryBody, axes: undefined }
                 : castTurn
-                    ? parseStoryTheaterReply(generated, candidateIds)
-                    : { castIds: [], interactions: [], body: assertStoryRerollBody(generated), axes: undefined };
+                    ? parseStoryTheaterReply(generated, actors)
+                    : { castIds: [], castStatus: undefined, interactions: [], interactionStatus: undefined, body: assertStoryRerollBody(generated), axes: undefined };
             const actualCast = new Set(castIds);
             const mirrorActors = actors.filter(actor => actualCast.has(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
@@ -1055,9 +1055,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
                     theaterCastIds: castIds,
+                    theaterCastStatus: castStatus,
                     theaterCandidateIds: candidateIds,
                     theaterInteractionTendencies: interactionTendencies,
                     theaterInteractionGroups: interactions,
+                    theaterInteractionStatus: interactionStatus,
                     theaterPrivateAxes: privateAxes,
                     theaterPrivateAxesInputRevision: privateAxes ? turnInput?.metadata?.theaterInputRevision : undefined,
                 } : {}),
@@ -1170,7 +1172,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             </div>)}
                         </div>
                         {currentTendencies.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>交流倾向：{currentTendencies.map((group, index) => `关注 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
-                        {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流（模型记录）：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
+                        {latestReply && storyTurnActorIds(latestReply).length > 0 && <div className='mt-1 text-[10px] text-slate-500'>{storyReportSummary(latestReply)}{currentInteractions.length > 0 && `；${currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}`}</div>}
                         {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
                         {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
                     </fieldset>

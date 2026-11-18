@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyReportStatusFromMessage } from './storyTheaterCast';
 
 const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
@@ -7,6 +7,82 @@ const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntri
 function seededRandom(seed: number) {
     return () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
 }
+
+describe('姓名报告与历史兼容', () => {
+    const candidates = [{ id: 'a', name: '林青' }, { id: 'b', name: '陈远' }, { id: 'c', name: '沈默' }];
+    const body = '<story_text>林青向陈远道谢，沈默独自在楼上修表。</story_text>';
+    const cast = '<turn_cast>["林青","陈远","沈默"]</turn_cast>';
+    const parse = (reports: string, pool = candidates) => parseStoryTheaterReply(body + reports + axes(['a', 'b', 'c']), pool);
+
+    it.each([
+        ['["林青","陈远","沈默"]', '[["林青","陈远"]]'],
+        ['["a","b","c"]', '[["a","b"]]'],
+        ['[["a","b"],["b","c"]]', '[["a","陈远"]]'],
+        ['["林青","b","沈默"]', '[["林青","b"],["b","林青"]]'],
+    ])('姓名、历史 ID、二维旧名单和混合格式均保存为 ID：%s', (roster, groups) => {
+        expect(parse(`<turn_cast>${roster}</turn_cast><interaction_result>${groups}</interaction_result>`)).toEqual({
+            body, castIds: ['a', 'b', 'c'], castStatus: 'reported', interactions: [['a', 'b']], interactionStatus: 'reported',
+            axes: { a: axis, b: axis, c: axis },
+        });
+    });
+
+    it.each([
+        '["林"]', '["小林"]', '["林青 "]', '["未知角色"]', '["林青","未知角色"]',
+        '["林青",null]', '["林青",["陈远"]]', '{}', '[[]]',
+    ])('任何成员无法精确确认时整份名单无效，不从私轴或互动推断：%s', roster => {
+        expect(parse(`<turn_cast>${roster}</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>`))
+            .toEqual({ body, castIds: [], castStatus: 'invalid', interactions: [], interactionStatus: 'invalid', axes: {} });
+    });
+
+    it('重名不猜测，明确 ID 可辨认；姓名与其他角色 ID 冲突也不猜测', () => {
+        const sameName = [...candidates, { id: 'd', name: '林青' }];
+        expect(parse('<turn_cast>["林青","陈远"]</turn_cast>', sameName)).toMatchObject({ castIds: [], castStatus: 'invalid' });
+        expect(parse('<turn_cast>["a","b"]</turn_cast>', sameName)).toMatchObject({ castIds: ['a', 'b'], castStatus: 'reported' });
+        expect(parse('<turn_cast>["a"]</turn_cast>', [...candidates, { id: 'other', name: 'a' }]))
+            .toMatchObject({ castIds: [], castStatus: 'invalid' });
+        expect(parse('<turn_cast>["a","b"]</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>', sameName))
+            .toMatchObject({ castIds: ['a', 'b'], interactions: [], interactionStatus: 'invalid' });
+    });
+
+    it.each(['[["林青","外人"]]', '[["林青","林青"]]', '[["林青","a"]]', '[["林青"]]', '[[]]', '["林青","陈远"]', '{}', 'null', '不是 JSON'])
+    ('互动报告不接收无效分组或未确认成员：%s', report => {
+        expect(parse(cast + `<interaction_result>${report}</interaction_result>`))
+            .toMatchObject({ body, castIds: ['a', 'b', 'c'], castStatus: 'reported', interactions: [], interactionStatus: 'invalid', axes: { a: axis } });
+    });
+
+    it('未报告、格式错误和明确 [] 分开，不因省略互动丢失正文或出演', () => {
+        expect(parse('')).toEqual({ body, castIds: [], castStatus: 'unreported', interactions: [], interactionStatus: 'unreported', axes: {} });
+        expect(parse('<turn_cast>[]</turn_cast><interaction_result>[]</interaction_result>'))
+            .toEqual({ body, castIds: [], castStatus: 'empty', interactions: [], interactionStatus: 'empty', axes: {} });
+        expect(parse(cast)).toMatchObject({ castStatus: 'reported', interactionStatus: 'unreported', axes: { a: axis } });
+        expect(parse(cast + '<interaction_result>[]</interaction_result>')).toMatchObject({ castStatus: 'reported', interactionStatus: 'empty' });
+    });
+
+    it.each(['<turn_cast>["林青"]', '<turn_cast', '</turn_cast>', '<turn_cast>["林青"]</turn_cast><turn_cast>[]</turn_cast>',
+        '<turn_cast>["林青"]</turn_cast><turn_cast', '<turn_cast>["林青"]</turn_cast></turn_cast>'])
+    ('截断、重复或孤立标签均为错误：%s', report => {
+        expect(parse(report)).toMatchObject({ body, castIds: [], castStatus: 'invalid', axes: {} });
+    });
+
+    it.each(['<interaction_result>', '<interaction_result', '</interaction_result>',
+        '<interaction_result>[]</interaction_result><interaction_result',
+        '<interaction_result>[]</interaction_result><interaction_result>[]</interaction_result>'])
+    ('互动标签损坏时保留出演、正文与私轴：%s', report => {
+        expect(parse(cast + report)).toMatchObject({ castIds: ['a', 'b', 'c'], castStatus: 'reported', interactionStatus: 'invalid', axes: { a: axis } });
+    });
+
+    it('围栏与旧 scene_header 名单可读；旧数据的空数组不冒充明确的无交流报告', () => {
+        const fenced = '```json\n["林青","陈远"]\n```';
+        expect(parse(`<turn_cast>${fenced}</turn_cast>`)).toMatchObject({ castIds: ['a', 'b'], castStatus: 'reported' });
+        expect(parseStoryTheaterReply('<scene_header>[["a","unknown"]]<time>午后</time></scene_header>' + body, candidates))
+            .toMatchObject({ castIds: [], castStatus: 'invalid' });
+        const old = { metadata: { theaterCastIds: [], theaterInteractionGroups: [] } } as any;
+        expect(storyReportStatusFromMessage(old, 'cast')).toBe('legacy');
+        expect(storyReportStatusFromMessage(old, 'interaction')).toBe('legacy');
+        expect(old.metadata).toEqual({ theaterCastIds: [], theaterInteractionGroups: [] });
+        expect(storyReportStatusFromMessage({ metadata: { theaterCastGroups: [['a']] } } as any, 'cast')).toBe('legacy');
+    });
+});
 
 describe('剧场选角协议', () => {
     const ids = ['a', 'b', 'c', 'd'];
@@ -25,7 +101,8 @@ describe('剧场选角协议', () => {
         '省略、为空或损坏的事后记录仍保留独处正文、出演和私轴：%s', record => {
             const body = '<story_text>她独自坐在窗边修表。</story_text>';
             expect(parseStoryTheaterReply(body + '<turn_cast>["a"]</turn_cast>' + record + axes(['a']), ids))
-                .toEqual({ body, castIds: ['a'], interactions: [], axes: { a: axis } });
+                .toEqual({ body, castIds: ['a'], castStatus: 'reported', interactions: [],
+                    interactionStatus: !record ? 'unreported' : record.includes('[]') ? 'empty' : 'invalid', axes: { a: axis } });
         },
     );
 
@@ -275,13 +352,14 @@ describe('交流倾向随机调度', () => {
         expect(missed).toEqual(baseline);
     });
 
-    it('从剧情结果中提取实际互动，过滤旁观者、无效角色和单人组', () => {
+    it('从剧情结果中提取实际互动；有无效成员或单人组时标记整份报告错误', () => {
         const roster = ['a', 'b', 'c'];
         const generated = '<story_text>正文。</story_text>' + '<turn_cast>' + JSON.stringify(roster) + '</turn_cast>'
-            + '<interaction_result>[["a","b"],["b","c"],["c"],["a","outside"]]</interaction_result>'
+            + '<interaction_result>[["a","b"],["b","c"]]</interaction_result>'
             + axes(roster);
         expect(parseStoryTheaterReply(generated, roster)).toEqual({
-            castIds: roster, interactions: [['a', 'b'], ['b', 'c']], axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
+            castIds: roster, castStatus: 'reported', interactions: [['a', 'b'], ['b', 'c']], interactionStatus: 'reported',
+            axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
         });
         expect(parseStoryTheaterReply('<story_text>没有交流。</story_text>', roster).interactions).toEqual([]);
         expect(parseStoryTheaterReply('<story_text>正文。</story_text><interaction_result>[["a","b"]]', roster).body).toBe('<story_text>正文。</story_text>');
@@ -291,9 +369,9 @@ describe('交流倾向随机调度', () => {
         );
         const watching = '<story_text>甲向乙点头；丙路过，丁只被提及。</story_text><turn_cast>["a","b","c"]</turn_cast>';
         const valid = '<interaction_result>[["a","b"],["a","b","d"],["c"],["b","a"]]</interaction_result>';
-        expect(parseStoryTheaterReply(watching + valid, ['a', 'b', 'c', 'd']).interactions).toEqual([['a', 'b']]);
+        expect(parseStoryTheaterReply(watching + valid, ['a', 'b', 'c', 'd'])).toMatchObject({ interactions: [], interactionStatus: 'invalid' });
         expect(parseStoryTheaterReply(watching + valid + '<interaction_result>[]</interaction_result>', ['a', 'b', 'c', 'd']).interactions).toEqual([]);
-        expect(background).toEqual({ castIds: ['a'], interactions: [], axes: { a: axis }, body: '她独自修表。' });
+        expect(background).toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'invalid', axes: { a: axis }, body: '她独自修表。' });
         expect(() => assertStoryRerollBody('<interaction_result>[]</interaction_result>正文')).toThrow('本轮只需返回正文');
     });
 
@@ -302,14 +380,15 @@ describe('交流倾向随机调度', () => {
         for (const cast of ['', '<turn_cast>[]</turn_cast>', '<turn_cast>["a","unknown"]</turn_cast>',
             '<turn_cast>写错了</turn_cast>', '<turn_cast>["a"]']) {
             expect(parseStoryTheaterReply(body + cast + axes(['a']), ['a']))
-                .toEqual({ castIds: [], interactions: [], axes: {}, body });
+                .toEqual({ castIds: [], castStatus: !cast ? 'unreported' : cast.includes('[]') ? 'empty' : 'invalid',
+                    interactions: [], interactionStatus: 'unreported', axes: {}, body });
         }
         expect(parseStoryTheaterReply('<turn_cast>[["a"]]</turn_cast>' + body + axes(['a']), ['a']))
-            .toEqual({ castIds: ['a'], interactions: [], axes: { a: axis }, body });
+            .toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'unreported', axes: { a: axis }, body });
         expect(parseStoryTheaterReply('<turn_cast>[' + body + axes(['a']), ['a']))
-            .toEqual({ castIds: [], interactions: [], axes: {}, body });
+            .toEqual({ castIds: [], castStatus: 'invalid', interactions: [], interactionStatus: 'unreported', axes: {}, body });
         expect(parseStoryTheaterReply('<scene_header>[["a"]]<time>午后</time></scene_header>' + body, ['a']))
-            .toEqual({ castIds: ['a'], interactions: [], axes: {}, body: '<scene_header><time>午后</time></scene_header>' + body });
+            .toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'unreported', axes: {}, body: '<scene_header><time>午后</time></scene_header>' + body });
     });
 
     it('历史数据分别读取出演名单、交流倾向和真实互动', () => {

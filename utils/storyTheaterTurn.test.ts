@@ -25,6 +25,19 @@ async function seedTurn(theater: string, cast: string[], candidates = cast, meta
 }
 
 describe('人工编辑本轮', () => {
+    it.each(['invalid', 'unreported', 'empty', 'mismatched'])('拒绝向未确认或与中央名单不一致的角色写镜像：%s', async kind => {
+        const theater = 'unconfirmed-' + kind;
+        const reply = original(theater, 'assistant', '不能误写这段正文');
+        await expect(DB.commitStoryTheaterTurn({ ...reply, metadata: { ...reply.metadata,
+            theaterCastIds: ['guard-a'], theaterCandidateIds: ['guard-a', 'guard-b'],
+            theaterCastStatus: kind === 'mismatched' ? 'reported' : kind,
+        } }, undefined, kind === 'mismatched' ? ['guard-b'] : ['guard-a'], mirrors(theater)))
+            .rejects.toThrow('未写入角色镜像');
+        expect((await read('guard-a')).filter(row => row.metadata.theaterId === theater)).toEqual([]);
+        expect((await read('guard-b')).filter(row => row.metadata.theaterId === theater)).toEqual([]);
+        expect(await read(reply.charId)).toEqual([]);
+    });
+
     it('修改旧轮的两条来源链接，删除原镜像，保留有效的实际互动组并可幂等保存', async () => {
         const [a, b, c, added] = ['edit-A', 'edit-B', 'edit-C', 'edit-D'];
         const [input, reply] = await seedTurn('manual-turn', [a, b, c], [a, b, c, added], {

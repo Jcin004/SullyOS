@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addStoryPresetGroup, renameStoryPresetGroup, ungroupStoryPresetGroup, moveStoryPresetPromptToGroup, getStoryPresetPromptGroups, createBlankStoryPreset, parseStoryTheaterPreset, compileStoryPreset, BUILTIN_NIGHT_SCREENING_PRESET, duplicateStoryPreset } from './storyTheater';
+import { addStoryPresetGroup, renameStoryPresetGroup, ungroupStoryPresetGroup, moveStoryPresetPromptToGroup, getStoryPresetPromptGroups, createBlankStoryPreset, parseStoryTheaterPreset, compileStoryPreset, BUILTIN_NIGHT_SCREENING_PRESET, duplicateStoryPreset, ensureStoryTheaterPromptSection } from './storyTheater';
 
 describe('剧情自定义大区', () => {
     it('空分组可保存、改名、导出导入，移动条目后正文只发送一次', () => {
@@ -56,7 +56,8 @@ describe('剧情自定义大区', () => {
         expect(contents.join('\n')).toContain('背景角色B');
         expect(contents.join('\n')).toContain('<scene_header>');
         expect(contents[outputIndex]).toMatch(/完整正文[\s\S]*<turn_cast>[\s\S]*<interaction_result>[\s\S]*<private_axes>/);
-        expect(contents[outputIndex]).toContain('可省略的事后记录');
+        expect(contents[outputIndex]).toContain('自然姓名');
+        expect(contents[outputIndex]).toContain('数组写 []');
         expect(contents[recordIndex]).toContain('不为填写记录制造互动');
         expect(contents[recordIndex]).toContain('不影响剧情生成');
         const outOfStory = compileStoryPreset({
@@ -141,6 +142,26 @@ describe('剧情自定义大区', () => {
                 expect(migrated.document.prompts.find(prompt => prompt.id === id)?.content)
                     .toBe(custom ? '用户的互动记录规则。' : BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(prompt => prompt.id === id)?.content);
             }
+        }
+    });
+
+    it('升级姓名报告前一版的原样默认文本，保留用户手写、启停、顺序与角色设置，重复升级幂等', () => {
+        const previous: Record<string, string> = {
+            'nmj-v67-theater-cast': '候选角色（ID、姓名）：{{theater_candidate_data}}\n出演包括在正文中独处、沉默或独立行动的角色。仅被提及的角色和用户执笔身份不列入。',
+            'nmj-v67-theater-output': '剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、可省略的事后记录 <interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。无互动时可省略互动记录或写 []，照常生成正文。场外只输出 <out_of_story>正文</out_of_story>。',
+            'nmj-v67-theater-interaction-record': '正文完成后，可用 <interaction_result> 记录实际发生的直接交谈或有针对性的实际互动，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计。此记录可省略，无互动时也可写 []；不影响剧情生成，不为填写记录制造互动。',
+        };
+        for (const custom of [false, true]) {
+            const document = { ...BUILTIN_NIGHT_SCREENING_PRESET.document,
+                prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id in previous
+                    ? { ...prompt, enabled: false, role: 'user' as const, content: previous[prompt.id] + (custom ? ' 用户补充。' : '') } : prompt) };
+            const upgraded = ensureStoryTheaterPromptSection(document);
+            expect(upgraded.prompts.map(prompt => prompt.id)).toEqual(document.prompts.map(prompt => prompt.id));
+            for (const id of Object.keys(previous)) {
+                expect(upgraded.prompts.find(prompt => prompt.id === id)).toMatchObject({ enabled: false, role: 'user',
+                    content: custom ? previous[id] + ' 用户补充。' : BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(prompt => prompt.id === id)!.content });
+            }
+            expect(ensureStoryTheaterPromptSection(upgraded)).toEqual(upgraded);
         }
     });
 
