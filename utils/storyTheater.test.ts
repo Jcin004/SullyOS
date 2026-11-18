@@ -1,4 +1,5 @@
 import { ContextBuilder } from './context';
+import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
 import { describe, expect, it } from 'vitest';
 import type { CharacterProfile, Message, StoryTheaterPreset, UserProfile } from '../types';
 import { STORY_PRESET_SIMPLE_CHOICES } from '../components/date/story/StoryPresetMaker';
@@ -171,7 +172,7 @@ describe('糯米机原生剧情预设边界', () => {
         expect(document.schema).toBe('sullyos.story-preset');
         expect(document.version).toBe(1);
         expect(document.name).toContain('V6.27');
-        expect(document.prompts).toHaveLength(139);
+        expect(document.prompts).toHaveLength(137);
         const serialized = JSON.stringify(document);
         expect(serialized).not.toContain('prompt_order');
         expect(serialized).not.toContain('extensions');
@@ -180,13 +181,19 @@ describe('糯米机原生剧情预设边界', () => {
         expect(serialized).not.toContain('{{getvar::');
     });
 
-    it('内置原文保留旧关系协议，发送三轴时只替换关系记账规则', () => {
+    it('内置预设直接显示完整三轴，发送时沿用预设原文', () => {
         const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
         const enabled = document.prompts.filter(prompt => prompt.enabled && prompt.id !== 'nmj-v67-theater-continuity');
         expect(new Set(document.prompts.map(prompt => prompt.id)).size).toBe(document.prompts.length);
         expect(enabled.every(prompt => Boolean(prompt.marker || prompt.content.trim()))).toBe(true);
         const affinity = document.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
-        expect(affinity.content).toContain('<affinity_person>');
+        expect(affinity.name).toContain('FL · RI · DI');
+        expect(affinity.content).toContain('FL 关系联结');
+        expect(affinity.content).toContain('RI 恋爱性心动');
+        expect(affinity.content).toContain('DI 失序扰动');
+        expect(affinity.content).toContain('身体/审美');
+        expect(affinity.content).toContain('成长激励');
+        expect(document.prompts.some(prompt => ['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))).toBe(false);
         const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
         const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
@@ -222,6 +229,34 @@ describe('糯米机原生剧情预设边界', () => {
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')).toMatchObject({ enabled: true });
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toBe('旧第三人称正文');
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')).toBeUndefined();
+    });
+
+    it('迁移未编辑的旧五维预设，保留用户手写内容及开关', () => {
+        const legacyControl = nightScreeningV627.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
+        const legacyOpaque = nightScreeningV627.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-opaque')!;
+        const imported: StoryTheaterPreset = {
+            ...BUILTIN_NIGHT_SCREENING_PRESET, id: 'legacy-imported', builtIn: false,
+            document: {
+                ...BUILTIN_NIGHT_SCREENING_PRESET.document,
+                prompts: [
+                    ...BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id === legacyControl.id
+                        ? { ...prompt, name: legacyControl.name, content: legacyControl.content, enabled: false } : prompt),
+                    legacyOpaque,
+                ],
+            },
+        };
+        const migrated = resolveStoryPresetDocument(imported);
+        const control = migrated.prompts.find(prompt => prompt.id === legacyControl.id)!;
+        expect(control.enabled).toBe(false);
+        expect(control.name).toContain('FL · RI · DI');
+        expect(control.content).toContain('成长激励');
+        expect(migrated.prompts.find(prompt => prompt.id === legacyOpaque.id)).toBeUndefined();
+        const edited: StoryTheaterPreset = {
+            ...imported, document: { ...imported.document, prompts: imported.document.prompts.map(prompt =>
+                prompt.id === legacyControl.id ? { ...prompt, content: '我自己修改的关系提示词' } : prompt) },
+        };
+        expect(resolveStoryPresetDocument(edited).prompts.find(prompt => prompt.id === legacyControl.id)?.content)
+            .toBe('我自己修改的关系提示词');
     });
 
     it('拒绝其它应用的 prompt/completion JSON', () => {
