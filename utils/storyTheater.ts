@@ -524,11 +524,16 @@ const mergeNightScreeningBackstageAndDebts = (document: StoryTheaterPresetDocume
     };
 };
 
+// Keep the previous native preset only to recognize untouched five-dimension overrides.
+const LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT = mergeNightScreeningBackstageAndDebts(
+    normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27'),
+);
+
 export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
     id: 'builtin-night-screening',
     name: '糯米鸡｜夜班放映室 V6.27',
     format: 'sullyos-story-preset',
-    document: mergeNightScreeningBackstageAndDebts(normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27')),
+    document: getPreviousStoryRelationshipDocument(LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT),
     builtIn: true,
     createdAt: 0,
     updatedAt: 0,
@@ -613,7 +618,7 @@ export const withBuiltInStoryPresets = (presets: StoryTheaterPreset[]): StoryThe
 const RAW_NIGHT_SCREENING = normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27');
 const nativePromptById = new Map(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => [prompt.id, prompt]));
 const rawPromptById = new Map(RAW_NIGHT_SCREENING.prompts.map(prompt => [prompt.id, prompt]));
-const previousNativeById = new Map(getPreviousStoryRelationshipDocument(BUILTIN_NIGHT_SCREENING_PRESET.document).prompts.map(prompt => [prompt.id, prompt]));
+const previousNativeById = new Map(LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT.prompts.map(prompt => [prompt.id, prompt]));
 const previousRawById = new Map(getPreviousStoryRelationshipDocument(RAW_NIGHT_SCREENING).prompts.map(prompt => [prompt.id, prompt]));
 
 /** Only recognize untouched defaults; saved prompt text and order are user data. */
@@ -622,15 +627,21 @@ export const resolveStoryPresetDocument = (
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
     const document = override || preset.document;
+    const oldDefaults = preset.builtIn ? previousNativeById : rawPromptById;
+    const threeAxisDefaults = preset.builtIn ? nativePromptById : previousRawById;
     return ensureStoryTheaterPromptSection({
         ...document,
-        prompts: document.prompts.map(prompt => {
-            const original = (preset.builtIn ? nativePromptById : rawPromptById).get(prompt.id);
-            const previous = (preset.builtIn ? previousNativeById : previousRawById).get(prompt.id);
-            return original && previous && previous.content === prompt.content && previous.content !== original.content
-                ? { ...prompt, content: original.content, name: prompt.name === previous.name ? original.name : prompt.name }
-                : prompt;
-        }),
+        prompts: document.prompts
+            // Remove only untouched obsolete five-dimension perception controls.
+            .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
+                || prompt.content !== oldDefaults.get(prompt.id)?.content)
+            .map(prompt => {
+                const oldDefault = oldDefaults.get(prompt.id);
+                const nextDefault = threeAxisDefaults.get(prompt.id);
+                return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content
+                    ? { ...prompt, content: nextDefault.content, name: prompt.name === oldDefault.name ? nextDefault.name : prompt.name }
+                    : prompt;
+            }),
     });
 };
 
@@ -1132,12 +1143,14 @@ export function formatStoryRequestPreview(payload: readonly StoryApiMessage[], o
 function relationshipPromptAtSend(prompt: StoryTheaterPresetPrompt, mode?: 'axes' | 'skip'): string | undefined {
     if (!mode) return undefined;
     const { id, content } = prompt;
+    // The three-axis prompt now lives in the editable preset itself.
+    // Out-of-story replies omit the relationship panel without rewriting user prompt text.
+    if (id === STORY_RELATIONSHIP_PROMPT_ID) return mode === 'skip' ? '' : undefined;
     const native = nativePromptById.get(id);
     const original = rawPromptById.get(id);
     if (content !== native?.content && content !== original?.content) return undefined;
-    if (id === STORY_RELATIONSHIP_PROMPT_ID) return mode === 'axes' ? STORY_RELATIONSHIP_PROMPT : '';
     if (id === 'nmj-v65-affinity-opaque' || id === 'nmj-v65-affinity-transparent') return '';
-    const adjusted = (content === native?.content ? previousNativeById : previousRawById).get(id)?.content;
+    const adjusted = (content === native?.content ? nativePromptById : previousRawById).get(id)?.content;
     if (adjusted && (id === 'nmj-v616-silent-preflight' || id === 'nmj-v3-exit-check' || id === 'nmj-v3-scene-header')) {
         return mode === 'skip' ? adjusted.replace('6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。', '6. 场外回复省略关系侧表。') : adjusted;
     }
