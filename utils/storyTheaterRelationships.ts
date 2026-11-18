@@ -38,7 +38,7 @@ export interface StoryRelationshipPanel {
     relationships: Relationship[];
 }
 
-const PREVIOUS_STORY_RELATIONSHIP_PROMPT = [
+export const STORY_RELATIONSHIP_PROMPT = [
     '主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。',
     'FL 关系联结：信任、默契、熟悉、共同经历。可靠的陪伴、理解和合作可加深联结，失信、排斥和不适可削弱联结，依据具体相处缓慢变化。',
     'RI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。',
@@ -48,11 +48,6 @@ const PREVIOUS_STORY_RELATIONSHIP_PROMPT = [
     '互惠偏爱（被选择、主动、好感暗示与熟悉曝光）；情绪/经历（快乐、日常陪伴、共患难、遗憾与未完成）；反差/未知/社会（神秘、探索、他人认可、竞争与投射）；成长激励（想成为更好的自己、想配得上或并肩）。',
     '从每个方向的出发人物独立判断。人物只拥有自己能够知道的故事内事实。面板供读者回看。三轴各为 0–100，分别更新，同一事件影响多轴时逐轴写触发事件与证据。',
     '沿用主要角色自身的 state_note，记录其内在拉扯、选择代价或已形成的新理解。只在有新事实时更新。各方向可用 relation_note 记录当前的关系质地。',
-].join('\n');
-
-export const STORY_RELATIONSHIP_PROMPT = [
-    'FL 关系联结：友谊、信任和默契。RI 恋爱性心动：具体的恋爱吸引，友情和竞争性占有本身不提高 RI。DI 失序扰动：事件打乱情绪、注意或行动，扰动结束后回落。',
-    '两个方向分别按人物的亲历和反应独立更新三轴，缺少依据的轴不加分。',
 ].join('\n');
 
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
@@ -354,7 +349,7 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))
             .map(prompt => {
                 if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID) {
-                    return { ...prompt, name: '💗双向关系｜FL · RI · DI', content: PREVIOUS_STORY_RELATIONSHIP_PROMPT };
+                    return { ...prompt, name: '💗双向关系｜FL · RI · DI', content: STORY_RELATIONSHIP_PROMPT };
                 }
                 let { name, content } = prompt;
                 if (prompt.id === 'nmj-v65-section-affinity-start') name = '🧩↓双向关系｜FL · RI · DI';
