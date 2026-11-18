@@ -1206,7 +1206,7 @@ export const compileStoryPreset = (input: {
         const message = { role: prompt.role, content };
         messages.push(message);
         origins.set(message, {
-            label: prompt.marker ? '运行时填入 · ' + prompt.name : runtimeReplacement === undefined ? '预设 · ' + prompt.name : '运行时协议 · ' + prompt.name,
+            label: prompt.marker ? '运行时填入 · ' + prompt.name : defaultOutOfStory ? '运行时协议 · ' + prompt.name : '预设 · ' + prompt.name,
             ...(!prompt.marker ? { presetText: prompt.content } : {}),
         });
         if (prompt.marker === 'scenario') scenarioMessage = message;
