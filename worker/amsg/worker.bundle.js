@@ -327,6 +327,45 @@ function installAnthropicFetch(browser = false) {
   globalThis.fetch = wrapped;
 }
 
+// utils/monthlyRecall.ts
+var isMonthlyRecallEnabled = (char) => char.monthlyRecallEnabled !== false;
+var stripDisabledMonthlyRecall = (text2, char) => isMonthlyRecallEnabled(char) ? text2 : text2.replace(/\[\[RECALL:[^\]]*\]\]/gi, "").trim();
+
+// utils/amsgApiCallRecords.ts
+var INSTANT_API_CALLS_RESULT_KIND = "instant-api-calls";
+var count = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
+function modelCallCauses(names) {
+  return [...new Set(names.map((name) => {
+    if (name === "recall") return "recall";
+    if (["schedule_active_message", "cancel_active_message", "renew_active_message", "list_active_messages"].includes(name)) return "schedule";
+    if (name === "web_search") return "search";
+    if (["notion_read_diary", "feishu_read_diary"].includes(name)) return "diary";
+    if (name === "read_note") return "notes";
+    if (name.startsWith("xhs_")) return "xhs";
+    if (name.startsWith("mcp__")) return "mcp";
+    return "tools";
+  }))];
+}
+function makeModelCall(input) {
+  const response = input.response;
+  const usage = input.usage ?? response?.usage ?? response?.usageMetadata;
+  const promptTokens = count(usage?.prompt_tokens ?? usage?.input_tokens ?? usage?.promptTokenCount);
+  const completionTokens = count(usage?.completion_tokens ?? usage?.output_tokens ?? usage?.candidatesTokenCount);
+  return {
+    index: input.index,
+    completedAt: input.completedAt,
+    causes: input.causes,
+    ok: input.ok,
+    ...input.status !== void 0 ? { status: input.status } : {},
+    promptTokens,
+    completionTokens,
+    totalTokens: count(usage?.total_tokens ?? usage?.totalTokenCount) ?? (promptTokens !== void 0 && completionTokens !== void 0 ? promptTokens + completionTokens : void 0),
+    cacheReadTokens: count(usage?.prompt_tokens_details?.cached_tokens ?? usage?.cache_read_input_tokens ?? usage?.cachedContentTokenCount),
+    cacheWriteTokens: count(usage?.cache_creation_input_tokens ?? usage?.prompt_tokens_details?.cache_write_tokens),
+    ...typeof response?.model === "string" && response.model ? { backendModel: response.model.slice(0, 200) } : {}
+  };
+}
+
 // utils/amsgReproduction.ts
 var DIAGNOSTIC_NAMESPACE = "amsg:diagnostic";
 var DIAGNOSTIC_CHAR_ID = "amsg-diagnostic";
@@ -355,6 +394,14 @@ function weatherForCharacter(config, charId) {
   const city = charId && Object.prototype.hasOwnProperty.call(config.weatherCities || {}, charId) ? config.weatherCities?.[charId] : void 0;
   return typeof city === "string" && city.trim() ? { ...config, weatherCity: city.trim().slice(0, 100) } : config;
 }
+
+// utils/weatherSources.ts
+var normalizeFreeWeatherSource = (value) => value === "wttr" ? "wttr" : "open-meteo";
+var WEATHER_SOURCE_LABELS = {
+  "open-meteo": "\u514D\u8D39\u6E90 1 \xB7 Open-Meteo",
+  wttr: "\u514D\u8D39\u6E90 2 \xB7 wttr.in",
+  owm: "OpenWeatherMap"
+};
 
 // utils/proxyWorker.ts
 var DEFAULT_PROXY_WORKER = "https://proxy.friedsully.com";
@@ -421,6 +468,7 @@ var parseToolConfig = (value) => {
       delete parsed.mcpServers;
     }
     if (parsed.weatherCities !== void 0) parsed.weatherCities = cleanCharacterWeatherCities(parsed.weatherCities);
+    parsed.weatherFreeSource = normalizeFreeWeatherSource(parsed.weatherFreeSource);
     return parsed;
   } catch {
     return null;
@@ -838,7 +886,40 @@ var amsgXhsSessionKey = (clientTaskId) => `xhs_session:${clientTaskId}`;
 var AMSG2_INSTANT_STUB_TEMPLATE = "AMSG2_INSTANT_STUB_TEMPLATE\uFF08\u5373\u65F6\u5BF9\u8BDD\u8F7B\u91CF\u5305\uFF1A\u8BE5\u89D2\u8272\u65E0\u5B9A\u65F6\u4EFB\u52A1\uFF0C\u6A21\u677F\u672A\u968F\u53D1\u9001\u91CD\u5EFA\uFF1B\u770B\u5230\u8FD9\u6761\u6B63\u6587\u8BF4\u660E\u6709\u672C\u4E0D\u8BE5\u6E32\u67D3\u6A21\u677F\u7684 fire \u5728\u6E32\u67D3\u5B83\uFF09";
 var AMSG_CHAT_FAIL_KEY = "chat_fail";
 var GZIP_VALUE_PREFIX = "gz1:";
-var canCompress = () => typeof CompressionStream === "function" && typeof DecompressionStream === "function";
+var GZIP_MIN_FRAME_BYTES = 20;
+var MIN_WORTH_PACKING_BYTES = 32;
+var brokenCompressionStreamCtor = null;
+var gzipFallbackCompressor = null;
+var crc32Table = null;
+var getCrc32Table = () => {
+  if (crc32Table) return crc32Table;
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  crc32Table = table;
+  return table;
+};
+var computeCrc32 = (bytes) => {
+  const table = getCrc32Table();
+  let crc = 4294967295;
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    crc = table[(crc ^ bytes[i]) & 255] ^ crc >>> 8;
+  }
+  return (crc ^ 4294967295) >>> 0;
+};
+var isValidGzipForInput = (rawBytes, gz) => {
+  if (gz.byteLength < GZIP_MIN_FRAME_BYTES) return false;
+  if (gz[0] !== 31 || gz[1] !== 139 || gz[2] !== 8) return false;
+  const view = new DataView(gz.buffer, gz.byteOffset, gz.byteLength);
+  const expectedSize = rawBytes.byteLength >>> 0;
+  if (view.getUint32(gz.byteLength - 4, true) !== expectedSize) return false;
+  return view.getUint32(gz.byteLength - 8, true) === computeCrc32(rawBytes);
+};
 var CHUNK = 32768;
 var bytesToBase64 = (bytes) => {
   let binary = "";
@@ -854,14 +935,52 @@ var base64ToBytes = (base64) => {
   return bytes;
 };
 var streamThrough = async (data, transform) => {
-  const stream = new Blob([data]).stream().pipeThrough(transform);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const readablePromise = new Response(transform.readable).arrayBuffer();
+  const writer = transform.writable.getWriter();
+  const writePromise = writer.write(data.slice()).then(() => writer.close()).catch(async (error) => {
+    try {
+      await writer.abort(error);
+    } catch {
+    }
+    throw error;
+  });
+  const [buffer] = await Promise.all([readablePromise, writePromise]);
+  return new Uint8Array(buffer);
+};
+var compressGzipBytes = async (rawBytes) => {
+  if (typeof CompressionStream === "function" && CompressionStream !== brokenCompressionStreamCtor) {
+    const ctor = CompressionStream;
+    try {
+      const gz = await streamThrough(rawBytes, new CompressionStream("gzip"));
+      if (isValidGzipForInput(rawBytes, gz)) {
+        return gz;
+      }
+      brokenCompressionStreamCtor = ctor;
+      console.warn("[AmsgGzip] \u539F\u751F CompressionStream \u8F93\u51FA\u7684 gzip \u5934\u5C3E\u4E0D\u5B8C\u6574\uFF0C\u5207\u6362\u5907\u7528\u538B\u7F29\u901A\u9053");
+    } catch (error) {
+      brokenCompressionStreamCtor = ctor;
+      console.warn("[AmsgGzip] \u539F\u751F CompressionStream \u538B\u7F29\u5931\u8D25\uFF0C\u5207\u6362\u5907\u7528\u538B\u7F29\u901A\u9053", error);
+    }
+  }
+  if (gzipFallbackCompressor) {
+    try {
+      const fallbackGz = await gzipFallbackCompressor(rawBytes);
+      if (fallbackGz && isValidGzipForInput(rawBytes, fallbackGz)) {
+        return fallbackGz;
+      }
+    } catch {
+    }
+  }
+  return null;
 };
 var packStateValue = async (json) => {
-  if (!canCompress()) return json;
+  const nativeAvailable = typeof CompressionStream === "function" && CompressionStream !== brokenCompressionStreamCtor;
+  if (!nativeAvailable && !gzipFallbackCompressor) return json;
   try {
     const rawBytes = new TextEncoder().encode(json);
-    const gz = await streamThrough(rawBytes, new CompressionStream("gzip"));
+    if (rawBytes.byteLength <= MIN_WORTH_PACKING_BYTES) return json;
+    const gz = await compressGzipBytes(rawBytes);
+    if (!gz) return json;
     const packed = `${GZIP_VALUE_PREFIX}${bytesToBase64(gz)}`;
     return packed.length < rawBytes.length ? packed : json;
   } catch {
@@ -1136,7 +1255,7 @@ var chatFieldOk = (chat) => {
 var parseFirePack = (value) => {
   try {
     const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && parsed.v === FIRE_PACK_VERSION && chatFieldOk(parsed.chat) && typeof parsed.template === "string" && parsed.template.length > 0 && (parsed.lastUserMessageAt === null || typeof parsed.lastUserMessageAt === "number") && typeof parsed.tzId === "string" && parsed.tzId.length > 0 && typeof parsed.userTzId === "string" && parsed.userTzId.length > 0 && typeof parsed.targetName === "string" && typeof parsed.builtAt === "number" && Array.isArray(parsed.pendingTasks) && (parsed.scene === null || typeof parsed.scene === "object") && typeof parsed.selfScheduleEnabled === "boolean") {
+    if (parsed && typeof parsed === "object" && parsed.v === FIRE_PACK_VERSION && chatFieldOk(parsed.chat) && typeof parsed.template === "string" && parsed.template.length > 0 && (parsed.lastUserMessageAt === null || typeof parsed.lastUserMessageAt === "number") && (parsed.lastAwayAnchorAt === void 0 || parsed.lastAwayAnchorAt === null || typeof parsed.lastAwayAnchorAt === "number") && typeof parsed.tzId === "string" && parsed.tzId.length > 0 && typeof parsed.userTzId === "string" && parsed.userTzId.length > 0 && typeof parsed.targetName === "string" && typeof parsed.builtAt === "number" && Array.isArray(parsed.pendingTasks) && (parsed.scene === null || typeof parsed.scene === "object") && typeof parsed.selfScheduleEnabled === "boolean") {
       return parsed;
     }
   } catch {
@@ -1400,7 +1519,19 @@ function buildPlateJobMessages(job) {
     { role: "user", content: PLATE_USER_TURN }
   ];
 }
+var normalizePlateUsage = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const u = value;
+  const promptTokens = typeof u.promptTokens === "number" && Number.isFinite(u.promptTokens) ? u.promptTokens : void 0;
+  const completionTokens = typeof u.completionTokens === "number" && Number.isFinite(u.completionTokens) ? u.completionTokens : void 0;
+  if (promptTokens === void 0 && completionTokens === void 0) return void 0;
+  return {
+    ...promptTokens !== void 0 ? { promptTokens } : {},
+    ...completionTokens !== void 0 ? { completionTokens } : {}
+  };
+};
 function buildPlateConsolidateResult(args) {
+  const usage = normalizePlateUsage(args.usage);
   return {
     resultKind: PLATE_CONSOLIDATE_RESULT_KIND,
     v: 1,
@@ -1408,7 +1539,8 @@ function buildPlateConsolidateResult(args) {
     charId: args.charId,
     items: args.items,
     rooms: args.rooms.map((r) => ({ room: r.room, entryIds: r.entryIds })),
-    ...snapshotTimeFields(args.snapshotAt)
+    ...snapshotTimeFields(args.snapshotAt),
+    ...usage ? { usage } : {}
   };
 }
 
@@ -3928,17 +4060,17 @@ async function resolveClientStateEntries(rows, fetchChunkRows, decryptValue, onU
   };
   const entries = [];
   for (const row of rows) {
-    const count = parseChunkedRootCount(row.value);
+    const count2 = parseChunkedRootCount(row.value);
     let valueSources = [row.value];
-    if (count !== null) {
+    if (count2 !== null) {
       const map = await loadChunks();
       const chunkRows = [];
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < count2; i++) {
         const chunk = map.get(chunkKeyFor(row.key, i));
         if (!chunk || chunk.updated_at !== row.updated_at) break;
         chunkRows.push(chunk);
       }
-      if (chunkRows.length !== count) continue;
+      if (chunkRows.length !== count2) continue;
       valueSources = chunkRows.map((chunk) => chunk.value);
     }
     let value;
@@ -10505,8 +10637,8 @@ async function buildCloudDataInventory({
     let value, unreadable = metadataInfo.unreadable;
     try {
       const rootMarker = row.value ?? row.value_prefix ?? "";
-      const count = parseChunkedRootCount(rootMarker);
-      if (count === null) {
+      const count2 = parseChunkedRootCount(rootMarker);
+      if (count2 === null) {
         if (typeof row.value === "string" && (!skipFullDecrypt || row.value.length <= 1024)) {
           value = await decryptFromStorage(row.value, userKey);
         } else if (skipFullDecrypt) {
@@ -10527,12 +10659,12 @@ async function buildCloudDataInventory({
           value = await decryptFromStorage(rawValue, userKey);
         }
       } else {
-        if (count > slices.length) throw new Error("Missing state chunks");
+        if (count2 > slices.length) throw new Error("Missing state chunks");
         const sliceByKey = new Map(
           slices.map((candidate) => [candidate.key, candidate])
         );
         const orderedSlices = [];
-        for (let i = 0; i < count; i++) {
+        for (let i = 0; i < count2; i++) {
           const slice = sliceByKey.get(chunkKeyFor(row.key, i));
           if (!slice || slice.updated_at !== row.updated_at)
             throw new Error("Mismatched state chunks");
@@ -10970,9 +11102,9 @@ async function advanceCleanup(ctx, db, userId, key, operation, { maxEntries = 25
       }
       operation.knownResourceIds = [...known];
       operation.cursor = 0;
-      for (const count of operation.counts)
-        count.remaining = operation.entries.filter(
-          (entry) => entry.resource.type === count.type
+      for (const count2 of operation.counts)
+        count2.remaining = operation.entries.filter(
+          (entry) => entry.resource.type === count2.type
         ).length;
       await save(db, userId, key, "operation", operation, { leaseToken });
     }
@@ -11004,11 +11136,11 @@ async function advanceCleanup(ctx, db, userId, key, operation, { maxEntries = 25
           "\u8D44\u6E90\u5728\u6267\u884C\u524D\u53D8\u5316\uFF0C\u5DF2\u505C\u6B62\u6E05\u7406",
           409
         );
-      const count = operation.counts.find(
+      const count2 = operation.counts.find(
         (c) => c.type === entry.resource.type
       );
-      count.deleted++;
-      count.remaining = Math.max(0, count.remaining - 1);
+      count2.deleted++;
+      count2.remaining = Math.max(0, count2.remaining - 1);
       delete entry.locator;
       operation.cursor++;
       operation.updatedAt = Date.now();
@@ -11026,9 +11158,9 @@ async function advanceCleanup(ctx, db, userId, key, operation, { maxEntries = 25
     const remaining = current.entries.filter(
       (e) => operation.mode === "retire-owner" ? ownerEquals(e.resource.owner, operation.owner) || knownIds.has(e.resource.id) : selected.has(e.resource.id)
     );
-    for (const count of operation.counts)
-      count.remaining = remaining.filter(
-        (e) => e.resource.type === count.type
+    for (const count2 of operation.counts)
+      count2.remaining = remaining.filter(
+        (e) => e.resource.type === count2.type
       ).length;
     if (operation.mode === "purge") {
       const processed = new Set(
@@ -11068,7 +11200,7 @@ async function advanceCleanup(ctx, db, userId, key, operation, { maxEntries = 25
     ];
     operation.nextAttemptAt = Date.now() + Math.min(36e5, 3e4 * 2 ** operation.attempts);
     if (terminal)
-      for (const count of operation.counts) count.failed = count.remaining;
+      for (const count2 of operation.counts) count2.failed = count2.remaining;
   } finally {
     if (!leaseLost) {
       operation.updatedAt = Date.now();
@@ -11957,6 +12089,56 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
   return { fetch: fetch2, scheduled, runTask: runTask2, getSchemaVersion: getSchemaVersion2, ensureSchema: ensureSchema2 };
 }
 
+// utils/assistantThinking.ts
+var isThinkingPart = (part) => part?.thought === true || ["thinking", "thought", "reasoning", "reasoning.text", "reasoning.summary"].includes(part?.type);
+var isOpaquePart = (part) => ["redacted_thinking", "reasoning.encrypted", "thought_signature"].includes(part?.type);
+function plainText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(plainText).join("");
+  if (!value || typeof value !== "object" || isOpaquePart(value)) return "";
+  return plainText(value.text ?? value.thinking ?? value.summary ?? value.content ?? value.value);
+}
+function contentParts(value) {
+  if (typeof value === "string") return { content: value, reasoning: "" };
+  if (Array.isArray(value)) return value.map(contentParts).reduce((all, part) => ({
+    content: all.content + part.content,
+    reasoning: all.reasoning + part.reasoning
+  }), { content: "", reasoning: "" });
+  if (!value || typeof value !== "object" || isOpaquePart(value)) return { content: "", reasoning: "" };
+  if (isThinkingPart(value)) return { content: "", reasoning: plainText(value) };
+  return contentParts(value.text ?? value.content ?? value.value);
+}
+function readAssistantMessage(message) {
+  const parts = contentParts(message?.content);
+  const aliases = [message?.reasoning_content, message?.reasoning, message?.thinking].map(plainText);
+  const native = aliases.find((text2) => text2.trim().length > 0) || aliases.find((text2) => text2.length > 0) || "";
+  const details = Array.isArray(message?.reasoning_details) ? message.reasoning_details.filter(isThinkingPart).map(plainText).join("") : "";
+  const reasoning = [native.trim() ? native : details || native, parts.reasoning].filter(Boolean);
+  return { content: parts.content, reasoning: [...new Set(reasoning)].join("\n\n") };
+}
+function splitInlineThinking(text2) {
+  const open = /<(think|thinking|thought)(?:\s[^>]*)?>/gi;
+  let content = "", cursor = 0;
+  const blocks = [];
+  let match;
+  while (match = open.exec(text2)) {
+    content += text2.slice(cursor, match.index);
+    const close = new RegExp(`<\\/\\s*${match[1]}\\s*>`, "gi");
+    close.lastIndex = open.lastIndex;
+    const end = close.exec(text2);
+    const block = text2.slice(open.lastIndex, end ? end.index : text2.length).trim();
+    if (block) blocks.push(block);
+    cursor = end ? close.lastIndex : text2.length;
+    open.lastIndex = cursor;
+    if (!end) break;
+  }
+  return { content: content + text2.slice(cursor), reasoning: blocks.join("\n\n") };
+}
+function readAssistantThinking(message, override) {
+  const parts = readAssistantMessage(message);
+  return [override?.trim() || parts.reasoning.trim(), splitInlineThinking(parts.content).reasoning].filter(Boolean).join("\n\n");
+}
+
 // utils/voiceTextDedup.ts
 function deduplicateVoiceText(text2) {
   if (/\[html\]|<翻[译譯]>|```/i.test(text2)) return text2;
@@ -12025,8 +12207,8 @@ var LONGEST_MESSAGE_KIND = Object.values(MESSAGE_KIND).reduce((longest, kind) =>
 var PUSH_PAYLOAD_BYTE_ENCODER = new TextEncoder();
 function segmentTextWithProtectedBlocks(text2, options) {
   if (!text2) return [];
-  const splitAndSanitize = (plainText) => {
-    const chunks = options.splitText(plainText).filter((c) => c !== "");
+  const splitAndSanitize = (plainText2) => {
+    const chunks = options.splitText(plainText2).filter((c) => c !== "");
     return chunks.map((chunk) => ({
       raw: chunk,
       sanitized: options.sanitizeText ? options.sanitizeText(chunk) : chunk,
@@ -12072,8 +12254,8 @@ function segmentTextWithProtectedBlocks(text2, options) {
   const resolveField = (field, raw, match) => typeof field === "function" ? field(raw, match) : field;
   for (const m of validMatches) {
     if (m.index > cursor) {
-      const plainText = text2.substring(cursor, m.index);
-      segments.push(...splitAndSanitize(plainText));
+      const plainText2 = text2.substring(cursor, m.index);
+      segments.push(...splitAndSanitize(plainText2));
     }
     const previewStr = resolveField(m.patternDef.preview, m.raw, m.matchObj);
     const metaData = resolveField(m.patternDef.meta, m.raw, m.matchObj);
@@ -12093,8 +12275,8 @@ function segmentTextWithProtectedBlocks(text2, options) {
     cursor = m.index + m.length;
   }
   if (cursor < text2.length) {
-    const plainText = text2.substring(cursor);
-    segments.push(...splitAndSanitize(plainText));
+    const plainText2 = text2.substring(cursor);
+    segments.push(...splitAndSanitize(plainText2));
   }
   return segments;
 }
@@ -12122,7 +12304,7 @@ var stripMarkdownDividers = (t) => t.replace(/^\s*---\s*$/gm, "").replace(/^\s*[
 var stripBackticks = (t) => t.replace(/`(\[\[[\s\S]*?\]\])`/g, "$1").replace(/``+/g, "").replace(/(^|\s)`(\s|$)/gm, "$1$2");
 var stripLegacyTrans = (t) => t.replace(/%%TRANS%%[\s\S]*/gi, "");
 var collapseWhitespace = (t) => t.replace(/\n{3,}/g, "\n\n").trim();
-var stripThinkBlocks = (t) => t.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, "").replace(/<(?:think|thinking|thought)>[\s\S]*$/gi, "");
+var stripThinkBlocks = (t) => splitInlineThinking(t).content;
 var stripInnerState = (t) => t.replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, "");
 var replaceMarkdownLinks = (t) => t.replace(/\[([^\]]+)\]\([^)]+\)/g, "[\u94FE\u63A5\uFF1A$1]");
 var replaceSendEmoji = (t) => t.replace(/\[\[SEND_EMOJI[:：]\s*(.+?)\]\]/g, "[\u8868\u60C5\uFF1A$1]");
@@ -12275,7 +12457,7 @@ function sanitizeIntoSegments(text2) {
   const ATOM_MARKER = String.fromCharCode(2);
   const atomBlocks = [];
   const atomSegments = segmentTextWithProtectedBlocks(cleaned, {
-    splitText: (plainText) => [plainText],
+    splitText: (plainText2) => [plainText2],
     protectedPatterns: [
       {
         pattern: /\[html\][\s\S]*?\[\/html\]/i,
@@ -14141,7 +14323,7 @@ function buildScheduledPush(message, build, extraMeta, bannerBody) {
 }
 
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-11-11.2";
+var AMSG_BUNDLE_VERSION = "2026-11-14.3";
 
 // worker/amsg/src/reproduction.ts
 async function writeDiagnosticStage(writeState, runId, event, fields = {}) {
@@ -14185,9 +14367,21 @@ var reproductionHandler = {
     });
     if (decision.decision === "tool-request") return { decision: "skip-push", reason: "diagnostic-tools-disabled" };
     if (decision.decision === "skip-push") return { decision: "skip-push", reason: decision.reason };
-    return { decision: "finish", pushPayloads: decision.pushPayloads.map((payload) => ({
+    const rawUsage = ctx.usage ?? ctx.llmResponse?.usage;
+    const promptTokens = typeof rawUsage?.prompt_tokens === "number" && Number.isFinite(rawUsage.prompt_tokens) ? rawUsage.prompt_tokens : void 0;
+    const completionTokens = typeof rawUsage?.completion_tokens === "number" && Number.isFinite(rawUsage.completion_tokens) ? rawUsage.completion_tokens : void 0;
+    const amsgUsage = promptTokens !== void 0 || completionTokens !== void 0 ? {
+      ...promptTokens !== void 0 ? { promptTokens } : {},
+      ...completionTokens !== void 0 ? { completionTokens } : {}
+    } : void 0;
+    return { decision: "finish", pushPayloads: decision.pushPayloads.map((payload, index) => ({
       ...payload,
-      metadata: { charId: DIAGNOSTIC_CHAR_ID, amsgKind: "diagnostic", amsgDiagnosticRunId: diagnostic.runId }
+      metadata: {
+        charId: DIAGNOSTIC_CHAR_ID,
+        amsgKind: "diagnostic",
+        amsgDiagnosticRunId: diagnostic.runId,
+        ...amsgUsage && index === decision.pushPayloads.length - 1 ? { amsgUsage } : {}
+      }
     })) };
   }
 };
@@ -14427,9 +14621,23 @@ var plateConsolidateHandler = {
       await discardJob(ctx.writeState, jobId);
       return { decision: "skip-push", reason: "plate-emit-result-unsupported" };
     }
+    const rawUsage = ctx.usage ?? ctx.llmResponse?.usage;
+    const promptTokens = typeof rawUsage?.prompt_tokens === "number" && Number.isFinite(rawUsage.prompt_tokens) ? rawUsage.prompt_tokens : void 0;
+    const completionTokens = typeof rawUsage?.completion_tokens === "number" && Number.isFinite(rawUsage.completion_tokens) ? rawUsage.completion_tokens : void 0;
+    const usage = promptTokens !== void 0 || completionTokens !== void 0 ? {
+      ...promptTokens !== void 0 ? { promptTokens } : {},
+      ...completionTokens !== void 0 ? { completionTokens } : {}
+    } : void 0;
     try {
       await ctx.emitResult({
-        ...buildPlateConsolidateResult({ jobId, charId: job.charId, items, rooms: job.rooms, snapshotAt: job.snapshotAt }),
+        ...buildPlateConsolidateResult({
+          jobId,
+          charId: job.charId,
+          items,
+          rooms: job.rooms,
+          snapshotAt: job.snapshotAt,
+          ...usage ? { usage } : {}
+        }),
         // 背景工作，整理完不该把人叫回来看。show:false 的 payload 上游只落收件箱、
         // 不发推送，客户端下次上线补收。
         notification: { show: false }
@@ -14470,7 +14678,20 @@ var getKindFireStash = (scratch) => {
 var FIRE_SKIP_RESULT_KIND = "fire-skipped";
 var SILENT_REASONS = /* @__PURE__ */ new Set(["schedule-off"]);
 var shouldReportFireSkip = (reason) => !SILENT_REASONS.has(reason);
+var normalizeSkipUsage = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const u = value;
+  const promptTokens = typeof u.promptTokens === "number" && Number.isFinite(u.promptTokens) ? u.promptTokens : void 0;
+  const completionTokens = typeof u.completionTokens === "number" && Number.isFinite(u.completionTokens) ? u.completionTokens : void 0;
+  if (promptTokens === void 0 && completionTokens === void 0) return void 0;
+  return {
+    ...promptTokens !== void 0 ? { promptTokens } : {},
+    ...completionTokens !== void 0 ? { completionTokens } : {},
+    ...u.tokensPartial === true ? { tokensPartial: true } : {}
+  };
+};
 function buildFireSkipResult(args) {
+  const usage = normalizeSkipUsage(args.usage);
   return {
     resultKind: FIRE_SKIP_RESULT_KIND,
     v: 1,
@@ -14484,7 +14705,9 @@ function buildFireSkipResult(args) {
         ...args.task.promptHint ? { promptHint: args.task.promptHint } : {},
         recurrenceType: args.task.recurrenceType
       }
-    } : {}
+    } : {},
+    ...usage ? { usage } : {},
+    ...args.proactiveKind ? { proactiveKind: args.proactiveKind } : {}
   };
 }
 
@@ -14518,6 +14741,41 @@ var readJson = async (res) => {
   }
 };
 var geocodeCache = /* @__PURE__ */ new Map();
+var WEATHER_REQUEST_TIMEOUT_MS = 8e3;
+var fetchWeatherJson = async (url, stage, timeoutMs = WEATHER_REQUEST_TIMEOUT_MS) => {
+  if (timeoutMs <= 0) throw new Error(`${stage}\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u68C0\u67E5\u7F51\u7EDC`);
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${stage}\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u68C0\u67E5\u7F51\u7EDC`));
+      controller.abort();
+    }, timeoutMs);
+  });
+  const request = async () => {
+    let response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } catch {
+      throw new Error(`${stage}\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u6216\u7A0D\u540E\u91CD\u8BD5`);
+    }
+    if (!response.ok) {
+      const hint = response.status === 429 ? "\uFF0C\u8BF7\u6C42\u8FC7\u591A\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5" : "";
+      throw new Error(`${stage} HTTP ${response.status}${hint}`);
+    }
+    try {
+      return await readJson(response);
+    } catch {
+      throw new Error(`${stage}\u54CD\u5E94\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5`);
+    }
+  };
+  try {
+    return await Promise.race([request(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+var isWeatherNumber = (value) => typeof value === "number" && Number.isFinite(value);
 var WMO_WEATHER_CODES = {
   0: { description: "\u6674", icon: "01d" },
   1: { description: "\u5927\u81F4\u6674\u6717", icon: "02d" },
@@ -14548,45 +14806,51 @@ var WMO_WEATHER_CODES = {
   96: { description: "\u96F7\u9635\u96E8\u4F34\u5C0F\u51B0\u96F9", icon: "11d" },
   99: { description: "\u96F7\u9635\u96E8\u4F34\u5927\u51B0\u96F9", icon: "11d" }
 };
-var fetchOwmWeather = async (city, apiKey) => {
-  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric&lang=zh_cn`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`OpenWeatherMap HTTP ${response.status}`);
+var fetchOwmWeather = async (city, apiKey, timeoutMs = WEATHER_REQUEST_TIMEOUT_MS) => {
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city.trim())}&appid=${encodeURIComponent(apiKey.trim())}&units=metric&lang=zh_cn`;
+  const data = await fetchWeatherJson(url, "OpenWeatherMap \u5929\u6C14\u670D\u52A1", timeoutMs);
+  if (![data?.main?.temp, data?.main?.feels_like, data?.main?.humidity].every(isWeatherNumber)) {
+    throw new Error("OpenWeatherMap \u5929\u6C14\u6570\u636E\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
   }
-  const data = await readJson(response);
   return {
     temp: Math.round(data.main.temp),
     feelsLike: Math.round(data.main.feels_like),
     humidity: data.main.humidity,
-    description: data.weather[0]?.description || "\u672A\u77E5",
-    icon: data.weather[0]?.icon || "01d",
+    description: data.weather?.[0]?.description || "\u672A\u77E5",
+    icon: data.weather?.[0]?.icon || "01d",
     city: data.name
   };
 };
-var fetchOpenMeteoWeather = async (city) => {
+var fetchOpenMeteoWeather = async (city, timeoutMs = WEATHER_REQUEST_TIMEOUT_MS) => {
+  city = city.trim();
+  if (!city) throw new Error("\u8BF7\u5148\u586B\u5199\u57CE\u5E02");
+  const deadline = Date.now() + timeoutMs;
   let geo = geocodeCache.get(city);
   if (!geo) {
-    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh&format=json`;
-    const geoRes = await fetch(geoUrl);
-    if (!geoRes.ok) {
-      throw new Error(`Open-Meteo geocoding HTTP ${geoRes.status}`);
+    const lookup = (name) => fetchWeatherJson(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=zh&format=json`,
+      "Open-Meteo \u57CE\u5E02\u67E5\u8BE2",
+      deadline - Date.now()
+    );
+    let hit = (await lookup(city))?.results?.[0];
+    if (!hit && /^[\u3400-\u9fff]{2,}市$/.test(city)) {
+      hit = (await lookup(city.slice(0, -1)))?.results?.[0];
     }
-    const geoData = await readJson(geoRes);
-    const hit = geoData.results?.[0];
     if (!hit) {
-      throw new Error(`Open-Meteo \u627E\u4E0D\u5230\u57CE\u5E02: ${city}`);
+      throw new Error(`Open-Meteo \u627E\u4E0D\u5230\u57CE\u5E02: ${city}\uFF0C\u8BF7\u5C1D\u8BD5\u57CE\u5E02\u7B80\u79F0\u6216\u82F1\u6587\u540D\uFF08\u5982\u5317\u4EAC / Beijing\uFF09`);
+    }
+    if (!isWeatherNumber(hit.latitude) || Math.abs(hit.latitude) > 90 || !isWeatherNumber(hit.longitude) || Math.abs(hit.longitude) > 180 || typeof hit.name !== "string" || !hit.name.trim()) {
+      throw new Error("Open-Meteo \u57CE\u5E02\u6570\u636E\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
     }
     geo = { latitude: hit.latitude, longitude: hit.longitude, name: hit.name };
     geocodeCache.set(city, geo);
   }
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.latitude}&longitude=${geo.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code&timezone=auto`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Open-Meteo HTTP ${response.status}`);
+  const data = await fetchWeatherJson(url, "Open-Meteo \u5929\u6C14\u670D\u52A1", deadline - Date.now());
+  const current = data?.current;
+  if (![current?.temperature_2m, current?.apparent_temperature, current?.relative_humidity_2m, current?.weather_code].every(isWeatherNumber)) {
+    throw new Error("Open-Meteo \u5929\u6C14\u6570\u636E\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
   }
-  const data = await readJson(response);
-  const current = data.current;
   const wmo = WMO_WEATHER_CODES[current.weather_code] || { description: "\u672A\u77E5", icon: "01d" };
   return {
     temp: Math.round(current.temperature_2m),
@@ -14597,17 +14861,108 @@ var fetchOpenMeteoWeather = async (city) => {
     city: geo.name
   };
 };
-var fetchWeatherWithFallback = async (city, apiKey) => {
-  if (!city) return null;
-  if (apiKey) {
+var WWO_TO_WMO = {
+  113: 0,
+  116: 2,
+  119: 3,
+  122: 3,
+  143: 45,
+  176: 61,
+  179: 71,
+  182: 67,
+  185: 56,
+  200: 95,
+  227: 75,
+  230: 75,
+  248: 45,
+  260: 48,
+  263: 51,
+  266: 53,
+  281: 56,
+  284: 57,
+  293: 61,
+  296: 61,
+  299: 63,
+  302: 63,
+  305: 65,
+  308: 65,
+  311: 66,
+  314: 67,
+  317: 67,
+  320: 67,
+  323: 71,
+  326: 71,
+  329: 73,
+  332: 73,
+  335: 75,
+  338: 75,
+  350: 77,
+  353: 80,
+  356: 81,
+  359: 82,
+  362: 67,
+  365: 67,
+  368: 85,
+  371: 86,
+  374: 77,
+  377: 77,
+  386: 95,
+  389: 95,
+  392: 95,
+  395: 95
+};
+var fetchWttrWeather = async (city, timeoutMs = WEATHER_REQUEST_TIMEOUT_MS) => {
+  city = city.trim();
+  if (!city) throw new Error("\u8BF7\u5148\u586B\u5199\u57CE\u5E02");
+  if (/^\.{1,2}$|[/\\:@~?#]/.test(city)) throw new Error("\u8BF7\u586B\u5199\u57CE\u5E02\u540D\u79F0\uFF0C\u4E0D\u8981\u586B\u5199\u7F51\u5740");
+  const data = await fetchWeatherJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1&lang=zh`, "wttr.in \u5929\u6C14\u670D\u52A1", timeoutMs);
+  const current = data?.current_condition?.[0];
+  const number = (value) => typeof value === "string" && value.trim() ? Number(value) : typeof value === "number" ? value : NaN;
+  const temp = number(current?.temp_C), feelsLike = number(current?.FeelsLikeC), humidity = number(current?.humidity);
+  if (![temp, feelsLike, humidity].every(isWeatherNumber) || humidity < 0 || humidity > 100) {
+    throw new Error("wttr.in \u5929\u6C14\u6570\u636E\u4E0D\u5B8C\u6574\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+  }
+  const code = number(current?.weatherCode);
+  const mapped = code === 149 ? { description: "\u973E", icon: "50d" } : [182, 317, 320, 362, 365].includes(code) ? { description: "\u96E8\u5939\u96EA", icon: "13d" } : [392, 395].includes(code) ? { description: "\u96F7\u9635\u96EA", icon: "13d" } : WMO_WEATHER_CODES[WWO_TO_WMO[code]];
+  const description = current.lang_zh?.[0]?.value || current.lang_xx?.[0]?.value || current.weatherDesc?.[0]?.value;
+  return {
+    temp: Math.round(temp),
+    feelsLike: Math.round(feelsLike),
+    humidity: Math.round(humidity),
+    description: mapped?.description || (typeof description === "string" ? description.trim().slice(0, 80) : "") || "\u672A\u77E5",
+    icon: mapped?.icon || "01d",
+    // nearest_area 是气象站附近的地名，不一定是用户填写的城市（如成都返回郫县）。
+    city
+  };
+};
+var fetchWeatherFromSource = async (city, source, apiKey = "", timeoutMs = WEATHER_REQUEST_TIMEOUT_MS) => {
+  if (!city.trim()) throw new Error("\u8BF7\u5148\u586B\u5199\u57CE\u5E02");
+  const data = source === "owm" ? await fetchOwmWeather(city, apiKey, timeoutMs) : source === "wttr" ? await fetchWttrWeather(city, timeoutMs) : await fetchOpenMeteoWeather(city, timeoutMs);
+  return { ...data, source };
+};
+var fetchWeatherOrThrow = async (city, apiKey, freeSource) => {
+  city = city.trim();
+  if (!city) throw new Error("\u8BF7\u5148\u586B\u5199\u57CE\u5E02");
+  const key = apiKey?.trim() || "";
+  const preferred = normalizeFreeWeatherSource(freeSource);
+  const sources = [...key ? ["owm"] : [], preferred, preferred === "wttr" ? "open-meteo" : "wttr"];
+  const failures = [];
+  for (const source of sources) {
     try {
-      return await fetchOwmWeather(city, apiKey);
-    } catch (e) {
-      console.warn("OpenWeatherMap \u5931\u8D25\uFF0C\u56DE\u843D Open-Meteo:", e);
+      const weather = await fetchWeatherFromSource(city, source, key, key ? 3e3 : 4e3);
+      return failures.length ? { ...weather, fallbackFrom: sources[0] } : weather;
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : `${WEATHER_SOURCE_LABELS[source]}\u8FDE\u63A5\u5931\u8D25`);
     }
   }
+  throw new Error(failures.join("\uFF1B"));
+};
+var fetchWeatherWithFallback = async (city, apiKey, freeSource) => {
+  city = city.trim();
+  apiKey = apiKey?.trim();
+  if (!city) return null;
   try {
-    return await fetchOpenMeteoWeather(city);
+    return await fetchWeatherOrThrow(city, apiKey, freeSource);
   } catch (e) {
     console.error("Failed to fetch weather:", e);
     return null;
@@ -15294,24 +15649,26 @@ var withBudget = async (job, ms, fallback, label) => {
 var loadWeather = async (cfg, nowMs, globalRows, pendingWrites) => {
   const city = cfg.weatherCity?.trim();
   if (!city) return null;
+  const freeSource = normalizeFreeWeatherSource(cfg.weatherFreeSource);
   const snap = parseSnapshot(
     globalRows,
     AMSG_WEATHER_SNAPSHOT_KEY,
     (v) => v && typeof v.city === "string" && v.data && typeof v.fetchedAt === "number"
   );
-  if (snap && snap.city === city && nowMs - snap.fetchedAt < WEATHER_TTL_MS) {
+  const matches = snap && snap.city === city && normalizeFreeWeatherSource(snap.freeSource) === freeSource;
+  if (matches && nowMs - snap.fetchedAt < WEATHER_TTL_MS) {
     console.log("[amsg:world] \u5929\u6C14\u547D\u4E2D\u5FEB\u7167", { city, ageMin: Math.round((nowMs - snap.fetchedAt) / 6e4) });
     return snap.data;
   }
-  const fresh = await fetchWeatherWithFallback(city, cfg.weatherApiKey);
+  const fresh = await fetchWeatherWithFallback(city, cfg.weatherApiKey, freeSource);
   if (fresh) {
     pendingWrites.push({
       key: AMSG_WEATHER_SNAPSHOT_KEY,
-      value: JSON.stringify({ city, data: fresh, fetchedAt: nowMs })
+      value: JSON.stringify({ city, freeSource, data: fresh, fetchedAt: nowMs })
     });
     return fresh;
   }
-  if (snap && snap.city === city && nowMs - snap.fetchedAt <= WEATHER_FALLBACK_MAX_AGE_MS) {
+  if (matches && nowMs - snap.fetchedAt <= WEATHER_FALLBACK_MAX_AGE_MS) {
     console.warn("[amsg:world] \u5929\u6C14\u62C9\u53D6\u5931\u8D25\uFF0C\u5148\u7528\u4E0A\u4E00\u6B21\u7684\u8BFB\u6570", { city });
     return snap.data;
   }
@@ -16882,6 +17239,36 @@ var classifyFetchFailure = (ctx) => {
   return "unknown";
 };
 
+// utils/xhsNoteLink.ts
+function buildXhsNoteLink(note, mobile = false) {
+  const id = note.noteId || note.note_id || note.id;
+  if (!id || !/^[a-f\d]{24}$/i.test(id)) return;
+  let original;
+  for (const value of [note.url, note.shareUrl]) {
+    if (!value) continue;
+    try {
+      const candidate = new URL(value);
+      if (/^https?:$/.test(candidate.protocol) && !candidate.username && !candidate.password && ["xiaohongshu.com", "www.xiaohongshu.com", "rednote.com", "www.rednote.com"].includes(candidate.hostname) && candidate.pathname.match(/^\/(?:explore|discovery\/item|search_result)\/([a-f\d]{24})\/?$/i)?.[1] === id) {
+        original = candidate;
+        break;
+      }
+    } catch {
+    }
+  }
+  const host = original?.hostname || (note.platform === "rednote" ? "www.rednote.com" : "www.xiaohongshu.com");
+  const url = original || new URL(`https://${host}/explore/${id}`);
+  url.protocol = "https:";
+  url.port = "";
+  if (mobile) url.pathname = `/discovery/item/${id}`;
+  const token = note.xsecToken || note.xsec_token || url.searchParams.get("xsec_token");
+  const source = note.xsecSource || note.xsec_source || url.searchParams.get("xsec_source");
+  if (token) {
+    url.searchParams.set("xsec_token", token);
+    url.searchParams.set("xsec_source", source || "pc_feed");
+  }
+  return url.href;
+}
+
 // utils/xhsMcpClient.ts
 var XHS_SPIDER_V3_EXPERIMENT = Object.freeze({
   optInValue: "spider-v3-isolated-cookie",
@@ -17435,7 +17822,11 @@ var XhsMcpClient = {
   },
   search: async (serverUrl, keyword, options, signal) => {
     signal?.throwIfAborted();
-    return detectMode(serverUrl) === "bridge" ? bridgePost(serverUrl, "search", { keyword, ...options }, signal) : mcpCallTool(serverUrl, "search", { keyword }, signal);
+    const result = await (detectMode(serverUrl) === "bridge" ? bridgePost(serverUrl, "search", { keyword, ...options }, signal) : mcpCallTool(serverUrl, "search", { keyword }, signal));
+    if (result.success) for (const note of extractNotesFromMcpData(result.data)) {
+      if (note && typeof note === "object" && !note.xsecSource && !note.xsec_source && !note.url && !note.note_url && !note.shareUrl && !note.share_url) note.xsecSource = "pc_search";
+    }
+    return result;
   },
   getRecommend: async (serverUrl, signal) => {
     signal?.throwIfAborted();
@@ -17690,8 +18081,20 @@ var normalizeNote = (n) => {
   const collectsRaw = n.collects ?? n.collected_count ?? interact.collected_count ?? interact.collectedCount ?? 0;
   const commentCountRaw = n.commentCount ?? n.comment_count ?? interact.comment_count ?? interact.commentCount ?? 0;
   const shareCountRaw = n.shareCount ?? n.share_count ?? interact.share_count ?? interact.shareCount ?? 0;
+  const noteId = n.noteId || n.note_id || n.id || card?.note_id || card?.noteId || "";
+  const platform = n.platform === "rednote" || n.platform === "xhs" ? n.platform : litePlatform === "rednote" ? "rednote" : "xhs";
+  const xsecToken = n.xsecToken || n.xsec_token || card?.xsec_token || card?.xsecToken || void 0;
+  const xsecSource = n.xsecSource || n.xsec_source || card?.xsec_source || card?.xsecSource || void 0;
+  const url = buildXhsNoteLink({
+    noteId,
+    platform,
+    xsecToken,
+    xsecSource,
+    url: n.url || n.note_url,
+    shareUrl: n.shareUrl || n.share_url || card?.share_url
+  });
   return {
-    noteId: n.noteId || n.note_id || n.id || card?.note_id || card?.noteId || card?.noteId || "",
+    noteId,
     title: n.title || n.display_title || n.displayTitle || card?.display_title || card?.displayTitle || "",
     desc: (n.desc || n.description || n.content || card?.desc || card?.description || card?.title || "").slice(0, 500),
     author: n.author || n.nickname || n.user?.nickname || n.user?.name || card?.user?.nickname || card?.user?.name || "",
@@ -17700,7 +18103,10 @@ var normalizeNote = (n) => {
     collects: parseXhsCount(collectsRaw),
     commentCount: parseXhsCount(commentCountRaw),
     shareCount: parseXhsCount(shareCountRaw),
-    xsecToken: n.xsecToken || n.xsec_token || card?.xsec_token || card?.xsecToken || void 0,
+    xsecToken,
+    xsecSource,
+    url,
+    platform,
     coverUrl,
     type: n.type || card?.type || void 0
   };
@@ -17750,6 +18156,7 @@ function resolveXhsConfig(char, realtimeConfig) {
 async function runRecall(args, ctx) {
   const { char } = ctx;
   const targetMonth = `${args.year}-${args.month.padStart(2, "0")}`;
+  if (char.monthlyRecallEnabled === false) return { ok: false, reason: "disabled", yearMonth: targetMonth };
   const alreadyActive = !!char.activeMemoryMonths?.includes(targetMonth);
   if (alreadyActive) {
     return { ok: true, alreadyActive: true, yearMonth: targetMonth, logsText: null };
@@ -18121,6 +18528,8 @@ async function runXhsDetail(args, ctx) {
         author: detailNote.author || matched?.author || "",
         authorId: detailNote.authorId || matched?.authorId || "",
         xsecToken: detailNote.xsecToken || detailToken || xsecToken || matched?.xsecToken,
+        url: matched?.url || detailNote.url,
+        xsecSource: matched?.xsecSource || detailNote.xsecSource,
         comments: detailNote.comments || matched?.comments
       };
       const index = ctx.lastXhsNotesRef.current.findIndex((n) => n.noteId === args.noteId);
@@ -18432,15 +18841,23 @@ var requestEmotionEval = async (api, promptContent, timeoutMs = EMOTION_EVAL_TIM
       return { raw: null, error: `\u526F API HTTP ${res.status}${snippet ? `\uFF1A${snippet}` : ""}` };
     }
     const data = await res.json();
+    const rawUsage = data?.usage;
+    const promptTokens = typeof rawUsage?.prompt_tokens === "number" && Number.isFinite(rawUsage.prompt_tokens) ? rawUsage.prompt_tokens : void 0;
+    const completionTokens = typeof rawUsage?.completion_tokens === "number" && Number.isFinite(rawUsage.completion_tokens) ? rawUsage.completion_tokens : void 0;
+    const usage = promptTokens !== void 0 || completionTokens !== void 0 ? {
+      ...promptTokens !== void 0 ? { promptTokens } : {},
+      ...completionTokens !== void 0 ? { completionTokens } : {}
+    } : void 0;
     const message = data?.choices?.[0]?.message;
     const raw = flattenEvalContent(message?.content) || (typeof message?.reasoning_content === "string" ? message.reasoning_content : "");
     if (!raw.trim()) {
       return {
         raw: null,
-        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`
+        error: `\u8BC4\u4F30\u6A21\u578B\u6CA1\u6709\u8F93\u51FA\u5185\u5BB9\uFF08finish_reason: ${data?.choices?.[0]?.finish_reason ?? "?"}\uFF09`,
+        ...usage ? { usage } : {}
       };
     }
-    return { raw, error: null };
+    return { raw, error: null, ...usage ? { usage } : {} };
   } catch (error) {
     if (signal?.aborted) return { raw: null, error: null };
     console.warn("[emotion-eval] \u8BC4\u4F30\u5931\u8D25\uFF08\u4E3B\u6D41\u7A0B\u4E0D\u53D7\u5F71\u54CD\uFF09", error);
@@ -18825,6 +19242,7 @@ var buildToolCtx = (pack, config) => {
     name: pack.charName,
     xhsEnabled: pack.xhsEnabled,
     activeMemoryMonths: pack.activeMemoryMonths,
+    monthlyRecallEnabled: pack.monthlyRecallEnabled,
     memories: pack.memories
   };
   return {
@@ -18853,16 +19271,6 @@ var fireStateError = (reason, detail) => {
   const error = new Error(`AMSG2_FIRE_STATE_MISSING: ${reason}`);
   error.permanent = true;
   return error;
-};
-var INLINE_THINK_RE = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi;
-var extractInlineThink = (text2) => {
-  if (!text2.includes("<")) return "";
-  const blocks = [];
-  for (const match of text2.matchAll(INLINE_THINK_RE)) {
-    const inner = match[2].trim();
-    if (inner) blocks.push(inner);
-  }
-  return blocks.join("\n\n");
 };
 var amsgReasoningKey = (clientTaskId) => `reasoning:${clientTaskId}`;
 var pushFits = (payload) => measurePushPayload(JSON.stringify(payload), { reserveEnvelope: true }).withinLimit;
@@ -18953,8 +19361,19 @@ var writeLastSkip = async (writeState, charId, skip) => {
     console.warn("[amsg:skip] \u8DF3\u8FC7\u539F\u56E0\u5199\u5165\u5931\u8D25\uFF08\u8DF3\u8FC7\u672C\u8EAB\u7167\u5E38\u751F\u6548\uFF0C\u53EA\u662F\u9762\u677F\u5C11\u4E00\u53E5\u8BF4\u660E\uFF09", error);
   }
 };
+var proactiveKindOf = (stash) => stash.away ? "away" : stash.dateLeave ? "dateLeave" : stash.selfScheduled ? "self" : "scheduled";
+var readStashUsage = (stash) => {
+  const pt = stash.promptTokensAcc;
+  const ct = stash.completionTokensAcc;
+  if (pt === void 0 && ct === void 0) return void 0;
+  return {
+    ...pt !== void 0 ? { promptTokens: pt } : {},
+    ...ct !== void 0 ? { completionTokens: ct } : {}
+  };
+};
+var hasPartialStashUsage = (stash) => (stash.llmRounds ?? 0) > (stash.llmRoundsWithUsage ?? 0);
 var emitFireSkip = async (emitResult, args) => {
-  if (!args.taskUuid || !shouldReportFireSkip(args.reason) || typeof emitResult !== "function") return;
+  if (!args.taskUuid || !shouldReportFireSkip(args.reason) && !args.usage || typeof emitResult !== "function") return;
   try {
     await emitResult({
       ...buildFireSkipResult({ ...args, taskUuid: args.taskUuid }),
@@ -19067,6 +19486,35 @@ var amsgFireSettled = async (info) => {
   if (cancelled) stash.selfLogTexts = null;
   const committed = !cancelled && (info.outboxed === true || stash.actionResultCommitted === true);
   const delivered = committed || (info.sentCount ?? 0) > 0;
+  if (stash.instant && stash.taskUuid && !committed && !stash.modelCallsReceiptSent) {
+    const calls = stash.modelCalls ?? (stash.modelCalls = []);
+    const attempted = typeof info.llmCalls === "number" && Number.isInteger(info.llmCalls) ? Math.min(info.llmCalls, 32) : calls.length;
+    while (calls.length < attempted) {
+      const status = info.error?.llmStatus;
+      calls.push(makeModelCall({
+        index: calls.length + 1,
+        completedAt: Date.now(),
+        causes: stash.nextCallCauses ?? [],
+        ok: false,
+        ...typeof status === "number" ? { status } : {}
+      }));
+    }
+    if (calls.length && info.emitResult) {
+      try {
+        await info.emitResult({
+          resultKind: INSTANT_API_CALLS_RESULT_KIND,
+          charId: stash.charId,
+          charName: stash.toolCtx.char.name,
+          taskUuid: stash.taskUuid,
+          calls,
+          notification: { show: false }
+        });
+        stash.modelCallsReceiptSent = true;
+      } catch (error) {
+        console.warn("[amsg:usage] \u9010\u6B21\u8C03\u7528\u8BB0\u5F55\u5199\u5165\u7ED3\u679C\u7BB1\u5931\u8D25", error);
+      }
+    }
+  }
   const stateWrites = [];
   if (!stash.instant && !stash.dailyCounted) {
     stash.dailyCounted = true;
@@ -19240,7 +19688,7 @@ var condenseToolTrace = (calls) => {
     if (call.ran === false) continue;
     counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
   }
-  return [...counts].map(([name, count]) => ({ name, count }));
+  return [...counts].map(([name, count2]) => ({ name, count: count2 }));
 };
 var EMOTION_EVAL_LATE_REASON = "\u60C5\u7EEA\u8BC4\u4F30\u6CA1\u8D76\u4E0A\u8FD9\u6761\u56DE\u590D\uFF08\u526F API \u592A\u6162\uFF09\uFF0C\u8FD9\u4E00\u8F6E\u5148\u4E0D\u66F4\u65B0";
 var raceEmotionEval = (promise, lateNote = "\u8BC4\u4F30\u6CA1\u8D76\u4E0A\u8FD9\u6761\u56DE\u590D\uFF0C\u5148\u628A\u8BDD\u53D1\u51FA\u53BB\uFF08\u8FD9\u4E00\u8F6E\u4E0D\u66F4\u65B0\u60C5\u7EEA\uFF09") => {
@@ -19682,6 +20130,8 @@ var amsgHooks = {
     }
     const presenceLastUserMessageAt = presence?.charId === charId ? presence.lastUserMessageAt : null;
     const lastUserMessageAt = laterOf(pack.lastUserMessageAt ?? null, presenceLastUserMessageAt);
+    const lastInteractionAt = laterOf(pack.lastAwayAnchorAt ?? null, lastUserMessageAt);
+    const awayAnchorAt = laterOf(lastInteractionAt, inPerson && presence ? presence.activeAt : null);
     if (!instant) {
       console.log("[amsg:fire-context]", {
         taskId: ctx.task.id,
@@ -19690,6 +20140,7 @@ var amsgHooks = {
         occurrenceMs,
         nowMs: ctx.now.getTime(),
         packLastUserMessageAt: pack.lastUserMessageAt ?? null,
+        packLastAwayAnchorAt: pack.lastAwayAnchorAt ?? null,
         presenceLastUserMessageAt
       });
     }
@@ -19707,7 +20158,7 @@ var amsgHooks = {
     }
     if (!instant && away) {
       const delayMs = Number(taskMeta[AMSG_AWAY_DELAY_META]) * 6e4;
-      const dueAt = lastUserMessageAt != null && delayMs > 0 ? lastUserMessageAt + delayMs : null;
+      const dueAt = awayAnchorAt != null && delayMs > 0 ? awayAnchorAt + delayMs : null;
       const waitMs = dueAt == null ? 0 : dueAt - ctx.now.getTime();
       if (waitMs > AWAY_DUE_TOLERANCE_MS) {
         console.log("[amsg:defer]", { taskId: ctx.task.id, reason: "away-not-due", dueAt });
@@ -19747,7 +20198,7 @@ var amsgHooks = {
       ctx.now.getTime(),
       typeof ctx.task.uuid === "string" && ctx.task.uuid ? stoppedReplyKey(ctx.task.uuid) : null
     );
-    const selfLog = reconcileSelfLogWithPack(storedSelfLog, pack, lastUserMessageAt);
+    const selfLog = reconcileSelfLogWithPack(storedSelfLog, pack, lastInteractionAt);
     const taskBrief = findTaskBrief([...pack.pendingTasks, ...selfLog.tasks], ctx.task.uuid);
     const clientTaskId = typeof taskMeta.amsgClientTaskId === "string" ? taskMeta.amsgClientTaskId : "";
     const nowMs = ctx.now.getTime();
@@ -19901,7 +20352,10 @@ var amsgHooks = {
       instantInputKey,
       // 下面即时对话那一支起跑（要等请求消息拼完才知道给评估喂什么）。
       emotionEvalPromise: null,
-      emotionLatePending: false
+      emotionLatePending: false,
+      away,
+      dateLeave,
+      selfScheduled
     };
     ctx.scratch.fire = stash;
     const canManageTasks = canSelfSchedule && mcpNative && typeof ctx.cancelTask === "function" && typeof ctx.renewTask === "function";
@@ -19958,7 +20412,7 @@ ${buildReplyScopeRule(instant ? "user" : "scheduled")}
 ` : "";
     stash.fireToolNames = new Set(fireTools.map((t) => t?.function?.name).filter((n) => typeof n === "string" && !n.startsWith(MCP_FIRE_NAME_PREFIX)));
     stash.allowedToolNames = /* @__PURE__ */ new Set([
-      ...DATA_TOOL_NAMES,
+      ...DATA_TOOL_NAMES.filter((name) => name !== "recall" || isMonthlyRecallEnabled(stash.toolCtx.char)),
       ...mcpResolve ? [...mcpResolve.keys()].map((name) => `${MCP_FIRE_NAME_PREFIX}${name}`) : [],
       ...canSelfSchedule ? [AMSG_FIRE_SCHEDULE_TOOL] : [],
       ...canManageTasks ? [AMSG_FIRE_CANCEL_TOOL, AMSG_FIRE_RENEW_TOOL] : []
@@ -20038,7 +20492,7 @@ ${userHoliday}` });
       selfLog,
       taskListBlock,
       realtimeWorldBlock,
-      lastUserMessageAt,
+      lastUserMessageAt: lastInteractionAt,
       // 「此刻在做什么」里的钟点跟今日节日同一个开关：关掉时间感知的角色不该从日程块
       // 读到「23:00」——那正是这个开关要挡的东西。日程内容本身照给。
       includeClock: toolPack.timeAwarenessEnabled,
@@ -20059,7 +20513,9 @@ ${userHoliday}` });
       }
       return handler.llmOutput({ ctx, state: kindFire.state });
     }
-    const content = stripReasoningTags(ctx.llmOutputText || "").trim();
+    const llmMessage = ctx.llmResponse?.choices?.[0]?.message;
+    const rawContent = llmMessage && "content" in llmMessage ? readAssistantMessage(llmMessage).content : ctx.llmOutputText || "";
+    const content = splitInlineThinking(rawContent).content.trim();
     const taskId = ctx.taskId != null ? String(ctx.taskId) : null;
     if (taskId == null) {
       console.warn("[amsg:agentic] ctx \u4E0A\u6CA1\u6709 taskId\uFF0C\u9001\u8FBE\u5F52\u5C5E\u4F1A\u5931\u6548", ctx.sessionId);
@@ -20070,9 +20526,29 @@ ${userHoliday}` });
       throw new Error("AMSG2_FIRE_STASH_MISSING: onLLMOutput \u8BFB\u4E0D\u5230 ctx.scratch.fire\uFF0C\u68C0\u67E5 amsg-server \u662F\u5426\u4ECD\u5171\u4EAB scratch");
     }
     const session = stash.session;
-    const llmMessage = ctx.llmResponse?.choices?.[0]?.message;
-    const nativeReasoning = llmMessage?.reasoning_content ?? llmMessage?.reasoning ?? llmMessage?.thinking;
-    const roundReasoning = [nativeReasoning, extractInlineThink(ctx.llmOutputText || "")].filter((s) => typeof s === "string" && !!s.trim()).map((s) => s.trim()).join("\n\n");
+    stash.llmRounds = (stash.llmRounds ?? 0) + 1;
+    const roundRawUsage = ctx.usage ?? ctx.llmResponse?.usage;
+    if (stash.instant) {
+      const calls = stash.modelCalls ?? (stash.modelCalls = []);
+      calls.push(makeModelCall({
+        index: calls.length + 1,
+        completedAt: Date.now(),
+        causes: stash.nextCallCauses ?? [],
+        ok: true,
+        usage: roundRawUsage,
+        response: ctx.llmResponse
+      }));
+    }
+    if (roundRawUsage && typeof roundRawUsage === "object") {
+      const pt = typeof roundRawUsage.prompt_tokens === "number" && Number.isFinite(roundRawUsage.prompt_tokens) ? roundRawUsage.prompt_tokens : void 0;
+      const ct = typeof roundRawUsage.completion_tokens === "number" && Number.isFinite(roundRawUsage.completion_tokens) ? roundRawUsage.completion_tokens : void 0;
+      if (pt !== void 0 || ct !== void 0) {
+        stash.llmRoundsWithUsage = (stash.llmRoundsWithUsage ?? 0) + 1;
+        if (pt !== void 0) stash.promptTokensAcc = (stash.promptTokensAcc ?? 0) + pt;
+        if (ct !== void 0) stash.completionTokensAcc = (stash.completionTokensAcc ?? 0) + ct;
+      }
+    }
+    const roundReasoning = readAssistantThinking(llmMessage && "content" in llmMessage ? llmMessage : { ...llmMessage, content: rawContent });
     session.finalReasoning = roundReasoning || null;
     const rawToolCalls = ctx.llmResponse?.choices?.[0]?.message?.tool_calls;
     const nativeCalls = classifyNativeToolCalls(rawToolCalls, stash.fireToolNames, stash.mcpResolve);
@@ -20085,7 +20561,7 @@ ${userHoliday}` });
     }
     let decision = processLLMRound(
       session,
-      content,
+      stripDisabledMonthlyRecall(content, stash.toolCtx.char),
       {
         // 名字取 tool_pack 里的那份：它跟着每轮聊天重新上云，改名当天就是新的。
         // ctx.contactName 是排程那一刻冻进任务行的快照，用户改完名字之后，之前排的
@@ -20121,6 +20597,7 @@ ${userHoliday}` });
       stash.maxToolIterations
     );
     if (decision.decision === "tool-request") {
+      stash.nextCallCauses = modelCallCauses(decision.toolCalls.map((tc) => tc.function.name));
       console.log("[amsg:agentic]", {
         type: "tool_request",
         sessionId: ctx.sessionId,
@@ -20153,12 +20630,17 @@ ${userHoliday}` });
             reason: overlapReason,
             skippedAt: Date.now()
           });
+          const overlapUsage = readStashUsage(stash);
           await emitFireSkip(ctx.emitResult, {
             charId: stash.charId,
             taskUuid: stash.taskUuid,
             occurrenceMs: stash.occurrenceMs,
             reason: overlapReason,
-            task: findTaskBrief(stash.pendingTasks, stash.taskUuid)
+            task: findTaskBrief(stash.pendingTasks, stash.taskUuid),
+            ...overlapUsage ? {
+              usage: { ...overlapUsage, ...hasPartialStashUsage(stash) ? { tokensPartial: true } : {} },
+              proactiveKind: proactiveKindOf(stash)
+            } : {}
           });
           return { decision: "skip-push" };
         }
@@ -20166,13 +20648,20 @@ ${userHoliday}` });
     }
     if (decision.decision === "skip-push" && decision.sideEffects) {
       if (typeof ctx.emitResult !== "function") throw new Error("AMSG2_RESULT_UNSUPPORTED: \u8BF7\u66F4\u65B0 Worker \u4EE5\u63A5\u6536\u52A8\u4F5C\u7ED3\u679C");
+      const sideEffectUsage = readStashUsage(stash);
       const metadata = {
         ...stripSarSnapshot(stripEmotionEvalSpec(ctx.metadata)),
         ...decision.sideEffects,
         amsgOccurrenceMs: stash.occurrenceMs,
+        ...stash.instant && stash.modelCalls?.length ? { amsgModelCalls: stash.modelCalls } : {},
         ...stash.scheduledTasks.length ? { amsgSelfScheduled: stash.scheduledTasks } : {},
         ...stash.cancelledTasks.length || stash.renewedTasks.length ? {
           amsgTaskMutations: { cancelled: stash.cancelledTasks, renewed: stash.renewedTasks }
+        } : {},
+        ...sideEffectUsage ? {
+          amsgUsage: sideEffectUsage,
+          amsgProactiveKind: proactiveKindOf(stash),
+          ...hasPartialStashUsage(stash) ? { amsgTokensPartial: true } : {}
         } : {}
       };
       await ctx.emitResult({
@@ -20244,12 +20733,17 @@ ${userHoliday}` });
         skippedAt: Date.now()
       });
       if (!stash.instant) {
+        const skipUsage = readStashUsage(stash);
         await emitFireSkip(ctx.emitResult, {
           charId: stash.charId,
           taskUuid: stash.taskUuid,
           occurrenceMs: stash.occurrenceMs,
           reason: decision.reason,
-          task: findTaskBrief(stash.pendingTasks, stash.taskUuid)
+          task: findTaskBrief(stash.pendingTasks, stash.taskUuid),
+          ...skipUsage ? {
+            usage: { ...skipUsage, ...hasPartialStashUsage(stash) ? { tokensPartial: true } : {} },
+            proactiveKind: proactiveKindOf(stash)
+          } : {}
         });
       }
       if (stash.instant && stash.taskUuid && ctx.writeState) {
@@ -20287,18 +20781,14 @@ ${userHoliday}` });
       }
       if (stash.instant && payloads.length > 0) {
         const lastMeta = {};
+        if (stash.modelCalls?.length) lastMeta.amsgModelCalls = stash.modelCalls;
         const toolTrace = condenseToolTrace(session.toolCalls);
         if (toolTrace.length > 0) lastMeta.amsgToolTrace = toolTrace;
-        const usage = ctx.usage;
-        if (usage && typeof usage === "object") {
-          const pick = (key) => typeof usage[key] === "number" ? usage[key] : void 0;
-          const promptTokens = pick("prompt_tokens");
-          const completionTokens = pick("completion_tokens");
-          if (promptTokens !== void 0 || completionTokens !== void 0) {
-            lastMeta.amsgUsage = {
-              ...promptTokens !== void 0 ? { promptTokens } : {},
-              ...completionTokens !== void 0 ? { completionTokens } : {}
-            };
+        const stashUsage = readStashUsage(stash);
+        if (stashUsage) {
+          lastMeta.amsgUsage = stashUsage;
+          if ((stash.llmRounds ?? 0) > 1 && !hasPartialStashUsage(stash)) {
+            lastMeta.amsgUsageComplete = true;
           }
         }
         if (stash.emotionEvalPromise) {
@@ -20316,10 +20806,20 @@ ${userHoliday}` });
             lastMeta.amsgEmotionDone = true;
             if (outcome.raw) lastMeta.amsgEmotionUpdate = outcome.raw;
             else if (outcome.error) lastMeta.amsgEmotionError = outcome.error;
+            if (outcome.usage) lastMeta.amsgEmotionUsage = outcome.usage;
           }
         }
         if (Object.keys(lastMeta).length > 0) {
           payloads = attachMetaAt(payloads, payloads.length - 1, lastMeta);
+        }
+      } else if (!stash.instant && payloads.length > 0) {
+        const stashUsage = readStashUsage(stash);
+        if (stashUsage) {
+          payloads = attachMetaAt(payloads, payloads.length - 1, {
+            amsgUsage: stashUsage,
+            amsgProactiveKind: proactiveKindOf(stash),
+            ...hasPartialStashUsage(stash) ? { amsgTokensPartial: true } : {}
+          });
         }
       }
       if (stash.charId) {

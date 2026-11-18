@@ -1,4 +1,5 @@
 import { mergePhoneGeneration, PHONE_GENERATION_COMMITTED, type PhoneGeneration } from '../utils/phoneGeneration';
+import { applyPhoneEvidenceChatLink, PHONE_EVIDENCE_SYNCED, type PhoneEvidenceChatLink } from '../utils/phoneEvidence';
 import { SESSION_SPACE_ID, DEFAULT_SPACE_ID, listUserSpaces, selectUserSpace } from '../utils/userSpaces';
 import { handleLocalBack } from '../utils/localBackHandlers';
 import { updateVirtualTimeIfChanged } from '../utils/blurPolicy';
@@ -10,6 +11,7 @@ import { readFriendFeed } from '../utils/friendFeed';
 import { collectFriendFeedMedia, exportActivityTextAsset, isActivityTextAsset } from '../utils/activityBackup';
 import { retireCloudCharacter } from '../utils/amsgCloudRetirement';
 import { AMSG_OWNER_CHECK_AFTER_IMPORT_LS_KEY } from '../utils/amsgOwnerReconcile';
+import { isAmsg2GloballyEnabled, isAmsg2WorkerActive } from '../utils/amsgGlobalGate';
 import {isBuiltinAppearance, readBuiltinAppearance} from '../utils/builtinAppearance';
 import { sameSullyIconSnapshot, SULLY_BIBI_UPGRADE_KEY, upgradeBuiltinSullyBibiIcon } from '../utils/builtinAppearanceUpgrade';
 import { browserHolidayCache, deviceTimeZone, getUserHolidayReminder } from '../utils/userHolidays';
@@ -58,6 +60,7 @@ import { migrateWorldDaySegs } from '../utils/worldHome/prompts';
 import { safeFetchJson } from '../utils/safeApi';
 import { captureApiRequestOnce, getApiCallAmbientContext, recordApiCall, setApiCallAmbientContext, updateApiRequestCaptureUsage } from '../utils/apiCallLog';
 import { isUserLocationLookupUrl } from '../utils/userLocationPrivacy';
+import { exportUserLocationSettings } from '../utils/userLocationBackup';
 import { isGlobalStreamEnabled, upgradeChatBodyToStream, assembleUpgradedResponse } from '../utils/streamUpgrade';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { buildFetchFailureDetail, classifyFetchFailure, describeReachabilityProbe, parseTargetUrl, probeOriginReachability, shouldProbeReachability, summarizeFetchRequestBody } from '../utils/networkFailureDiagnosis';
@@ -70,6 +73,7 @@ import { fetchLlm } from '../utils/anthropicApi';
 import { getCheckPhoneApi, setCheckPhoneApi } from '../utils/checkPhoneApi';
 import { markBackupDone } from '../utils/backupReminder';
 import { collectSARLocalBackup, restoreSARLocalBackup } from '../utils/vrWorld/sarBackup';
+import { recoverSignalOwnership } from '../utils/vrWorld/signalRecovery';
 import { normalizeCharacterImpression, normalizeCharacterDefaults } from '../utils/impression';
 import { normalizeModelIds } from '../utils/modelList';
 import {
@@ -92,6 +96,7 @@ import {
 import { ActiveMsgClient } from '../utils/activeMsgClient';
 import { resolveCharTimeZone } from '../utils/timezone';
 import { ActiveMsgStore, backupHasBackendConnection, exportAmsg2GlobalConfig } from '../utils/activeMsgStore';
+import { exportSubtitleSettings } from '../utils/chatTranslationStyle';
 import { charMayHaveCloudState, purgeCharCloudState, purgeCloudCharById } from '../utils/amsg2CharCleanup';
 import { parseCharCredId } from '../utils/amsgLlmCredentials';
 import { SAR_MODULE_RUNTIME_CHANGED_EVENT, type SarModuleRuntimeChangedDetail } from '../utils/sarModuleRuntimeEvents';
@@ -245,6 +250,7 @@ const loadJSZip = async (): Promise<JSZipCtorLike> => {
 const defaultRealtimeConfig: RealtimeConfig = {
   weatherEnabled: false,
   weatherApiKey: '',
+  weatherFreeSource: 'open-meteo',
   weatherCity: 'Beijing',
   newsEnabled: false,
   newsApiKey: '',
@@ -1666,6 +1672,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         // 导致「主题回初始 / 盲盒收藏册清空 / API 配置丢失」三连。必须在 loadSettings
         // 读 localStorage 之前完成回填。见 utils/lsMirror.ts。
         const healedKeys = await initLocalStorageMirror().catch(() => [] as string[]);
+        void recoverSignalOwnership();
         const hadPriorFeedbackEvidence = hasPriorFeedbackInstallEvidence();
         if (healedKeys.length > 0) {
             console.warn('[lsMirror] localStorage 疑似被清除，已从 IndexedDB 镜像回填:', healedKeys);
@@ -2024,7 +2031,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       let awayActiveMsgCount = 0;
 
       const handler = (e: Event) => {
-          const { charId, charName, body } = (e as CustomEvent).detail as { charId: string; charName: string; body?: string };
+          const { charId, charName, body, nativeNotificationHandled } = (e as CustomEvent).detail as { charId: string; charName: string; body?: string; nativeNotificationHandled?: boolean };
           setLastMsgTimestamp(Date.now());
 
           const isChattingWithThisChar = (activeAppRef.current === AppID.Chat && activeCharIdScheduleRef.current === charId) || isEmbeddedChatVisible(charId);
@@ -2037,7 +2044,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               }
               setUnreadMessages(prev => ({ ...prev, [charId]: (prev[charId] || 0) + 1 }));
               const preview = (body || `${charName} sent an active message`).replace(/\s+/g, ' ').trim() || `${charName} sent an active message`;
-              void sendProactiveNativeNotification(charId, charName, preview);
+              if (!nativeNotificationHandled) void sendProactiveNativeNotification(charId, charName, preview);
               // SW push handler 已经 fire 过系统通知（不在前台时露出真实内容、在前台时
               // silent + close 静默），这里不再补一次，避免重复弹窗。
           }
@@ -2215,6 +2222,16 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       window.addEventListener('active-msg-backfill-stale', backfillStaleHandler);
       window.addEventListener('active-msg-progress', progressHandler);
       window.addEventListener('active-msg-open', openHandler);
+      // Dynamic import keeps the native-only handoff off the regular web startup path.
+      let disposeNativeOpen: (() => void) | undefined;
+      let nativeOpenCancelled = false;
+      if (import.meta.env.VITE_AMSG_NATIVE_PUSH === 'true') {
+          void import('../utils/nativeNotificationNavigation').then(({ subscribeNativeNotificationOpen }) => {
+              if (!nativeOpenCancelled) disposeNativeOpen = subscribeNativeNotificationOpen(charId => {
+                  void openHandler(new CustomEvent('active-msg-open', { detail: { charId } }));
+              });
+          });
+      }
       const secretSyncHandler = (event: Event) => {
           const charId = (event as CustomEvent).detail?.charId;
           const char = charactersRef.current.find(c => c.id === charId);
@@ -2235,6 +2252,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           window.removeEventListener('active-msg-backfill-stale', backfillStaleHandler);
           window.removeEventListener('active-msg-progress', progressHandler);
           window.removeEventListener('active-msg-open', openHandler);
+          nativeOpenCancelled = true;
+          disposeNativeOpen?.();
           window.removeEventListener(HOME_SECRETS_UPDATED, secretSyncHandler);
           window.removeEventListener('friend-feed-history-updated', secretSyncHandler);
           window.removeEventListener('emotion-updated', buffSyncHandler);
@@ -2561,6 +2580,16 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           setLastMsgTimestamp(Date.now());
       };
       window.addEventListener(PHONE_GENERATION_COMMITTED, phoneGenerationHandler);
+      const phoneEvidenceSyncHandler = (event: Event) => {
+          const link = (event as CustomEvent<PhoneEvidenceChatLink>).detail;
+          setCharacters(previous => previous.map(character => {
+              const next = applyPhoneEvidenceChatLink(character, link);
+              if (next !== character) markAmsgStateDirty({ char: next, userProfile: userProfileRef.current, groups: groupsRef.current, realtimeConfig: realtimeConfigRef.current });
+              return next;
+          }));
+          setLastMsgTimestamp(Date.now());
+      };
+      window.addEventListener(PHONE_EVIDENCE_SYNCED, phoneEvidenceSyncHandler);
       window.addEventListener('amsg2-tasks-adopted', tasksAdoptedHandler);
       window.addEventListener(SAR_MODULE_RUNTIME_CHANGED_EVENT, sarModuleRuntimeChangedHandler);
       const linkedArchiveDeletedHandler = (event: Event) => {
@@ -2579,6 +2608,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       window.addEventListener(MEMORY_AUTO_ARCHIVE_SYNC_EVENT, memoryAutoArchiveSyncHandler);
       return () => {
           window.removeEventListener(PHONE_GENERATION_COMMITTED, phoneGenerationHandler);
+          window.removeEventListener(PHONE_EVIDENCE_SYNCED, phoneEvidenceSyncHandler);
           window.removeEventListener('amsg2-tasks-adopted', tasksAdoptedHandler);
           window.removeEventListener(SAR_MODULE_RUNTIME_CHANGED_EVENT, sarModuleRuntimeChangedHandler);
           window.removeEventListener(LINKED_ARCHIVE_DELETED, linkedArchiveDeletedHandler);
@@ -2625,7 +2655,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               getUserProfile: () => userProfileRef.current,
               getGroups: () => groupsRef.current,
               getRealtimeConfig: () => realtimeConfigRef.current,
+              // 正在见面/通话，以及见面/通话挂起期间都不补离开后消息；
+              // 见面挂起后的短时离开提醒走 utils/dateLeaveReminder.ts 的独立计时，不受这里拦截。
               isBusyWith: (charId) => suspendedCallRef.current?.charId === charId
+                  || suspendedDateRef.current?.charId === charId
                   || ((activeAppRef.current === AppID.Date || activeAppRef.current === AppID.Call)
                       && activeCharIdScheduleRef.current === charId),
           });
@@ -2783,7 +2816,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       const { uploadBackup, cleanupOldBackups } = await loadBackupProvider();
       try {
           setSysOperation({ status: 'processing', message: '正在打包备份数据...', progress: 0 });
-          const blob = await exportSystem(mode, { userScope: 'all' });
+          // 个人云备份用于换机恢复，必须保留原后台身份和密钥。不能被文件分享的脱敏偏好剥掉。
+          const blob = await exportSystem(mode, { userScope: 'all', includeBackendConnection: true });
 
           setSysOperation({ status: 'processing', message: '正在上传到云端...', progress: 50 });
           const filename = `Sully_Backup_${mode}_${Date.now()}.zip`;
@@ -2857,6 +2891,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     });
     setMemoryPalaceConfig(newConfig);
     localStorage.setItem('os_memory_palace_config', JSON.stringify(newConfig));
+    // 主动消息模板也包含智能语境；切换后刷新已有任务，不能等下次聊天才生效。
+    const smartFlags = ['recallRouter', 'interactionAdaptation', 'deepEngagement'] as const;
+    if (smartFlags.some(key => !!memoryPalaceConfig.featureFlags?.[key] !== !!newConfig.featureFlags?.[key])) {
+      markAmsgStateDirtyForAll({ characters, userProfile, groups, realtimeConfig });
+    }
   };
 
   // 情绪 API 同步到所有角色：API 字段（baseUrl/apiKey/model）所有角色共用，
@@ -2983,7 +3022,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     if (!managed && !options?.force && charMayHaveCloudState(target)) {
       let workerConfigured = false;
       try {
-        workerConfigured = Boolean((await ActiveMsgStore.getGlobalConfig()).workerUrl?.trim());
+        workerConfigured = isAmsg2WorkerActive(await ActiveMsgStore.getGlobalConfig());
       } catch { /* 配置读不到按没配处理，与 purgeCharCloudState 同口径 */ }
 
       if (workerConfigured) {
@@ -3030,6 +3069,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       // 「仍然删除」放行后仍旧尽力清一次：能清掉多少算多少，失败只提示、不再拦。
       void (async () => {
         try {
+          if (!isAmsg2WorkerActive(await ActiveMsgStore.getGlobalConfig().catch(() => null))) return;
           if (localTaskUuids.length > 0) {
             const { failed } = await ActiveMsgClient.cancelAllTasksForChar(id, localTaskUuids);
             if (failed.size > 0) {
@@ -3549,8 +3589,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   ): Promise<Blob> => {
       try {
           setSysOperation({ status: 'processing', message: '正在初始化打包引擎...', progress: 0 });
-          // 手动导出和云端备份都从这里过，带哪些东西只在这一处按备份偏好决定。
-          const { includeBackendConnection } = readBackupPreferences();
+          // 文件导出由用户选择是否带连接；个人云备份显式要求完整恢复配置。
+          const includeBackendConnection = exportOptions.includeBackendConnection ?? readBackupPreferences().includeBackendConnection;
 
           if (listUserSpaces().length > 1) {
               const { exportUserSpaces } = await import('../utils/userSpaceBackup');
@@ -3839,6 +3879,17 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
                   return Object.keys(map).length > 0 ? map : undefined;
               })() : undefined,
+              chatTranslateStyleByChar: (mode === 'text_only' || mode === 'full') ? (() => {
+                  const map: Record<string, 'bubble' | 'subtitle'> = {};
+                  for (let i = 0; i < localStorage.length; i++) {
+                      const key = localStorage.key(i);
+                      if (!key?.startsWith('chat_translate_style_')) continue;
+                      const charId = key.slice('chat_translate_style_'.length);
+                      const value = localStorage.getItem(key);
+                      if (charId && (value === 'bubble' || value === 'subtitle')) map[charId] = value;
+                  }
+                  return Object.keys(map).length > 0 ? map : undefined;
+              })() : undefined,
               chatTranslateSourceLangByChar: (mode === 'text_only' || mode === 'full') ? (() => {
                   const map: Record<string, string> = {};
                   for (let i = 0; i < localStorage.length; i++) {
@@ -3917,6 +3968,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // 纯配置无媒体，跟着 text_only / full 走。
           if (mode === 'text_only' || mode === 'full') {
               backupData.amsg2GlobalConfig = await exportAmsg2GlobalConfig({ includeBackendConnection });
+              backupData.userLocationSettings = exportUserLocationSettings();
+              backupData.chatSubtitleByChar = exportSubtitleSettings();
           }
 
           // 桌面皮肤偏好（电子宠物/手游风的界面配色 + 看板 banner）——异步（看板图令牌需解析为
@@ -4765,6 +4818,11 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   localStorage.setItem(`chat_translate_expanded_${charId}`, expanded ? 'true' : 'false');
               }
           }
+          if (data.chatTranslateStyleByChar && typeof data.chatTranslateStyleByChar === 'object') {
+              for (const [charId, style] of Object.entries(data.chatTranslateStyleByChar)) {
+                  if (style === 'bubble' || style === 'subtitle') localStorage.setItem(`chat_translate_style_${charId}`, style);
+              }
+          }
           if (data.chatTranslateSourceLangByChar && typeof data.chatTranslateSourceLangByChar === 'object') {
               for (const [charId, lang] of Object.entries(data.chatTranslateSourceLangByChar)) {
                   if (typeof lang === 'string') localStorage.setItem(`chat_translate_source_lang_${charId}`, lang);
@@ -4891,38 +4949,42 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // 到点照样推送，新档角色的 fire_pack 和工具凭据则停格在导入前那一刻。
           // 整段 best-effort：这是恢复流程的收尾，云端够不着不该让已经写好的本地数据回滚。
           try {
-              const amsgWorkerUrl = (await ActiveMsgStore.getGlobalConfig()).workerUrl?.trim();
+              const amsgGlobal = await ActiveMsgStore.getGlobalConfig();
+              const amsgWorkerUrl = amsgGlobal.workerUrl?.trim();
               if (amsgWorkerUrl) {
-                  const knownCharIds = new Set(importedChars.map(c => c.id));
-                  const orphanCharIds = new Set<string>();
-                  const remoteTasks = await ActiveMsgClient.listAllTasks();
-                  for (const task of remoteTasks) {
-                      if (typeof task?.uuid !== 'string') continue;
-                      const owner = typeof task?.charId === 'string' ? task.charId : '';
-                      if (owner && knownCharIds.has(owner)) continue;
-                      if (owner) orphanCharIds.add(owner);
-                      // 「导入即放弃旧数据」：这条任务的主人在新档里已经不存在了（连主人是谁
-                      // 都没投影出来的同理），它正属于该一起放弃的部分，取消就是对的。
-                      await ActiveMsgClient.cancelTask(task.uuid).catch(() => {});
-                  }
-                  // 凭据清单是另一条线索：只配过 API、没排过任务的角色在任务表里根本不露面，
-                  // 但 credId 的形状是 `char:<charId>/<用途>`，角色身份就编在那个字符串里。
-                  try {
-                      for (const { credId } of await ActiveMsgClient.listLlmCredentials()) {
-                          const parsed = parseCharCredId(credId);
-                          if (parsed && !knownCharIds.has(parsed.charId)) orphanCharIds.add(parsed.charId);
+                  if (isAmsg2GloballyEnabled(amsgGlobal)) {
+                      const knownCharIds = new Set(importedChars.map(c => c.id));
+                      const orphanCharIds = new Set<string>();
+                      const remoteTasks = await ActiveMsgClient.listAllTasks();
+                      for (const task of remoteTasks) {
+                          if (typeof task?.uuid !== 'string') continue;
+                          const owner = typeof task?.charId === 'string' ? task.charId : '';
+                          if (owner && knownCharIds.has(owner)) continue;
+                          if (owner) orphanCharIds.add(owner);
+                          // 「导入即放弃旧数据」：这条任务的主人在新档里已经不存在了（连主人是谁
+                          // 都没投影出来的同理），它正属于该一起放弃的部分，取消就是对的。
+                          await ActiveMsgClient.cancelTask(task.uuid).catch(() => {});
                       }
-                  } catch (e) {
-                      console.warn('[amsg2] 导入后读云端凭据清单失败，孤儿角色可能漏清', e);
-                  }
-                  // 取消任务只解决「还会不会响」。旧档角色在云端那份上下文（完整角色卡 +
-                  // 最近 30 条对话原文，一个角色 32KB 起步）和那几行 API 凭据还留着，而且
-                  // 新档里已经没有这个角色，再没有任何一条路会去刷新它或清掉它——角色命名
-                  // 空间在 worker 侧没有 TTL，不在这里清就是永久留着。
-                  for (const charId of orphanCharIds) {
-                      await purgeCloudCharById(charId).catch(() => {});
+                      // 凭据清单是另一条线索：只配过 API、没排过任务的角色在任务表里根本不露面，
+                      // 但 credId 的形状是 `char:<charId>/<用途>`，角色身份就编在那个字符串里。
+                      try {
+                          for (const { credId } of await ActiveMsgClient.listLlmCredentials()) {
+                              const parsed = parseCharCredId(credId);
+                              if (parsed && !knownCharIds.has(parsed.charId)) orphanCharIds.add(parsed.charId);
+                          }
+                      } catch (e) {
+                          console.warn('[amsg2] 导入后读云端凭据清单失败，孤儿角色可能漏清', e);
+                      }
+                      // 取消任务只解决「还会不会响」。旧档角色在云端那份上下文（完整角色卡 +
+                      // 最近 30 条对话原文，一个角色 32KB 起步）和那几行 API 凭据还留着，而且
+                      // 新档里已经没有这个角色，再没有任何一条路会去刷新它或清掉它——角色命名
+                      // 空间在 worker 侧没有 TTL，不在这里清就是永久留着。
+                      for (const charId of orphanCharIds) {
+                          await purgeCloudCharById(charId).catch(() => {});
+                      }
                   }
                   // 留下来的角色逐个刷云端快照，同时把导入进来的实时感知凭据传上去。
+                  // 总开关暂停期间内部门禁保证零网络，仅在 localStorage 记下脏标，恢复总开关后自动补传。
                   // 走同一个入口：云端提示词是按凭据裁过的，两者必须同进同退。
                   // 有 AI 任务的角色才会真的上传（门在 markAmsgStateDirty 里）。
                   syncAmsgToolConfigAndPrompts(
@@ -5016,7 +5078,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     setActiveApp(AppID.Call);
   };
   // 挂起由 DateApp 卸载时调用，不负责导航：用户已经在去别处的路上了。
-  const suspendDate = (info: SuspendedDate) => setSuspendedDate(info);
+  const suspendDate = (info: SuspendedDate) => {
+    suspendedDateRef.current = info;
+    setSuspendedDate(info);
+  };
   const resumeDate = () => openApp(AppID.Date);
   const takeSuspendedDate = () => {
     const taken = suspendedDateRef.current;

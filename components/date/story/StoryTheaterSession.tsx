@@ -343,6 +343,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         return characters.filter(char => recipientIds.has(char.id));
     }, [characters, entry]);
     const mask = useMemo(() => resolveStoryTheaterMask(entry.mask, userProfile, characters, masks), [characters, entry.mask, masks, userProfile]);
+    const theaterCharMeta = useMemo(() => {
+        if (actors.length === 1) return { charId: actors[0].id, charName: actors[0].name };
+        if (actors.length > 1) return { charId: actors[0].id, charName: actors.map(actor => actor.name).join('、') };
+        const maskChar = mask.characterId ? characters.find(char => char.id === mask.characterId) : undefined;
+        return { charId: maskChar?.id, charName: maskChar?.name };
+    }, [actors, characters, mask.characterId]);
     const youLabel = mask.selection.type === 'user' ? '你' : `你（${mask.name}）`;
     const promptIdentityName = mask.name.trim() && mask.name.trim() !== '你' ? mask.name.trim() : '当前用户侧角色';
     const effectivePreset = useMemo<StoryTheaterPreset>(() => ({
@@ -619,14 +625,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, entry, exporting, mask.name, messages]);
 
-    const callCompletion = useCallback(async (payload: Array<{ role: string; content: string }>, settings?: Partial<StoryGenerationSettings>, onPromptTokens?: (tokens: number) => void): Promise<string> => {
+    const callCompletion = useCallback(async (
+        payload: Array<{ role: string; content: string }>,
+        settings?: Partial<StoryGenerationSettings>,
+        onPromptTokens?: (tokens: number) => void,
+        purpose = '剧情见面生成',
+    ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
             body: JSON.stringify({ model: apiConfig.model, messages: payload, stream: false, ...generationSettings }),
-            __sullyMeta: { appId: 'date', appName: '见面', purpose: '剧情见面生成' },
-        } as RequestInit & { __sullyMeta: { appId: string; appName: string; purpose: string } });
+            __sullyMeta: { appId: 'date', appName: '见面', ...theaterCharMeta, purpose },
+        } as RequestInit);
         const data = await safeResponseJson(response);
         if (!response.ok) throw new Error(describeStoryApiError(response.status, data));
         const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
@@ -634,7 +645,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const content = extractContent(data).trim();
         if (!content) throw new Error(describeEmptyStoryCompletion(data));
         return content;
-    }, [apiConfig, entry.omitSamplingParams]);
+    }, [apiConfig, entry.omitSamplingParams, theaterCharMeta]);
 
     const buildActorContexts = useCallback(async (
         actors: CharacterProfile[], query: string, currentStoryMessages: readonly Message[],
@@ -742,7 +753,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
             if (entry.archiveStrategy === 'summary') {
                 setMemoryStatus(`正在把 ${batch.length} 条正文压成事件盒……`);
-                summary = await generateStoryArchiveSummary(entry.title, batch, apiConfig);
+                summary = await generateStoryArchiveSummary(entry.title, batch, apiConfig, theaterCharMeta);
             } else {
                 const embedding = memoryPalaceConfig.embedding;
                 const light = memoryPalaceConfig.lightLLM?.baseUrl ? memoryPalaceConfig.lightLLM : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };
@@ -782,7 +793,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             archiveLock.current = false;
             setMemoryStatus('');
         }
-    }, [addToast, apiConfig, castEnabled, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
+    }, [addToast, apiConfig, castEnabled, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, theaterCharMeta, threadId]);
 
     const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
         if (sendLock.current || turnEditLock.current || (!canStart && continueRequested) || (rerollTarget && memoryRuns.current > 0)) return;
@@ -996,12 +1007,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setContextTokensExact(false);
             setRequestPreview(formatStoryRequestPreview(payload, compiled.origins, [apiConfig.apiKey,
                 memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey]));
-            const generated = await callCompletion(payload, compiled.settings, reported => {
-                promptTokenCount = reported;
-                promptTokenCountExact = true;
-                setContextTokens(reported);
-                setContextTokensExact(true);
-            });
+            const generated = await callCompletion(
+                payload,
+                compiled.settings,
+                reported => {
+                    promptTokenCount = reported;
+                    promptTokenCountExact = true;
+                    setContextTokens(reported);
+                    setContextTokensExact(true);
+                },
+                isReroll ? '重随剧情见面' : assistantOpening ? '剧情见面开场' : '剧情见面生成',
+            );
             const reportedOutOfStory = parseOutOfStoryReply(generated);
             const outOfStoryBody = reportedOutOfStory === undefined ? undefined : stripStoryRelationshipPanels(reportedOutOfStory);
             const outOfStory = outOfStoryBody !== undefined;
