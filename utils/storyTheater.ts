@@ -1140,23 +1140,6 @@ export function formatStoryRequestPreview(payload: readonly StoryApiMessage[], o
     }).map(redact).join('\n\n');
 }
 
-function relationshipPromptAtSend(prompt: StoryTheaterPresetPrompt, mode?: 'axes' | 'skip'): string | undefined {
-    if (!mode) return undefined;
-    const { id, content } = prompt;
-    // The three-axis prompt now lives in the editable preset itself.
-    // Out-of-story replies omit the relationship panel without rewriting user prompt text.
-    if (id === STORY_RELATIONSHIP_PROMPT_ID) return mode === 'skip' ? '' : undefined;
-    const native = nativePromptById.get(id);
-    const original = rawPromptById.get(id);
-    if (content !== native?.content && content !== original?.content) return undefined;
-    if (id === 'nmj-v65-affinity-opaque' || id === 'nmj-v65-affinity-transparent') return '';
-    const adjusted = (content === native?.content ? nativePromptById : previousRawById).get(id)?.content;
-    if (adjusted && (id === 'nmj-v616-silent-preflight' || id === 'nmj-v3-exit-check' || id === 'nmj-v3-scene-header')) {
-        return mode === 'skip' ? adjusted.replace('6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。', '6. 场外回复省略关系侧表。') : adjusted;
-    }
-    return undefined;
-}
-
 export const compileStoryPreset = (input: {
     preset?: StoryTheaterPreset | null;
     slots: StoryPromptSlots;
@@ -1203,10 +1186,11 @@ export const compileStoryPreset = (input: {
         if (!prompt.enabled || prompt.section) continue;
         if (prompt.scope === 'story_theater' && !input.storyTheaterMode) continue;
         if (prompt.scope === 'story_theater_story' && input.storyTheaterMode !== 'story') continue;
+        // Relationship rules are authored in the preset; out-of-story turns only skip their panel.
+        if (input.relationshipMode === 'skip' && prompt.id === STORY_RELATIONSHIP_PROMPT_ID) continue;
         const defaultOutOfStory = input.storyTheaterMode === 'out_of_story' && prompt.id === 'nmj-v67-theater-output'
             && prompt.content === nativePromptById.get(prompt.id)?.content;
-        const runtimeReplacement = defaultOutOfStory ? '只输出 <out_of_story>正文</out_of_story>。' : relationshipPromptAtSend(prompt, input.relationshipMode);
-        let raw = runtimeReplacement ?? prompt.content;
+        let raw = defaultOutOfStory ? '只输出 <out_of_story>正文</out_of_story>。' : prompt.content;
         if (prompt.marker) {
             if (injectedMarkers.has(prompt.marker)) continue;
             injectedMarkers.add(prompt.marker);
