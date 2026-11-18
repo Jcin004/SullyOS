@@ -241,7 +241,7 @@ describe('糯米机原生剧情预设边界', () => {
                 prompts: [
                     ...BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id === legacyControl.id
                         ? { ...prompt, name: legacyControl.name, content: legacyControl.content, enabled: false } : prompt),
-                    legacyOpaque,
+                    { ...legacyOpaque, role: 'system' as const },
                 ],
             },
         };
