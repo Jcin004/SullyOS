@@ -214,6 +214,30 @@ describe('糯米机原生剧情预设边界', () => {
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
 
+    it('不再按旧预设原文临时替换提示词，场外仍不发送三轴面板', () => {
+        const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
+        const replaced = ['nmj-v616-silent-preflight', 'nmj-v3-exit-check', 'nmj-v3-scene-header'];
+        const custom = {
+            ...BUILTIN_NIGHT_SCREENING_PRESET,
+            document: { ...document, prompts: document.prompts.map(prompt => {
+                if (replaced.includes(prompt.id)) return { ...prompt, content: '自定义规则：' + prompt.id };
+                if (prompt.id === 'nmj-v65-affinity-control') return { ...prompt, content: '自定义三轴关系规则' };
+                return prompt;
+            }) },
+        };
+        const args = { preset: custom, userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } };
+        const story = compileStoryPreset({ ...args, storyTheaterMode: 'story', relationshipMode: 'axes' });
+        const storyText = story.messages.map(message => message.content);
+        for (const id of replaced) expect(storyText).toContain('自定义规则：' + id);
+        expect(storyText).toContain('自定义三轴关系规则');
+        const outside = compileStoryPreset({ ...args, storyTheaterMode: 'out_of_story', relationshipMode: 'skip' });
+        const outsideText = outside.messages.map(message => message.content);
+        expect(outsideText).not.toContain('自定义三轴关系规则');
+        for (const id of replaced) expect(outsideText).toContain('自定义规则：' + id);
+        expect(outsideText).toContain('只输出 <out_of_story>正文</out_of_story>。');
+    });
+
     it('内置预设覆盖保留用户的正文、顺序和开关', () => {
         const legacyOverride = {
             ...BUILTIN_NIGHT_SCREENING_PRESET.document,
