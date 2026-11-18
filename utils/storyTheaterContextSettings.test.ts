@@ -9,7 +9,7 @@ import { createStoryTheaterDraft, normalizeStoryTheater } from './storyTheater';
 vi.mock('../components/os/TokenImg', () => ({ default: () => null }));
 vi.mock('./db', () => ({ DB: { getMessagesByCharId: async () => [] } }));
 
-it('真实剧情可以把单个角色设为 0，移除再加入或保存重开后仍为 0', async () => {
+it('移除逐角色原文和时间控件，旧字段在保存重开后保留且不恢复人数限制', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const container = document.createElement('div');
     document.body.append(container);
@@ -46,26 +46,26 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
         await act(async () => { button!.click(); });
     };
     try {
-        await open({
+        const legacy = {
             ...createStoryTheaterDraft(),
             title: '真实剧情',
             characterIds: ['a', 'b'],
             castLimits: { minGroups: 1, maxGroups: 3, minPeople: 99, maxPeople: 1 },
             writesToCharacterMemory: true,
             carryCharacterMemory: true,
-        }, 'initial');
-        expect(inputFor('角色甲')?.value).toBe('100');
-        const input = inputFor('角色乙')!;
-        expect(input.min).toBe('0');
-        await act(async () => {
-            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '0');
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-        expect(inputFor('角色乙')?.value).toBe('0');
+            characterContextLimits: { a: 2, b: 0 },
+            characterMemoryDates: { a: '2020-01-02T03:04' },
+        };
+        await open(legacy, 'initial');
+        expect(inputFor('角色甲')).toBeUndefined();
+        expect(inputFor('角色乙')).toBeUndefined();
+        expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+        expect(container.textContent).not.toContain('初始剧情时间');
+        expect(container.textContent).toContain('按各自实际发送的时间记录，无需设置日期');
         await click('角色乙');
         expect(inputFor('角色乙')).toBeUndefined();
         await click('角色乙');
-        expect(inputFor('角色乙')?.value).toBe('0');
+        expect(inputFor('角色乙')).toBeUndefined();
         const castInput = (label: string) => Array.from(container.querySelectorAll('label'))
             .find(node => node.textContent?.startsWith(label))?.querySelector('input[type="number"]') as HTMLInputElement;
         const setCastLimit = async (label: string, value: string) => {
@@ -86,13 +86,18 @@ it('真实剧情可以把单个角色设为 0，移除再加入或保存重开�
         await setCastLimit('最多交流倾向组数', '8');
         await click('保存并进入');
         const saved = onSave.mock.calls[0][0];
-        expect(saved.characterContextLimits.b).toBe(0);
-        expect(saved.castLimits).toMatchObject({ minGroups: 2, maxGroups: 8 });
+        expect(saved.characterContextLimits).toEqual(legacy.characterContextLimits);
+        expect(saved.characterMemoryDates).toEqual(legacy.characterMemoryDates);
+        expect(saved.castLimits).toEqual({ minGroups: 2, maxGroups: 8 });
+        expect(legacy.castLimits).toEqual({ minGroups: 1, maxGroups: 3, minPeople: 99, maxPeople: 1 });
         await open(normalizeStoryTheater(saved), 'reopen');
-        expect(inputFor('角色乙')?.value).toBe('0');
-        expect(inputFor('角色甲')?.value).toBe('100');
+        expect(inputFor('角色乙')).toBeUndefined();
+        expect(inputFor('角色甲')).toBeUndefined();
         expect(castInput('最少交流倾向组数').value).toBe('2');
         expect(castInput('每轮最多出演人数')).toBeUndefined();
+        await open({ ...saved, writesToCharacterMemory: false, carryCharacterMemory: true }, 'fiction');
+        expect(inputFor('角色甲')).toBeUndefined();
+        expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
     } finally {
         await act(async () => { root.unmount(); });
         container.remove();

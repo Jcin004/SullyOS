@@ -57,7 +57,10 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         .mockResolvedValueOnce(new Response('{}', { status: 503 }))
         .mockResolvedValueOnce(reply('<story_text>越界回复</story_text>', [['unknown']]))
         .mockResolvedValueOnce(reply('<story_text>第一幕暗号：修表交给我。</story_text><scene_header><time>2026-04-13 09:00</time></scene_header>', [[a.id, c.id]]))
-        .mockResolvedValueOnce(reply('<story_text>演员 c 自己整理行李。演员 b 沉默地坐在门边。</story_text><scene_header><time>3天后</time></scene_header>', [[b.id], [c.id]]))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content:
+            '<story_text>演员 c 自己整理行李。演员 b 沉默地坐在门边。</story_text><scene_header><time>3天后</time></scene_header>'
+            + '<turn_cast>' + JSON.stringify([b.id, c.id]) + '</turn_cast>' + privateAxes([b.id, c.id]),
+        } }] })))
         .mockResolvedValueOnce(reply('<story_text>演员 c 独自收拾旧信。演员 a 在楼上修钟。</story_text><scene_header><time>5天后</time></scene_header>', [[a.id], [c.id]]))
         .mockResolvedValueOnce(reply('<story_text>另一个剧场。</story_text>', [[a.id]]))
         .mockResolvedValueOnce(reply('<out_of_story>可以把旧信留到下一幕揭晓。</out_of_story>'))
@@ -70,7 +73,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     const root = createRoot(container);
     let entry: StoryTheaterEntry = {
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
-        characterIds: actors.map(actor => actor.id), castLimits: { minGroups: 1, maxGroups: 1, minPeople: 99, maxPeople: 1 }, writesToCharacterMemory: true, carryCharacterMemory: true,
+        characterIds: actors.map(actor => actor.id), castLimits: { minGroups: 1, maxGroups: 1 }, writesToCharacterMemory: true, carryCharacterMemory: true,
+        characterContextLimits: Object.fromEntries(actors.map(actor => [actor.id, 0])),
         selectedWorldbookIds: ['test-worldbook'],
         characterMemoryDates: { [a.id]: '2026-04-10T09:00', [b.id]: '2026-04-11T09:00', [c.id]: '2026-04-10T09:00' },
     };
@@ -357,7 +361,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
 
         entry = {
             ...entry, id: 'cast-fallback-session', castModeEnabled: true,
-            castLimits: { minGroups: 99, maxGroups: 99, minPeople: 1, maxPeople: 1 },
+            castLimits: { minGroups: 99, maxGroups: 99 },
         };
         preset.document = {
             ...preset.document,

@@ -56,6 +56,9 @@ describe('剧情自定义大区', () => {
         expect(contents.join('\n')).toContain('背景角色B');
         expect(contents.join('\n')).toContain('<scene_header>');
         expect(contents[outputIndex]).toMatch(/完整正文[\s\S]*<turn_cast>[\s\S]*<interaction_result>[\s\S]*<private_axes>/);
+        expect(contents[outputIndex]).toContain('可省略的事后记录');
+        expect(contents[recordIndex]).toContain('不为填写记录制造互动');
+        expect(contents[recordIndex]).toContain('不影响剧情生成');
         const outOfStory = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: [],
             slots: { actors: '', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
@@ -123,6 +126,22 @@ describe('剧情自定义大区', () => {
         const preserved = parseStoryTheaterPreset(JSON.stringify(edited), 'edited-theater.json');
         expect(preserved.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content)
             .toBe('用户亲自修改的出演名单规则。');
+    });
+
+    it('迁移上一版互动默认文案为可省略协议，保留用户自定义文案', () => {
+        const previous = {
+            'nmj-v67-theater-output': '剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、<interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。场外只输出 <out_of_story>正文</out_of_story>。',
+            'nmj-v67-theater-interaction-record': '按正文中实际发生的直接交谈或有针对性的实际互动分组，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计；无互动写 []。',
+        };
+        for (const custom of [false, true]) {
+            const old = { ...BUILTIN_NIGHT_SCREENING_PRESET.document, prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt =>
+                prompt.id in previous ? { ...prompt, content: custom ? '用户的互动记录规则。' : previous[prompt.id as keyof typeof previous] } : prompt) };
+            const migrated = parseStoryTheaterPreset(JSON.stringify(old), 'previous.json');
+            for (const id of Object.keys(previous)) {
+                expect(migrated.document.prompts.find(prompt => prompt.id === id)?.content)
+                    .toBe(custom ? '用户的互动记录规则。' : BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(prompt => prompt.id === id)?.content);
+            }
+        }
     });
 
     it('保留内置区的保护规则，不允许把系统连接位移出或将普通条目移入', () => {

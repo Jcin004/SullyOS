@@ -195,10 +195,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                 : current.characterIds;
             const remainingActors = characters.filter(char => characterIds.includes(char.id) || (selection.type === 'character' && selection.id === char.id));
             const validBookIds = new Set(dedupeTheaterWorldbooks(remainingActors).map(book => book.id));
-            const characterContextLimits = { ...current.characterContextLimits };
-            if (selection.type === 'character') {
-                if (characterContextLimits[selection.id] === undefined) characterContextLimits[selection.id] = 100;
-            }
             return {
                 ...current,
                 mask: selection,
@@ -208,7 +204,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                     ...(selection.type === 'character' && (current.mask?.type !== 'character' || current.mask.id !== selection.id)
                         ? (characters.find(char => char.id === selection.id)?.mountedWorldbooks || []).map(book => book.id) : []),
                 ])),
-                characterContextLimits,
                 updatedAt: Date.now(),
             };
         });

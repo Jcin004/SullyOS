@@ -4,15 +4,13 @@ export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolS
     return {
         minGroups: value?.minGroups ?? 1,
         maxGroups: value?.maxGroups ?? Math.max(1, Math.min(12, maximumTendencyGroups(poolSize))),
-        minPeople: value?.minPeople ?? (poolSize > 1 ? 2 : 1),
-        maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
 }
 
 export function validStoryCastLimits(limits: StoryCastLimits): boolean {
-    const { minGroups, maxGroups, minPeople, maxPeople } = limits;
-    return [minGroups, maxGroups, minPeople, maxPeople].every(value => Number.isSafeInteger(value) && value > 0)
-        && minGroups <= maxGroups && minPeople <= maxPeople;
+    const { minGroups, maxGroups } = limits;
+    return [minGroups, maxGroups].every(value => Number.isSafeInteger(value) && value > 0)
+        && minGroups <= maxGroups;
 }
 
 function maximumInteractionGroups(size: number): number {
@@ -20,13 +18,17 @@ function maximumInteractionGroups(size: number): number {
     return size > 52 ? Number.MAX_SAFE_INTEGER : 2 ** size - 1;
 }
 
-function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
+interface StorySamplingLimits extends StoryCastLimits {
+    minActors: number;
+    maxActors: number;
+}
+
+function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StorySamplingLimits | undefined {
     if (!validStoryCastLimits(limits) || poolSize < 1) return undefined;
-    const maxPeople = Math.min(poolSize, limits.maxPeople);
-    let minPeople = Math.max(limits.minPeople, 1);
-    while (minPeople <= maxPeople && maximumInteractionGroups(minPeople) < limits.minGroups) minPeople++;
-    if (minPeople > maxPeople) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, maximumInteractionGroups(maxPeople)) };
+    let minActors = Math.min(2, poolSize);
+    while (minActors <= poolSize && maximumInteractionGroups(minActors) < limits.minGroups) minActors++;
+    if (minActors > poolSize) return undefined;
+    return { ...limits, minActors, maxActors: poolSize, maxGroups: Math.min(limits.maxGroups, maximumInteractionGroups(poolSize)) };
 }
 
 const groupKey = (group: readonly string[]) => JSON.stringify([...group].sort());
@@ -145,7 +147,7 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
     let bestScore = -1;
 
     for (let sample = 0; sample < 24; sample++) {
-        const size = pick(range.minPeople, range.maxPeople);
+        const size = pick(range.minActors, range.maxActors);
         if (maximumInteractionGroups(size) < range.minGroups) continue;
         const count = pick(range.minGroups, Math.min(range.maxGroups, maximumInteractionGroups(size)));
         const selected = candidates.map(id => ({ id, rank: -Math.log(Math.max(1e-12, 1 - random())) * (1 + (people.get(id) ?? 0)) }))
@@ -235,15 +237,14 @@ function maximumTendencyGroups(size: number): number {
     return size + choose2 + choose3 + choose4;
 }
 
-function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
+function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): StorySamplingLimits | undefined {
     if (!validStoryCastLimits(limits) || poolSize < 1) return undefined;
-    const maxPeople = Math.min(poolSize, limits.maxPeople);
-    let minPeople = Math.max(1, limits.minPeople);
-    while (minPeople <= maxPeople && maximumTendencyGroups(minPeople) < limits.minGroups) minPeople++;
-    if (minPeople > maxPeople) return undefined;
-    const maxGroups = Math.min(limits.maxGroups, maximumTendencyGroups(maxPeople));
+    let minActors = Math.min(2, poolSize);
+    while (minActors <= poolSize && maximumTendencyGroups(minActors) < limits.minGroups) minActors++;
+    if (minActors > poolSize) return undefined;
+    const maxGroups = Math.min(limits.maxGroups, maximumTendencyGroups(poolSize));
     if (limits.minGroups > maxGroups) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups };
+    return { ...limits, minActors, maxActors: poolSize, maxGroups };
 }
 
 export function canDrawStoryInteractionPlan(poolSize: number, limits: StoryCastLimits): boolean {
@@ -305,7 +306,7 @@ export function drawStoryInteractionPlan(
     });
 
     const pickInt = (min: number, max: number) => min + Math.floor(Math.min(0.999999999, Math.max(0, random())) * (max - min + 1));
-    const size = pickInt(range.minPeople, range.maxPeople);
+    const size = pickInt(range.minActors, range.maxActors);
     const castIds = candidates.map(id => {
         const weight = id === primaryActorId ? 1 : 1 / (1 + (appearances.get(id) ?? 0) * 0.75);
         const rank = -Math.log(Math.max(1e-12, random())) / weight;

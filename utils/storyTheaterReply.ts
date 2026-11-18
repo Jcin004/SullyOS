@@ -25,17 +25,15 @@ export async function loadStoryMirrorTimeline(
 export async function loadStoryActorContext(
     char: CharacterProfile,
     theaterId: string,
-    limit: number,
     currentStoryMessages: readonly Message[] = [],
 ): Promise<Message[]> {
-    if (limit <= 0) return [];
     const currentMirrors = new Set(currentStoryMessages.map(message => {
         const mirrorIds = message.metadata?.theaterMirrorIds as Record<string, number> | undefined;
         return Number(mirrorIds?.[char.id]);
     }));
     const messages = await loadCharacterContextMessages(char);
     return messages.filter(message => !currentMirrors.has(message.id)
-        && !(message.metadata?.source === 'story_theater_memory' && message.metadata?.theaterId === theaterId)).slice(-limit);
+        && !(message.metadata?.source === 'story_theater_memory' && message.metadata?.theaterId === theaterId));
 }
 
 export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故事落点重新写这一轮，换一个合理的切入角度、对白和细节展开；保留已确立的事实和用户输入，不把这次操作写进故事，不把尚未发生的旧版本当作既定经历。';

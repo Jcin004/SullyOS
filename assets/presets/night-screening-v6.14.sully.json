@@ -218,7 +218,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater",
-                        "content": "剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、<interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。场外只输出 <out_of_story>正文</out_of_story>。"
+                        "content": "剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、可省略的事后记录 <interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。无互动时可省略互动记录或写 []，照常生成正文。场外只输出 <out_of_story>正文</out_of_story>。"
                     },
                     {
                         "id": "nmj-v67-theater-interaction-record",
@@ -226,7 +226,7 @@
                         "enabled": true,
                         "role": "system",
                         "scope": "story_theater_story",
-                        "content": "按正文中实际发生的直接交谈或有针对性的实际互动分组，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计；无互动写 []。"
+                        "content": "正文完成后，可用 <interaction_result> 记录实际发生的直接交谈或有针对性的实际互动，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计。此记录可省略，无互动时也可写 []；不影响剧情生成，不为填写记录制造互动。"
                     },
                     {
                         "id": "nmj-v67-theater-private-axes",

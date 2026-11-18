@@ -36,7 +36,6 @@ import {
     formatStoryRequestPreview,
     getActiveStoryMiniTheaterPrompt,
     getPendingStoryRetryInput,
-    getStoryCharacterContextLimit,
     isStoryUserLastCompatibilityError,
     makeStoryTheaterId,
     makeStoryTheaterFileName,
@@ -645,8 +644,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const allBookIds = new Set(actors.flatMap(actor => (actor.mountedWorldbooks || []).map(book => book.id)));
         const contexts: { actor: CharacterProfile; core: string; recent: Message[] }[] = [];
         for (const actor of actors) {
-            const limit = getStoryCharacterContextLimit(entry.characterContextLimits[actor.id]);
-            const recent = await loadStoryActorContext(actor, entry.id, limit, currentStoryMessages);
+            const recent = await loadStoryActorContext(actor, entry.id, currentStoryMessages);
             let recalled = '';
             const embedding = memoryPalaceConfig.embedding;
             if (actor.memoryPalaceEnabled && embedding?.baseUrl && embedding?.apiKey) {
@@ -665,14 +663,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             contexts.push({ actor, core, recent });
         }
         return formatStoryActorContexts(contexts, userProfile.name, mask.name, entry.writesToCharacterMemory);
-    }, [entry.id, entry.carryCharacterMemory, entry.characterContextLimits, entry.writesToCharacterMemory, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
+    }, [entry.id, entry.carryCharacterMemory, entry.writesToCharacterMemory, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
 
     const buildMaskMemoryContext = useCallback(async (query: string): Promise<string> => {
         if (!entry.carryCharacterMemory || !mask.characterId) return '';
         const maskCharacter = characters.find(char => char.id === mask.characterId);
         if (!maskCharacter) return '';
-        const limit = getStoryCharacterContextLimit(entry.characterContextLimits[maskCharacter.id]);
-        const recent = await loadStoryActorContext(maskCharacter, entry.id, limit);
+        const recent = await loadStoryActorContext(maskCharacter, entry.id);
         let recalled = '';
         const embedding = memoryPalaceConfig.embedding;
         if (maskCharacter.memoryPalaceEnabled && embedding?.baseUrl && embedding?.apiKey) {
@@ -689,7 +686,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             headerOverride: `[你当前身份的既有记忆：${maskCharacter.name}]`,
         }, { skipTimeAwareness: true }));
         return `${core}\n${formatActorRecentMessages(maskCharacter, recent, userProfile.name, mask.name)}`.trim();
-    }, [actors, characters, entry.id, entry.carryCharacterMemory, entry.characterContextLimits, entry.writesToCharacterMemory, mask.characterId, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
+    }, [actors, characters, entry.id, entry.carryCharacterMemory, entry.writesToCharacterMemory, mask.characterId, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
 
     const independentRecall = useCallback(async (query: string, recent: Message[], activeEntry: StoryTheaterEntry = entry): Promise<string> => {
         if (activeEntry.writesToCharacterMemory || !activeEntry.archives.some(archive => archive.strategy === 'vector')) return '';

@@ -2289,9 +2289,6 @@ export interface StoryCastLimits {
     /** 每轮随机生成的交流倾向组数范围。 */
     minGroups: number;
     maxGroups: number;
-    /** 每轮代码预先抽取的出演人数范围。 */
-    minPeople: number;
-    maxPeople: number;
 }
 
 /**
@@ -2313,11 +2310,11 @@ export interface StoryTheaterEntry {
     castModeEnabled?: boolean;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
     writesToCharacterMemory: boolean;
-    /** 每位演员各自的剧情时间锚点（datetime-local 字符串），允许跨时区/跨世界线。 */
+    /** 旧存档的剧情时间锚点，仅用于续接既有时间线，不再提供设置入口。 */
     characterMemoryDates: Record<string, string>;
     /** 虚构剧场的记忆输入开关；真实陪伴固定为 true。 */
     carryCharacterMemory: boolean;
-    /** 携带记忆时，每位演员附带的最近原文条数，默认 100。 */
+    /** 旧存档字段，仅保留备份往返；读取范围由角色原有上下文设置决定。 */
     characterContextLimits: Record<string, number>;
     /** 独立剧场累计多少条未归档正文后触发归档。 */
     archiveAfter: number;
