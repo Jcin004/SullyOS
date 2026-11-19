@@ -40,7 +40,7 @@ export interface StoryRelationshipPanel {
 
 export const STORY_RELATIONSHIP_PROMPT = [
     '主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。',
-    'FL 关系联结：信任、默契、熟悉、共同经历。可靠的陪伴、理解和合作可加深联结，失信、排斥和不适可削弱联结，依据具体相处缓慢变化。',
+    'FL 关系联结：信任、默契、熟悉、共同经历。首次记录依据双方各自的角色卡、既有关系和共同经历确定初值。后续依据陪伴、理解、合作、失信、排斥等具体相处事实缓慢变化。',
     'RI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。',
     'DI 失序扰动：具体事件让情绪、注意力或行动节奏偏移，如冒犯、挑衅、胜负、尴尬、惊讶或社交压力。普通好奇不计入。事件仍造成扰动时记 active，结束当轮记 ended；没有扰动事件则省略 phase 和 strength，由程序回落。',
     '结合双方各自的人格七维、认知和亲历事实判断吸引来源是否影响注意和具体轴：',
@@ -258,9 +258,9 @@ export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, u
         useActualCast
             ? '仅在主要角色列入 <turn_cast> 时输出面板；双方都出演才写这对关系的两个方向。主要角色独处可只写自我记录。'
             : '主要角色在正文中出场时可写自我记录；双方都出场才写这对关系的两个方向。',
-        '沿用下方各方向基线：已有轴填 delta；首次填 score，缺少依据填 0。变化写 trigger（事件）和 evidence（人物反应）。DI 有扰动时写 phase（active / ended）和 strength（mild / moderate / strong）。',
+        '沿用下方各方向基线：已有轴填 delta；首次填 score。FL 初值依据角色卡、既有关系和共同经历评估。trigger 写本次评分依据的关系事实或事件，evidence 写人物的具体表现；缺少依据填 0。DI 有扰动时写 phase（active / ended）和 strength（mild / moderate / strong）。',
         '格式：<affinity_panel mode="three_axes"><primary_id>' + xml(baseline.primaryId) + '</primary_id><state_note>主要角色的新理解或选择代价（可选）</state_note>',
-        ...(example ? ['<affinity_person><from_id>' + xml(example.fromId) + '</from_id><to_id>' + xml(example.toId) + '</to_id><FL><score>0</score></FL><RI><delta>0</delta></RI><DI><delta>0</delta></DI><relation_note>关系天气</relation_note><relation_fragment>本轮事实碎片（可选）</relation_fragment></affinity_person>'] : []),
+        ...(example ? ['<affinity_person><from_id>' + xml(example.fromId) + '</from_id><to_id>' + xml(example.toId) + '</to_id><FL><score>0</score><trigger>关系事实</trigger><evidence>人物具体表现</evidence></FL><RI><delta>0</delta></RI><DI><delta>0</delta></DI><relation_note>关系天气</relation_note><relation_fragment>本轮事实碎片（可选）</relation_fragment></affinity_person>'] : []),
         '</affinity_panel>',
         '方向基线：' + encodePanel(baseline),
     ].join('\n');
