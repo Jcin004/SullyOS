@@ -3,7 +3,7 @@ import type { Message } from '../types';
 import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks } from './storyTheater';
 import {
     buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
-    stripStoryRelationshipPanels,
+    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT,
 } from './storyTheaterRelationships';
 
 const a = { id: 'a', name: '林星' };
@@ -27,6 +27,19 @@ const baseline = (rows: Message[] = [], primary = a) => getStoryRelationshipBase
 const pair = (fromId: string, toId: string, axes: object) => ({ fromId, toId, axes });
 
 describe('剧场双向关系三轴', () => {
+    it('FL 初始评分依据既有关系，并在动态协议中要求事实与表现', () => {
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('首次记录依据双方各自的角色卡、既有关系和共同经历确定初值');
+        const guide = buildStoryRelationshipGuide(baseline());
+        expect(guide).toContain('FL 初值依据角色卡、既有关系和共同经历评估');
+        expect(guide).toContain('trigger 写本次评分依据的关系事实或事件，evidence 写人物的具体表现');
+        const initial = reconcileStoryRelationships(proposal(a.id, [
+            pair(a.id, b.id, { FL: { score: 74, trigger: '多年并肩学习', evidence: '相互熟悉并信赖对方的判断' } }),
+            pair(b.id, a.id, { FL: { score: 63, trigger: '多年并肩学习', evidence: '经常主动向对方求助' } }),
+        ]), baseline());
+        expect(snapshot(initial)?.relationships.find(row => row.fromId === a.id && row.toId === b.id)?.axes.FL?.score).toBe(74);
+        expect(snapshot(initial)?.relationships.find(row => row.fromId === b.id && row.toId === a.id)?.axes.FL?.score).toBe(63);
+    });
+
     it('分别依据每个方向的证据更新三轴，并校正越界值和错误绝对值', () => {
         const content = reconcileStoryRelationships(proposal(a.id, [
             pair(a.id, b.id, { FL: { score: 98, ...fact }, RI: { score: 20, ...fact }, DI: { score: 0 } }),
