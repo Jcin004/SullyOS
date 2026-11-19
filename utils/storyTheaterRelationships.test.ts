@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '../types';
 import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks, BUILTIN_NIGHT_SCREENING_PRESET, resolveStoryPresetDocument } from './storyTheater';
 import { buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
-    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
+    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 
 const a = { id: 'a', name: '狛治' }, b = { id: 'b', name: '香奈乎' }, c = { id: 'c', name: '狛治' };
 const actors = [a, b, c];
@@ -134,5 +134,8 @@ describe('按实际人物对的三轴关系', () => {
             .toMatchObject({ name: '我的关系规则', enabled: false, content: STORY_RELATIONSHIP_PROMPT });
         legacy.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!.content += '\n我自己改过';
         expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)?.content).toContain('我自己改过');
+        legacy.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!.content = LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT;
+        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID))
+            .toMatchObject({ name: '我的关系规则', enabled: false, content: STORY_RELATIONSHIP_PROMPT });
     });
 });

@@ -69,7 +69,8 @@ export function readStoryRelationshipHistory(
     };
 }
 
-const hasRelationshipPanel = (row: Message) => /<(?:affinity_panel|relationship_panel)\b/i.test(row.content);
+const hasRelationshipPanel = (row: Message) => /<(?:affinity_panel|relationship_panel)\b/i.test(row.content)
+    || (row.metadata?.theaterRealRelationshipProtocol === 1 && Boolean(row.metadata.theaterRealRelationshipEvent));
 
 export function checkStoryRelationshipGuard(history: StoryRelationshipHistory, guard: StoryRelationshipGuard): void {
     if (!history.exists || history.signature !== guard.signature) {

@@ -67,6 +67,8 @@ import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/a
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton } from './StoryTheaterTheme';
+import { buildRealRelationshipGuide, realRelationshipBaseline, realRelationshipGraphBefore, prepareRealRelationshipReply } from '../../../utils/realRelationshipModel';
+import { realRelationshipSignature } from '../../../utils/realRelationshipStore';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
     buildStoryContinueInstruction,
@@ -81,6 +83,7 @@ interface Props {
     onEdit: () => void;
     onOpenVectorMemory?: () => void;
     onOpenArchives?: () => void;
+    onOpenRelationships?: () => void;
     onEntryChange: (entry: StoryTheaterEntry) => Promise<void> | void;
 }
 
@@ -334,7 +337,7 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
     return reading ? <div><div className='meeting-prose'>{blocks.filter(block=>block.kind==='story').map((block,index)=><p key={index}>{block.text}</p>)}</div>{(blocks.some(block=>block.kind!=='story')||relationship)&&<details className='mt-5 text-slate-500'><summary className='cursor-pointer text-xs py-2'>场景与补充</summary>{rendered}</details>}</div> : rendered;
 };
 
-const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onOpenArchives, onEntryChange }) => {
+const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onOpenArchives, onOpenRelationships, onEntryChange }) => {
     const { characters, userProfile, apiConfig, memoryPalaceConfig, remoteVectorConfig, addToast } = useOS();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)
@@ -877,12 +880,17 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
-            const relationshipHistory = relationshipsEnabled && !rerollOutOfStory ? await DB.getStoryRelationshipHistory(promptEntry) : undefined;
+            const storedRealGraph = relationshipsEnabled && promptEntry.writesToCharacterMemory && !rerollOutOfStory
+                ? await DB.getRealRelationshipGraph() : undefined;
+            const realGraph = storedRealGraph ? realRelationshipGraphBefore(storedRealGraph, rerollTarget?.id) : undefined;
+            const relationshipHistory = relationshipsEnabled && !promptEntry.writesToCharacterMemory && !rerollOutOfStory
+                ? await DB.getStoryRelationshipHistory(promptEntry) : undefined;
             if (relationshipHistory && !relationshipHistory.exists) throw new Error('剧场已变更或删除，请重新打开后重试');
-            const relationshipBaseline = relationshipHistory ? getStoryRelationshipBaseline(
+            const relationshipBaseline = realGraph ? realRelationshipBaseline(realGraph, requestActors) : relationshipHistory ? getStoryRelationshipBaseline(
                 relationshipHistory.messages.filter(message => !rerollTarget || message.id < rerollTarget.id), requestActors,
             ) : undefined;
-            const relationshipGuard = relationshipHistory ? { entry: promptEntry, signature: relationshipHistory.signature } : undefined;
+            const relationshipGuard = storedRealGraph ? { entry: promptEntry, signature: realRelationshipSignature(storedRealGraph) }
+                : relationshipHistory ? { entry: promptEntry, signature: relationshipHistory.signature } : undefined;
             const unarchivedHistory = history.filter(message => !mirrorArchived(message, promptEntry));
             const visibleHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
                 ? limitFreeStoryHistory(unarchivedHistory, Math.max(2, entry.archiveAfter || 40))
@@ -972,7 +980,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(relationshipBaseline && !rerollOutOfStory ? [{ role: 'system' as const, content:
                         (promptEntry.writesToCharacterMemory ? '关系历史归属：真实世界，所有真实时间陪伴剧场共享。'
                             : '关系历史归属：本虚构剧场独立世界；角色携带记忆和共享档案不改变本世界分数。')
-                        + '\n' + buildStoryRelationshipGuide(relationshipBaseline, castTurn) }] : []),
+                        + '\n' + (realGraph ? buildRealRelationshipGuide(realGraph, requestActors) : buildStoryRelationshipGuide(relationshipBaseline, castTurn)) }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ];
@@ -1050,7 +1058,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 && (!castTurn || !hasNativeOpening);
             const rawContent = needsPrefill ? `${prefill}${body}` : body;
             const turnRelationships = castTurn ? restrictStoryRelationshipsToCast(relationshipBaseline, actualCast) : relationshipBaseline;
-            const content = relationshipsEnabled && !outOfStory
+            const realRelationshipReply = realGraph && !outOfStory ? prepareRealRelationshipReply(rawContent, realGraph, requestActors) : undefined;
+            const content = realRelationshipReply ? realRelationshipReply.content : relationshipsEnabled && !outOfStory
                 ? reconcileStoryRelationships(rawContent, turnRelationships)
                 : rawContent;
             const privateAxes = axes && Object.keys(axes).length ? axes : undefined;
@@ -1058,6 +1067,11 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
                 ...(relationshipHistory && !outOfStory ? { theaterRelationshipScope: relationshipHistory.scope } : {}),
+                ...(storedRealGraph && !outOfStory ? {
+                    theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
+                    theaterRealRelationshipEvent: realRelationshipReply?.payload
+                        ?? storedRealGraph.events.find(event => event.id === `story:${rerollTarget?.id}`),
+                } : {}),
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
                     theaterCastIds: castIds,
@@ -1134,6 +1148,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='min-w-0 flex-1'><div className='text-[9px] tracking-[.24em] uppercase font-bold text-violet-500'>Story theater</div><h1 className='font-serif font-semibold truncate'>{entry.title}</h1></div>
                 {onOpenArchives && <button disabled={sending||!!memoryStatus} onClick={onOpenArchives} className='w-9 h-9 rounded-full grid place-items-center text-violet-600 disabled:opacity-30' title='查看事件盒与转化记忆' aria-label='查看事件盒与转化记忆'><Archive size={18} /></button>}
                 {onOpenVectorMemory && <button onClick={onOpenVectorMemory} className='w-9 h-9 rounded-full grid place-items-center text-violet-600' title='本剧情向量记忆' aria-label='本剧情向量记忆'><Database size={18} /></button>}
+                {entry.writesToCharacterMemory && onOpenRelationships && <button disabled={sending} onClick={onOpenRelationships} aria-label='真实世界人物关系网' className='grid h-9 w-9 place-items-center rounded-full text-violet-600 disabled:opacity-30'><HeartStraight size={18} /></button>}
                 <button disabled={exporting || messages.length === 0} onClick={() => void exportStory()} className='w-9 h-9 rounded-full grid place-items-center text-violet-600 disabled:opacity-30' title='导出全部剧情原文' aria-label='导出全部剧情原文'>{exporting ? <SpinnerGap size={18} className='animate-spin' /> : <DownloadSimple size={18} />}</button>
                 <StoryAppearanceButton />
                 <button disabled={sending || !!memoryStatus} onClick={() => { if (!sendLock.current && !archiveLock.current) onEdit(); }} className='w-9 h-9 rounded-full grid place-items-center'><GearSix size={19} /></button>

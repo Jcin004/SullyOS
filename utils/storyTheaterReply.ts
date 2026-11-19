@@ -3,7 +3,8 @@ import { DB, openDB } from './db';
 import { loadCharacterContextMessages } from './chatContextRange';
 import { storyTimelineTimestampForCharacter } from './storyTheater';
 import { readStoryRelationshipHistory, checkStoryRelationshipGuard, type StoryRelationshipGuard } from './storyRelationshipHistory';
-import { stripStoryRelationshipPanels } from './storyTheaterRelationships';
+import { stripStoryRelationshipPanels, storyTheaterMirrorContent } from './storyTheaterRelationships';
+import { syncRealRelationshipMessage, checkRealRelationshipGuard, realRelationshipTransactionError } from './realRelationshipStore';
 
 export async function loadStoryMirrorTimeline(
     entry: StoryTheaterEntry, actorId: string, newestFirst: readonly Message[],
@@ -51,18 +52,19 @@ export async function replaceStoryTheaterReply(
     const ids = [...new Set([original.id, ...mirrorIds])];
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const transaction = db.transaction(['messages', 'story_theaters'], 'readwrite');
+        const transaction = db.transaction(['messages', 'story_theaters', 'assets'], 'readwrite');
         const store = transaction.objectStore('messages');
         let failure: Error | undefined;
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
-        transaction.onabort = () => reject(failure || transaction.error || new Error('重写保存失败，原回复已保留'));
+        transaction.onabort = () => reject(failure || realRelationshipTransactionError(transaction) || new Error('重写保存失败，原回复已保留'));
         const replace = () => {
             for (const id of ids) {
                 const request = store.get(id);
                 request.onsuccess = () => {
                     const current = request.result as Message | undefined;
-                    if (!current || current.content !== original.content || (id === original.id
+                    const expected = id === original.id ? original.content : storyTheaterMirrorContent(original);
+                    if (!current || current.content !== expected || (id === original.id
                         && current.metadata?.theaterInputRevision !== original.metadata?.theaterInputRevision)) {
                         failure = new Error('这条回复已被修改或删除，请刷新后重试');
                         transaction.abort();
@@ -72,7 +74,9 @@ export async function replaceStoryTheaterReply(
                         : timelineByActor?.has(current.charId) && current.metadata?.source === 'story_theater_memory'
                             ? { ...current.metadata, theaterTimelineTimestamp: timelineByActor.get(current.charId) }
                             : current.metadata;
-                    store.put({ ...current, content, metadata: nextMetadata });
+                    const nextContent = id === original.id ? content : storyTheaterMirrorContent({ ...original, content, metadata: { ...original.metadata, ...metadata } });
+                    const updated = { ...current, content: nextContent, metadata: nextMetadata };
+                    store.put(updated).onsuccess = () => syncRealRelationshipMessage(transaction, updated);
                 };
             }
         };
@@ -90,7 +94,10 @@ export async function replaceStoryTheaterReply(
                 replace();
             };
         };
-        if (relationshipGuard) readStoryRelationshipHistory(transaction, relationshipGuard.entry, history => {
+        if (relationshipGuard?.signature.startsWith('real-graph:')) {
+            if (metadata.theaterRelationshipScope !== 'real') { failure = new Error('真实关系归属不匹配'); transaction.abort(); return; }
+            checkRealRelationshipGuard(transaction, relationshipGuard.entry, relationshipGuard.signature, commit);
+        } else if (relationshipGuard) readStoryRelationshipHistory(transaction, relationshipGuard.entry, history => {
             try {
                 checkStoryRelationshipGuard(history, relationshipGuard);
                 if (original.metadata?.theaterId !== relationshipGuard.entry.id

@@ -6,6 +6,7 @@ import { stripBackupImages } from './backupExport';
 /** These records live in assets for historical reasons, but contain user history/settings. */
 export const isActivityTextAsset = (id: string): boolean =>
     ['friend_feed_v1', 'friend_feed_api', 'home_visits_v1'].includes(id)
+    || id.startsWith('sully_real_relationship_')
     || id.startsWith('friend_feed_eval_v1_') || id.startsWith('home_secrets_v1_') || id.startsWith('font_library_');
 
 export type ActivityTextAsset = { id: string; data: string };

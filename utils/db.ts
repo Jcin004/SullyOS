@@ -17,6 +17,13 @@ import {deleteSecretNotesForIds, announceSecretNotesChanged} from './secretNote'
 import { ensureStoryTimelineRepair, invalidateStoryTimelineRepair } from './storyTheaterTimeline';
 import { storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyTurnActorIds } from './storyTheaterCast';
 import { readStoryRelationshipHistory, checkStoryRelationshipGuard, type StoryRelationshipGuard, type StoryRelationshipHistory } from './storyRelationshipHistory';
+import {
+    loadRealRelationshipGraph, loadRealRelationshipLayout, patchRealRelationshipLayout, editRealRelationship,
+    syncRealRelationshipMessage, removeRealRelationshipEvents, checkRealRelationshipGuard, realRelationshipTransactionError,
+    REAL_RELATIONSHIP_GRAPH_KEY, REAL_RELATIONSHIP_LAYOUT_KEY, validateRealRelationshipGraph, finishRealRelationshipRestore, type ManualRealRelationshipEdit,
+} from './realRelationshipStore';
+import type { RealRelationshipGraph, RealRelationshipLayout } from './realRelationshipModel';
+import { storyTheaterMirrorContent } from './storyTheaterRelationships';
 
 import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
@@ -1030,12 +1037,15 @@ export const DB = {
   saveMessage: async (msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+        const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
         const store = transaction.objectStore(STORE_MESSAGES);
         const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
         const { timestamp: _ignored, ...payload } = msg;
         const request = store.add({ ...payload, timestamp });
-        request.onsuccess = () => clearStaleMemoryMirror(transaction, msg.charId, request.result as number);
+        request.onsuccess = () => {
+            clearStaleMemoryMirror(transaction, msg.charId, request.result as number);
+            syncRealRelationshipMessage(transaction, { ...payload, timestamp, id: request.result as number });
+        };
         // request 成功后事务仍可能回滚。主动消息通知和定时任务销账都必须等提交。
         transaction.oncomplete = () => {
             const newId = request.result as number;
@@ -1053,6 +1063,11 @@ export const DB = {
         transaction.onabort = () => reject(transaction.error || new Error('消息未能保存'));
     });
   },
+
+  getRealRelationshipGraph: async () => loadRealRelationshipGraph(await openDB()),
+  getRealRelationshipLayout: async () => loadRealRelationshipLayout(await openDB()),
+  patchRealRelationshipLayout: async (patch: Partial<RealRelationshipLayout>) => patchRealRelationshipLayout(await openDB(), patch),
+  editRealRelationship: async (edit: ManualRealRelationshipEdit, revision: number) => editRealRelationship(await openDB(), edit, revision),
 
   getStoryRelationshipHistory: async (entry: StoryTheaterEntry): Promise<StoryRelationshipHistory> => {
     const db = await openDB();
@@ -1101,7 +1116,7 @@ export const DB = {
             for (const [id, messageId] of inserted) clearStaleLocalMemoryWatermark(`mp_lastMsgId_${id}`, messageId);
             resolve();
         };
-        tx.onabort = () => reject(failure ?? tx.error ?? new Error('本轮未能保存，请重试'));
+        tx.onabort = () => reject(failure ?? realRelationshipTransactionError(tx) ?? new Error('本轮未能保存，请重试'));
 
         const add = (message: Omit<Message, 'id'>, after: (id: number) => void) => {
             const request = store.add(message);
@@ -1133,12 +1148,13 @@ export const DB = {
                     theaterCandidateIds: reply.metadata?.theaterCandidateIds ?? castIds,
                     ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
                 } : {};
-                store.put({ ...original, metadata: {
+                const updated = { ...original, metadata: {
                     ...original.metadata,
                     ...castPatch,
                     ...(!castEdit && reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
                     ...(mirrors.size || existing ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
-                } });
+                } };
+                store.put(updated).onsuccess = () => syncRealRelationshipMessage(tx, updated);
                 done();
             };
             const actorIds = new Set([...mirrors.keys(), ...recipients]);
@@ -1175,7 +1191,7 @@ export const DB = {
                 const request = store.get(id);
                 request.onsuccess = () => guarded(() => {
                     const oldMirror = request.result as Message | undefined;
-                    const oldContent = original.id === replaceReply?.id ? replaceReply.content : original.content;
+                    const oldContent = storyTheaterMirrorContent(original.id === replaceReply?.id ? replaceReply : original);
                     const linkedId = oldMirror?.metadata?.theaterCentralId;
                     if (oldMirror && (oldMirror.charId !== actorId
                         || oldMirror.metadata?.source !== 'story_theater_memory'
@@ -1310,7 +1326,10 @@ export const DB = {
                 else saveReply();
             });
         };
-        if (relationshipGuard) readStoryRelationshipHistory(tx, relationshipGuard.entry, history => guarded(() => {
+        if (relationshipGuard?.signature.startsWith('real-graph:')) {
+            if (reply.metadata?.theaterRelationshipScope !== 'real') { failure = new Error('真实关系归属不匹配'); tx.abort(); return; }
+            checkRealRelationshipGuard(tx, relationshipGuard.entry, relationshipGuard.signature, commit);
+        } else if (relationshipGuard) readStoryRelationshipHistory(tx, relationshipGuard.entry, history => guarded(() => {
             checkStoryRelationshipGuard(history, relationshipGuard);
             if (reply.metadata?.theaterId !== relationshipGuard.entry.id
                 || reply.metadata?.theaterRelationshipScope !== history.scope) throw new Error('关系世界归属不匹配，本次未保存');
@@ -1377,7 +1396,7 @@ export const DB = {
 
   updateMessage: async (id: number, content: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+    const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
     const store = transaction.objectStore(STORE_MESSAGES);
     
     // 同 saveAsset：等事务落盘再 resolve。put 发完就 resolve 的话，配额不足
@@ -1391,7 +1410,7 @@ export const DB = {
                     data.metadata = { ...data.metadata, theaterMirrorEdited: true };
                 }
                 data.content = content;
-                store.put(data);
+                store.put(data).onsuccess = () => syncRealRelationshipMessage(transaction, data);
             } else {
                 reject(new Error('Message not found'));
             }
@@ -1437,7 +1456,7 @@ export const DB = {
 
   updateMessageMetadata: async (id: number, updater: (prev: any, message: Message) => any): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+    const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
     const store = transaction.objectStore(STORE_MESSAGES);
 
     return new Promise((resolve, reject) => {
@@ -1448,7 +1467,7 @@ export const DB = {
             try {
                 if (!data) throw new Error('Message not found');
                 data.metadata = updater(data.metadata, data);
-                store.put(data);
+                store.put(data).onsuccess = () => syncRealRelationshipMessage(transaction, data);
             } catch (error) {
                 failure = error;
                 transaction.abort();
@@ -1464,9 +1483,10 @@ export const DB = {
     await preserveContentFavoritesBeforeMessageDeletion({ ids: [id] });
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       deleteSecretNotesForIds(transaction.objectStore(STORE_MESSAGES), [id]);
       transaction.objectStore(STORE_MESSAGES).delete(id);
+      removeRealRelationshipEvents(transaction, [id]);
       transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('deleteMessage aborted'));
@@ -1478,10 +1498,11 @@ export const DB = {
       const { preserveContentFavoritesBeforeMessageDeletion } = await import('./contentFavorites');
       await preserveContentFavoritesBeforeMessageDeletion({ ids });
       const db = await openDB();
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       const store = transaction.objectStore(STORE_MESSAGES);
       deleteSecretNotesForIds(store, ids);
       ids.forEach(id => store.delete(id));
+      removeRealRelationshipEvents(transaction, ids);
       return new Promise((resolve, reject) => {
           transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
           transaction.onerror = () => reject(transaction.error);
@@ -1494,8 +1515,9 @@ export const DB = {
     await preserveContentFavoritesBeforeMessageDeletion({ charId });
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       const store = transaction.objectStore(STORE_MESSAGES);
+      const relationshipIds: number[] = [];
       const index = store.index('charId');
       const request = index.openCursor(IDBKeyRange.only(charId));
 
@@ -1505,9 +1527,10 @@ export const DB = {
             const m = cursor.value as Message;
             if (!m.groupId) {
                 store.delete(cursor.primaryKey);
+                if (m.metadata?.source === 'story_theater') relationshipIds.push(m.id);
             }
             cursor.continue();
-        }
+        } else if (relationshipIds.length) removeRealRelationshipEvents(transaction, relationshipIds);
       };
       request.onerror = () => reject(request.error);
       transaction.oncomplete = () => {announceSecretNotesChanged(charId); resolve();};
@@ -2923,8 +2946,9 @@ export const DB = {
 
   deleteStoryTheater: async (id: string): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_STORY_THEATERS, 'readwrite');
+      const transaction = db.transaction([STORE_STORY_THEATERS, STORE_ASSETS], 'readwrite');
       transaction.objectStore(STORE_STORY_THEATERS).delete(id);
+      removeRealRelationshipEvents(transaction, undefined, id);
       return new Promise((resolve, reject) => {
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error);
@@ -4072,6 +4096,26 @@ export const DB = {
   ): Promise<void> => {
       const db = await openDB();
       invalidateStoryTimelineRepair(db);
+      const restoringRelationships = data.collaborationBackupMode !== 'media_only' && (data.messages !== undefined || data.storyTheaters !== undefined);
+      const relationshipAssets = restoringRelationships ? [...data.assets || [], ...data.activityTextAssets || []].filter(asset =>
+          asset.id === REAL_RELATIONSHIP_GRAPH_KEY || asset.id === REAL_RELATIONSHIP_LAYOUT_KEY) : [];
+      const graphBackup = relationshipAssets.find(asset => asset.id === REAL_RELATIONSHIP_GRAPH_KEY);
+      const incomingRelationshipGraph = graphBackup ? validateRealRelationshipGraph(graphBackup.data) : undefined;
+      let previousRelationshipGraph: RealRelationshipGraph | undefined;
+      let previousRelationshipLayout: unknown;
+      const partialRelationshipRestore = !Array.isArray(data.characters);
+      if (restoringRelationships) {
+          if (data.assets) data.assets = data.assets.filter(asset => asset.id !== REAL_RELATIONSHIP_GRAPH_KEY && asset.id !== REAL_RELATIONSHIP_LAYOUT_KEY);
+          if (data.activityTextAssets) data.activityTextAssets = data.activityTextAssets.filter(asset => asset.id !== REAL_RELATIONSHIP_GRAPH_KEY && asset.id !== REAL_RELATIONSHIP_LAYOUT_KEY);
+          const snapshot = db.transaction(STORE_ASSETS, 'readonly');
+          const previous = snapshot.objectStore(STORE_ASSETS).get(REAL_RELATIONSHIP_GRAPH_KEY);
+          previous.onsuccess = () => {
+              try { if (previous.result) previousRelationshipGraph = validateRealRelationshipGraph(previous.result.data); } catch { /* A valid restore can replace a damaged projection. */ }
+          };
+          const previousLayout = snapshot.objectStore(STORE_ASSETS).get(REAL_RELATIONSHIP_LAYOUT_KEY);
+          previousLayout.onsuccess = () => { previousRelationshipLayout = previousLayout.result?.data; };
+          await new Promise<void>((resolve, reject) => { snapshot.oncomplete = () => resolve(); snapshot.onabort = () => reject(snapshot.error); });
+      }
       
       const availableStores = [
           STORE_CHARACTERS, STORE_CHAR_GROUPS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
@@ -4395,8 +4439,21 @@ export const DB = {
           data.emojiCategories = undefined as any;
       }, data.emojiCategories?.length || 0);
       await runSection('系统资源', data.assets !== undefined, async () => {
+          // Keep the previous graph/layout until the final relationship restore transaction commits.
+          // The existing importer writes sections in batches; a failed earlier section must not erase manual history.
           if (mediaOnly) {
               await mergeStore(STORE_ASSETS, (data.assets || []).filter(a => !isActivityTextAsset(a.id)), '系统资源', true);
+          } else if (restoringRelationships) {
+              await withStore(STORE_ASSETS, store => {
+                  const request = store.openKeyCursor();
+                  request.onsuccess = () => {
+                      const cursor = request.result;
+                      if (!cursor) return;
+                      if (cursor.primaryKey !== REAL_RELATIONSHIP_GRAPH_KEY && cursor.primaryKey !== REAL_RELATIONSHIP_LAYOUT_KEY) store.delete(cursor.primaryKey);
+                      cursor.continue();
+                  };
+              });
+              await putItems(STORE_ASSETS, data.assets || [], '系统资源', true);
           } else await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
           data.assets = undefined as any;
       }, data.assets?.length || 0);
@@ -4411,7 +4468,8 @@ export const DB = {
           await withStore(STORE_ASSETS, store => {
               const keys = store.getAllKeys();
               keys.onsuccess = () => {
-                  for (const key of keys.result) if (typeof key === 'string' && key !== 'friend_feed_v1' && isActivityTextAsset(key)) store.delete(key);
+                  for (const key of keys.result) if (typeof key === 'string' && key !== 'friend_feed_v1' && isActivityTextAsset(key)
+                      && (!restoringRelationships || key !== REAL_RELATIONSHIP_GRAPH_KEY && key !== REAL_RELATIONSHIP_LAYOUT_KEY)) store.delete(key);
                   for (const item of records) store.put(item);
               };
           });
@@ -4788,6 +4846,11 @@ export const DB = {
           data.bankState = undefined as any;
           data.bankDollhouse = undefined as any;
       }, (data.bankState ? 1 : 0) + (data.bankDollhouse ? 1 : 0));
+      if (restoringRelationships) {
+          await finishRealRelationshipRestore(db, { partial: partialRelationshipRestore, previous: previousRelationshipGraph,
+              incoming: incomingRelationshipGraph, previousLayout: previousRelationshipLayout,
+              incomingLayout: relationshipAssets.find(asset => asset.id === REAL_RELATIONSHIP_LAYOUT_KEY)?.data });
+      }
       // 导入会覆盖相同 ID 的旧记录，不能复用导入前或中途建立的校正缓存。
       invalidateStoryTimelineRepair(db);
       await ensureStoryTimelineRepair(db);
