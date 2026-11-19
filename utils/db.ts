@@ -16,6 +16,7 @@ import { mergePhoneGeneration, PHONE_GENERATION_COMMITTED, type PhoneGeneration 
 import {deleteSecretNotesForIds, announceSecretNotesChanged} from './secretNote';
 import { ensureStoryTimelineRepair, invalidateStoryTimelineRepair } from './storyTheaterTimeline';
 import { storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyTurnActorIds } from './storyTheaterCast';
+import { readStoryRelationshipHistory, checkStoryRelationshipGuard, type StoryRelationshipGuard, type StoryRelationshipHistory } from './storyRelationshipHistory';
 
 import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
@@ -1053,6 +1054,18 @@ export const DB = {
     });
   },
 
+  getStoryRelationshipHistory: async (entry: StoryTheaterEntry): Promise<StoryRelationshipHistory> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_MESSAGES, STORE_STORY_THEATERS], 'readonly');
+        let history: StoryRelationshipHistory;
+        readStoryRelationshipHistory(tx, entry, result => { history = result; });
+        tx.oncomplete = () => resolve(history);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('关系历史读取失败'));
+    });
+  },
+
   /** Commit the central reply and both sets of text mirrors together, including a changed cast on rewrite. */
   commitStoryTheaterTurn: async (
       reply: Omit<Message, 'id'>,
@@ -1060,6 +1073,7 @@ export const DB = {
       castIds: string[],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
       replacement?: Message | { castEdit: Message },
+      relationshipGuard?: StoryRelationshipGuard,
   ): Promise<void> => {
     const db = await openDB();
     const castEdit = replacement && 'castEdit' in replacement ? replacement.castEdit : undefined;
@@ -1075,7 +1089,7 @@ export const DB = {
         }
     }
     return new Promise((resolve, reject) => {
-        const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+        const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
         const inserted: [string, number][] = [];
         const addedActors = new Set<string>();
@@ -1260,40 +1274,49 @@ export const DB = {
             });
             return;
         }
-        const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
-        latest.onsuccess = () => guarded(() => {
-            const cursor = latest.result;
-            const current = cursor?.value as Message | undefined;
-            if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
-            if (replaceReply) {
-                if (!current || current.id !== replaceReply.id) throw new Error('剧情已在别处推进，原回复已保留');
-                if (!sameStoryLayer(current, replaceReply)
-                    || !sameStoryValue(current.metadata?.theaterCastIds, replaceReply.metadata?.theaterCastIds)
-                    || !sameStoryValue(current.metadata?.theaterPrivateAxes, replaceReply.metadata?.theaterPrivateAxes)) {
-                    throw new Error('这条回复已被修改，请刷新后重试');
-                }
-                const saveReply = () => saveOriginal({
-                    ...current, content: reply.content, metadata: { ...current.metadata, ...reply.metadata },
-                });
-                if (!pending) { saveReply(); return; }
-                const inputRequest = store.get(pending.id);
-                inputRequest.onsuccess = () => guarded(() => {
-                    const input = inputRequest.result as Message | undefined;
-                    if (!input || input.charId !== current.charId || input.role !== 'user') {
-                        throw new Error('本轮的用户原文已删除，无法按原输入重写');
+        const commit = () => {
+            const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
+            latest.onsuccess = () => guarded(() => {
+                const cursor = latest.result;
+                const current = cursor?.value as Message | undefined;
+                if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+                if (replaceReply) {
+                    if (!current || current.id !== replaceReply.id) throw new Error('剧情已在别处推进，原回复已保留');
+                    if (!sameStoryLayer(current, replaceReply)
+                        || !sameStoryValue(current.metadata?.theaterCastIds, replaceReply.metadata?.theaterCastIds)
+                        || !sameStoryValue(current.metadata?.theaterPrivateAxes, replaceReply.metadata?.theaterPrivateAxes)) {
+                        throw new Error('这条回复已被修改，请刷新后重试');
                     }
-                    saveOriginal(input, saveReply);
-                });
-                return;
-            }
-            // 输入原地编辑后 ID 不变，镜像使用刚从数据库读出的正文。
-            if (pending ? !current || current.id !== pending.id || current.role !== 'user' : current) {
-                throw new Error('剧情已在别处推进，请刷新后重试');
-            }
-            const saveReply = () => add(reply, id => saveOriginal({ ...reply, id }));
-            if (current) saveOriginal(current, saveReply);
-            else saveReply();
-        });
+                    const saveReply = () => saveOriginal({
+                        ...current, content: reply.content, metadata: { ...current.metadata, ...reply.metadata },
+                    });
+                    if (!pending) { saveReply(); return; }
+                    const inputRequest = store.get(pending.id);
+                    inputRequest.onsuccess = () => guarded(() => {
+                        const input = inputRequest.result as Message | undefined;
+                        if (!input || input.charId !== current.charId || input.role !== 'user') {
+                            throw new Error('本轮的用户原文已删除，无法按原输入重写');
+                        }
+                        saveOriginal(input, saveReply);
+                    });
+                    return;
+                }
+                // 输入原地编辑后 ID 不变，镜像使用刚从数据库读出的正文。
+                if (pending ? !current || current.id !== pending.id || current.role !== 'user' : current) {
+                    throw new Error('剧情已在别处推进，请刷新后重试');
+                }
+                const saveReply = () => add(reply, id => saveOriginal({ ...reply, id }));
+                if (current) saveOriginal(current, saveReply);
+                else saveReply();
+            });
+        };
+        if (relationshipGuard) readStoryRelationshipHistory(tx, relationshipGuard.entry, history => guarded(() => {
+            checkStoryRelationshipGuard(history, relationshipGuard);
+            if (reply.metadata?.theaterId !== relationshipGuard.entry.id
+                || reply.metadata?.theaterRelationshipScope !== history.scope) throw new Error('关系世界归属不匹配，本次未保存');
+            commit();
+        }));
+        else commit();
     });
   },
 

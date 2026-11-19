@@ -1,161 +1,138 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../types';
-import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks } from './storyTheater';
-import {
-    buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
-    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT,
-} from './storyTheaterRelationships';
+import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks, BUILTIN_NIGHT_SCREENING_PRESET, resolveStoryPresetDocument } from './storyTheater';
+import { buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
+    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 
-const a = { id: 'a', name: '林星' };
-const b = { id: 'b', name: '白露' };
-const c = { id: 'c', name: '林星' };
-const cast = [a, b, c];
-const fact = { trigger: '白露在车站等林星', evidence: '林星注意到对方履行了约定' };
-
-const message = (content: string, id = 1): Message => ({
-    id, charId: 'story-theater:test', role: 'assistant', type: 'text', content, timestamp: id,
+const a = { id: 'a', name: '狛治' }, b = { id: 'b', name: '香奈乎' }, c = { id: 'c', name: '狛治' };
+const actors = [a, b, c];
+const fact = { trigger: '在车站等候', evidence: '注意到对方履行了约定' };
+const message = (content: string, id = 1, metadata = {}): Message => ({
+    id, charId: 'story-theater:test', role: 'assistant', type: 'text', content, timestamp: 100 - id, metadata,
 });
-
-function proposal(primaryId: string, relationships: unknown[], stateNote?: string): string {
-    return '<story_text>灯亮了。</story_text><relationship_panel>' + JSON.stringify({
-        primaryId, state_note: stateNote, relationships,
-    }) + '</relationship_panel>';
-}
-
-const snapshot = (content: string) => parseStoryDisplayBlocks(content).find(block => block.relationship)?.relationship;
-const baseline = (rows: Message[] = [], primary = a) => getStoryRelationshipBaseline(rows, primary, cast);
 const pair = (fromId: string, toId: string, axes: object) => ({ fromId, toId, axes });
+const proposal = (relationships: unknown[], extra = {}) => '<story_text>灯亮了。</story_text><relationship_panel>'
+    + JSON.stringify({ relationships, ...extra }) + '</relationship_panel>';
+const snapshot = (content: string) => parseStoryDisplayBlocks(content).find(block => block.relationship)?.relationship;
+const baseline = (rows: Message[] = []) => getStoryRelationshipBaseline(rows, actors);
+const direction = (panel: ReturnType<typeof baseline> | undefined, from = a.id, to = b.id) =>
+    panel?.relationships.find(row => row.fromId === from && row.toId === to);
+const generate = (rows: unknown[], history: Message[] = []) => reconcileStoryRelationships(proposal(rows), baseline(history));
 
-describe('剧场双向关系三轴', () => {
-    it('FL 初始评分依据既有关系，并在动态协议中要求事实与表现', () => {
+describe('按实际人物对的三轴关系', () => {
+    it('首次 FL 依据角色卡、既有关系和共同经历，两个方向独立初始化', () => {
         expect(STORY_RELATIONSHIP_PROMPT).toContain('首次记录依据双方各自的角色卡、既有关系和共同经历确定初值');
         const guide = buildStoryRelationshipGuide(baseline());
         expect(guide).toContain('FL 初值依据角色卡、既有关系和共同经历评估');
         expect(guide).toContain('trigger 写本次评分依据的关系事实或事件，evidence 写人物的具体表现');
-        const initial = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { FL: { score: 74, trigger: '多年并肩学习', evidence: '相互熟悉并信赖对方的判断' } }),
-            pair(b.id, a.id, { FL: { score: 63, trigger: '多年并肩学习', evidence: '经常主动向对方求助' } }),
-        ]), baseline());
-        expect(snapshot(initial)?.relationships.find(row => row.fromId === a.id && row.toId === b.id)?.axes.FL?.score).toBe(74);
-        expect(snapshot(initial)?.relationships.find(row => row.fromId === b.id && row.toId === a.id)?.axes.FL?.score).toBe(63);
+        const first = generate([pair(a.id, b.id, { FL: { score: 74, ...fact } }), pair(b.id, a.id, { FL: { score: 63, ...fact } })]);
+        expect(direction(snapshot(first))?.axes.FL).toMatchObject({ score: 74, initial: true });
+        expect(direction(snapshot(first), b.id, a.id)?.axes.FL?.score).toBe(63);
     });
 
-    it('分别依据每个方向的证据更新三轴，并校正越界值和错误绝对值', () => {
-        const content = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { FL: { score: 98, ...fact }, RI: { score: 20, ...fact }, DI: { score: 0 } }),
-            pair(b.id, a.id, { FL: { score: 10, ...fact }, RI: { score: 2, ...fact }, DI: { score: 0 } }),
-        ]), baseline());
-        const next = reconcileStoryRelationships(proposal(a.id, [
+    it('更新任意人物对，忽略错误绝对值、无证据增量、自指和未知 ID', () => {
+        const first = generate([
+            pair(a.id, b.id, { FL: { score: 98, ...fact }, RI: { score: 20, ...fact } }),
+            pair(b.id, a.id, { FL: { score: 10, ...fact }, RI: { score: 2, ...fact } }),
+        ]);
+        const next = generate([
             pair(a.id, b.id, { FL: { score: 12, delta: 9, ...fact }, RI: { delta: -10 } }),
             pair(b.id, a.id, { FL: { delta: -20, ...fact }, RI: { delta: 7, ...fact } }),
-            pair(b.id, c.id, { FL: { score: 99, ...fact } }),
-        ]), baseline([message(content)]));
-        expect(snapshot(next)?.relationships).toEqual([
-            expect.objectContaining({ fromId: b.id, toId: a.id, axes: {
-                FL: { score: 0, delta: -10, ...fact },
-                RI: { score: 9, delta: 7, ...fact },
-                DI: expect.objectContaining({ score: 0 }),
-            } }),
-            expect.objectContaining({ fromId: a.id, toId: b.id, axes: {
-                FL: { score: 100, delta: 2, ...fact },
-                RI: expect.objectContaining({ score: 20, delta: 0 }),
-                DI: expect.objectContaining({ score: 0 }),
-            } }),
-        ]);
+            pair(b.id, c.id, { FL: { score: 99, ...fact } }), pair(c.id, b.id, { FL: { score: 34, ...fact } }),
+            pair(a.id, a.id, { FL: { score: 100, ...fact } }), pair('unknown', a.id, { FL: { score: 100, ...fact } }),
+        ], [message(first)]);
+        const panel = snapshot(next)!;
+        expect(panel.relationships).toHaveLength(4);
+        expect(direction(panel)?.axes).toMatchObject({ FL: { score: 100, delta: 2 }, RI: { score: 20, delta: 0 } });
+        expect(direction(panel, b.id, a.id)?.axes).toMatchObject({ FL: { score: 0, delta: -10 }, RI: { score: 9, delta: 7 } });
+        expect(direction(panel, b.id, c.id)?.axes.FL?.score).toBe(99);
+        expect(direction(panel, c.id, b.id)?.axes.FL?.score).toBe(34);
         expect(next.match(/<affinity_panel\b/g)).toHaveLength(1);
-        expect(next).not.toContain('<relationship_panel>');
     });
 
-    it('切换主要角色时，只续接相同 ID 和方向的关系，重名角色互不影响', () => {
-        const content = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { FL: { score: 37, ...fact } }),
-            pair(c.id, a.id, { RI: { score: 80, ...fact } }),
-        ], '林星仍在犹豫'), baseline());
-        const switched = baseline([message(content)], b);
-        expect(switched.state_note).toBe('');
-        expect(switched.relationships.find(row => row.fromId === a.id && row.toId === b.id)?.axes.FL?.score).toBe(37);
-        expect(switched.relationships.find(row => row.fromId === b.id && row.toId === a.id)?.axes).toEqual({});
-        expect(switched.relationships.find(row => row.fromId === c.id && row.toId === b.id)?.axes).toEqual({});
-        expect(reconcileStoryRelationships(proposal(a.id, [pair(c.id, b.id, { FL: { score: 100, ...fact } })]), switched))
-            .not.toContain('"score":100');
+    it('同名不同 ID 和两个方向不合并，旧 primaryId 不限制新人物对', () => {
+        const old = proposal([pair(a.id, b.id, { FL: { score: 37 } })], { primaryId: a.id });
+        const updated = reconcileStoryRelationships(proposal([pair(c.id, b.id, { RI: { score: 81, ...fact } })], { primaryId: 'obsolete' }), baseline([message(old)]));
+        const state = baseline([message(old), message(updated, 2)]);
+        expect(direction(state)?.axes.FL?.score).toBe(37);
+        expect(direction(state, c.id, b.id)?.axes.RI?.score).toBe(81);
+        expect(direction(state, b.id, c.id)?.axes).toEqual({});
     });
 
-    it('沿用并更新主要角色自己的 state_note，单人剧场也可记录', () => {
-        const selfBaseline = getStoryRelationshipBaseline([], a, [a]);
-        const start = reconcileStoryRelationships(proposal(a.id, [], '愿意先把话说清楚'), selfBaseline);
-        expect(snapshot(start)).toMatchObject({ primaryId: a.id, state_note: '愿意先把话说清楚', relationships: [] });
-        const prior = getStoryRelationshipBaseline([message(start)], a, [a]);
-        expect(snapshot(reconcileStoryRelationships('<story_text>稍等。</story_text>', prior))).toBeUndefined();
-        expect(prior.state_note).toBe('愿意先把话说清楚');
-        expect(snapshot(reconcileStoryRelationships(proposal(a.id, [], '决定接受道歉'), prior))?.state_note).toBe('决定接受道歉');
+    it('自我记录按人物 ID 保存，单人剧场可以更新', () => {
+        const solo = getStoryRelationshipBaseline([], [b]);
+        const first = reconcileStoryRelationships(proposal([], { primaryId: b.id, state_note: '愿意先把话说清楚' }), solo);
+        expect(snapshot(first)?.state_notes).toEqual({ b: { name: b.name, note: '愿意先把话说清楚' } });
+        expect(baseline([message(first)]).state_notes?.a).toBeUndefined();
+        const next = reconcileStoryRelationships('<story_text>稍等。</story_text>', baseline([message(first)]));
+        expect(snapshot(next)).toBeUndefined();
+        expect(baseline([message(first), message(next, 2)]).state_notes?.b.note).toBe('愿意先把话说清楚');
     });
 
-    it('旧剧场保留历史温度和五维供回看，选择 U 后独立建立三轴', () => {
-        const draft = normalizeStoryTheater({ ...createStoryTheaterDraft(), characterIds: [a.id, b.id] });
-        expect(draft.primaryCharacterId).toBeUndefined();
-        expect(normalizeStoryTheater({ ...draft, primaryCharacterId: a.id }).primaryCharacterId).toBe(a.id);
-        expect(normalizeStoryTheater({ ...draft, primaryCharacterId: a.id, characterIds: [b.id] }).primaryCharacterId).toBeUndefined();
-        const old = '<story_text>旧事发生。</story_text><affinity_panel><affinity_person><character_id>a</character_id><c_to_u_score>83</c_to_u_score><trust>91</trust><possessive_pull>77</possessive_pull><state_note>终于愿意听完</state_note></affinity_person></affinity_panel>';
+    it('旧五维原文可回看，只承接明确 ID 的自我记录，不换算三轴', () => {
+        const draft = normalizeStoryTheater({ ...createStoryTheaterDraft(), characterIds: [a.id, b.id], primaryCharacterId: a.id });
+        expect(draft.primaryCharacterId).toBe(a.id);
+        const old = '<story_text>旧事。</story_text><affinity_panel><affinity_person><character_id>a</character_id>'
+            + '<c_to_u_score>83</c_to_u_score><trust>91</trust><state_note>愿意听完</state_note></affinity_person></affinity_panel>';
         expect(parseStoryDisplayBlocks(old).map(block => block.kind)).toEqual(['story', 'affinity']);
+        expect(baseline([message(old)]).state_notes).toEqual({ a: { name: a.name, note: '愿意听完' } });
+        expect(baseline([message(old)]).relationships.every(row => Object.keys(row.axes).length === 0)).toBe(true);
         expect(buildStoryRelationshipGuide()).toBe('');
-        expect(reconcileStoryRelationships(old)).toBe('<story_text>旧事发生。</story_text>');
-        const prior = baseline([message(old)]);
-        expect(prior.state_note).toBe('终于愿意听完');
-        expect(baseline([message(old)], c).state_note).toBe('');
-        expect(prior.relationships.every(row => Object.keys(row.axes).length === 0)).toBe(true);
-        const initialized = reconcileStoryRelationships(proposal(a.id, [pair(a.id, b.id, { FL: { score: 12, ...fact } })]), prior);
-        expect(snapshot(initialized)?.relationships[0].axes.FL?.score).toBe(12);
+        expect(reconcileStoryRelationships(old)).toBe('<story_text>旧事。</story_text>');
+        expect(baseline([message('<affinity_panel><active_char>狛治</active_char><state_note>无法辨别同名人物</state_note></affinity_panel>')]).state_notes).toEqual({});
     });
 
-    it.each([
-        ['mild', 75, 70],
-        ['moderate', 56, 39],
-        ['strong', 64, 51],
-    ] as const)('DI %s 在事件结束和空轮分别衰减，FL 和 RI 保持原值', (strength, ended, idle) => {
-        const first = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, {
-                FL: { score: 57, ...fact }, RI: { score: 23, ...fact },
-                DI: { score: 80, ...fact, strength, phase: 'active' },
-            }),
-        ]), baseline());
-        const second = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { DI: { delta: 0, ...fact, strength, phase: 'ended' } }),
-        ]), baseline([message(first)]));
-        expect(snapshot(second)?.relationships[0].axes.DI).toMatchObject({ score: ended, delta: ended - 80, ...fact });
-        const third = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { DI: { score: 100, delta: 30, strength, phase: 'active' } }),
-        ]), baseline([message(second)]));
-        expect(snapshot(third)?.relationships[0].axes).toMatchObject({
-            FL: { score: 57 }, RI: { score: 23 }, DI: { score: idle, delta: idle - ended },
-        });
-        expect(baseline([message(first), message('没有面板', 2)]).relationships[1].axes.DI?.score).toBe(ended);
-        expect(baseline([message(first), { ...message('场外讨论', 2), metadata: { theaterOutOfStory: true } }])
-            .relationships[1].axes.DI?.score).toBe(80);
+    it.each([['mild', 75, 70], ['moderate', 56, 39], ['strong', 64, 51]] as const)(
+        'DI %s 保留结束/回落逻辑；未记录的人物对保持历史', (strength, ended, idle) => {
+            const first = generate([pair(a.id, b.id, { FL: { score: 57, ...fact }, RI: { score: 23, ...fact }, DI: { score: 80, ...fact, strength, phase: 'active' } })]);
+            const second = generate([pair(a.id, b.id, { DI: { delta: 0, ...fact, strength, phase: 'ended' } })], [message(first)]);
+            expect(direction(snapshot(second))?.axes.DI).toMatchObject({ score: ended, delta: ended - 80, ...fact });
+            const third = generate([pair(a.id, b.id, { FL: { delta: 0, ...fact }, DI: { delta: 30, phase: 'active', strength } })], [message(first), message(second, 2)]);
+            expect(direction(snapshot(third))?.axes).toMatchObject({ FL: { score: 57 }, RI: { score: 23 }, DI: { score: idle } });
+            expect(direction(baseline([message(first), message('无面板', 2)]))?.axes.DI?.score).toBe(80);
+            const other = generate([pair(b.id, c.id, { FL: { score: 20, ...fact } })], [message(first)]);
+            expect(direction(baseline([message(first), message(other, 2)]))?.axes.DI?.score).toBe(80);
+            expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI?.score).toBe(ended);
+        },
+    );
+
+    it('旧 XML/JSON 三轴续接，双方实际出演时无需主要角色', () => {
+        const old = '<affinity_panel mode="three_axes"><primary_id>a</primary_id><affinity_person><from_id>a</from_id><to_id>b</to_id><FL><score>20</score></FL></affinity_person></affinity_panel>';
+        const original = baseline([message(old)]);
+        const xml = '<story_text>递水。</story_text><affinity_panel mode="three_axes"><affinity_person><from_id>a</from_id><to_id>b</to_id><FL><delta>3</delta><trigger>递水</trigger><evidence>接过了</evidence></FL></affinity_person></affinity_panel>';
+        expect(direction(snapshot(reconcileStoryRelationships(xml, original)))?.axes.FL?.score).toBe(23);
+        expect(snapshot(reconcileStoryRelationships(xml, restrictStoryRelationshipsToCast(original, new Set(['b', 'c']))))).toBeUndefined();
+        const otherPair = generate([pair(b.id, c.id, { FL: { score: 46, ...fact } })]);
+        expect(direction(snapshot(reconcileStoryRelationships(otherPair, restrictStoryRelationshipsToCast(baseline(), new Set(['b', 'c'])))), b.id, c.id)?.axes.FL?.score).toBe(46);
     });
 
-    it('旧 JSON 双向分数承接到原版面板；缺席与独处不写出未参与的关系', () => {
-        const historical = proposal(a.id, [pair(a.id, b.id, { FL: { score: 20 } })], '原有自我记录');
-        const original = baseline([message(historical)]);
-        const xml = '<story_text>甲递给乙一杯水。</story_text><affinity_panel mode="three_axes"><primary_id>a</primary_id>'
-            + '<state_note>愿意等着。</state_note><affinity_person><from_id>a</from_id><to_id>b</to_id>'
-            + '<FL><delta>3</delta><trigger>递水</trigger><evidence>他接过了。</evidence></FL>'
-            + '<relation_note>暖了一点</relation_note><relation_fragment>递出的是温水。</relation_fragment></affinity_person></affinity_panel>';
-        const absent = reconcileStoryRelationships(xml, restrictStoryRelationshipsToCast(original, new Set(['b'])));
-        expect(snapshot(absent)).toBeUndefined();
-        const solo = reconcileStoryRelationships(xml, restrictStoryRelationshipsToCast(original, new Set(['a'])));
-        expect(snapshot(solo)).toMatchObject({ state_note: '愿意等着。', relationships: [] });
-        const back = baseline([message(historical), message(absent, 2), message(solo, 3)]);
-        const updated = reconcileStoryRelationships(xml, restrictStoryRelationshipsToCast(back, new Set(['a', 'b'])));
-        expect(snapshot(updated)?.relationships).toMatchObject([{ fromId: 'a', toId: 'b', relation_note: '暖了一点', relation_fragments: ['递出的是温水。'], axes: { FL: { score: 23 } } }]);
+    it('重写早轮后按增量重放；删除初值不会被后轮快照复活；顺序按消息 ID', () => {
+        const first = generate([pair(a.id, b.id, { FL: { score: 98, ...fact } })]);
+        const next = generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })], [message(first)]);
+        const rewritten = generate([pair(a.id, b.id, { FL: { score: 40, ...fact } })]);
+        expect(direction(baseline([message(next, 2), message(rewritten)]))?.axes.FL?.score).toBe(49);
+        expect(direction(baseline([message(next, 2)]))?.axes.FL).toBeUndefined();
+        expect(direction(baseline([message(first)]))?.axes.FL?.score).toBe(98);
+        expect(direction(baseline([message(first, 1, { theaterCastIds: ['b', 'c'] })]))?.axes.FL).toBeUndefined();
     });
 
-    it('丢弃损坏的关系面板，保留正文与已建立的关系', () => {
-        const first = reconcileStoryRelationships(proposal(a.id, [
-            pair(a.id, b.id, { FL: { score: 15, ...fact } }),
-        ]), baseline());
-        const content = reconcileStoryRelationships('<story_text>新正文</story_text><relationship_panel>{bad', baseline([message(first)]));
-        expect(stripStoryRelationshipPanels(content)).toBe('<story_text>新正文</story_text>');
-        expect(snapshot(content)).toBeUndefined();
-        expect(baseline([message(first), message(content, 2)]).relationships[1].axes.FL?.score).toBe(15);
+    it('损坏、重复面板和重复方向不产生更新，正文保留', () => {
+        const row = pair(a.id, b.id, { FL: { score: 100, ...fact } });
+        for (const content of [proposal([row, row]), proposal([row]) + proposal([row]), '<story_text>新正文</story_text><relationship_panel>{bad']) {
+            expect(snapshot(reconcileStoryRelationships(content, baseline()))).toBeUndefined();
+            expect(stripStoryRelationshipPanels(content)).toContain('story_text');
+        }
+        expect(snapshot(generate([pair(a.id, b.id, { FL: { score: 90 } })]))).toBeUndefined();
+        expect(snapshot(generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })]))).toBeUndefined();
+    });
+
+    it('升级未改写的中心式三轴默认规则，保留自定义文本、开关和名字', () => {
+        const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
+        const legacy = { ...document, prompts: document.prompts.map(p => p.id === STORY_RELATIONSHIP_PROMPT_ID
+            ? { ...p, name: '我的关系规则', enabled: false, content: LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT } : p) };
+        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID))
+            .toMatchObject({ name: '我的关系规则', enabled: false, content: STORY_RELATIONSHIP_PROMPT });
+        legacy.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!.content += '\n我自己改过';
+        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)?.content).toContain('我自己改过');
     });
 });

@@ -21,6 +21,107 @@ vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
 
+it('会话按世界读取和保存实际人物对，自由续写与出演模式一致，并发更新可重试', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    const actors = ['a', 'b', 'c'].map(id => ({ id: 'world-session-' + id, name: '人物' + id, systemPrompt: '独立人格' })) as CharacterProfile[];
+    const [a, b, c] = actors;
+    Object.assign(mocks.state, { characters: actors, userProfile: { name: '本人' }, theme: {},
+        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' }, memoryPalaceConfig: {}, addToast: mocks.toast });
+    const preset = createBlankStoryPreset('世界关系');
+    preset.document.prompts.push({ id: STORY_RELATIONSHIP_PROMPT_ID, name: '关系', enabled: true, role: 'system', content: '三轴关系规则' });
+    const draft = { ...createStoryTheaterDraft(), characterIds: actors.map(actor => actor.id), primaryCharacterId: c.id,
+        castLimits: { minGroups: 1, maxGroups: 1 }, archiveMode: 'manual' as const, archiveAfter: 200, carryCharacterMemory: true };
+    const real = { ...draft, id: 'world-session-real', writesToCharacterMemory: true };
+    const peer = { ...real, id: 'world-session-peer' };
+    const fiction = { ...draft, id: 'world-session-fiction', castModeEnabled: false };
+    const otherFiction = { ...draft, id: 'world-session-other-fiction' };
+    const relationships = (value: object) => '<affinity_panel mode="three_axes">' + [
+        [a.id, b.id], [b.id, a.id],
+    ].map(([from, to]) => '<affinity_person><from_id>' + from + '</from_id><to_id>' + to + '</to_id><FL>'
+        + Object.entries(value).map(([k, v]) => '<' + k + '>' + v + '</' + k + '>').join('')
+        + '<trigger>归还旧信</trigger><evidence>接过信并道谢</evidence></FL></affinity_person>').join('') + '</affinity_panel>';
+    const seed = async (story: StoryTheaterEntry, value: number) => DB.saveMessage({
+        charId: storyTheaterThreadId(story.id), role: 'assistant', type: 'text', content: '<story_text>旧信被妥善保管。</story_text>' + relationships({ score: value }),
+        metadata: { source: 'story_theater', theaterId: story.id, theaterInputId: 0 },
+    });
+    const response = (value: object, cast = true) => new Response(JSON.stringify({ choices: [{ message: { content:
+        '<story_text>他接过信并道谢。</story_text>' + relationships(value)
+        + (cast ? '<turn_cast>' + JSON.stringify([a.id, b.id]) + '</turn_cast>' : ''),
+    } }] }));
+    const fetch = vi.fn<typeof globalThis.fetch>()
+        .mockImplementationOnce(async () => response({ delta: 1 }))
+        .mockImplementationOnce(async () => response({ score: 32 }, false))
+        .mockImplementationOnce(async () => { await seed(peer, 82); return response({ delta: 5 }); })
+        .mockImplementationOnce(async () => response({ delta: 3 }));
+    vi.stubGlobal('fetch', fetch);
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const render = (entry: StoryTheaterEntry) => act(async () => { root.render(createElement(StoryTheaterSession, {
+        key: entry.id, entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+    })); });
+    const send = async (text: string, calls: number) => {
+        await act(async () => {
+            const input = container.querySelector('textarea')!;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await act(async () => { container.querySelector<HTMLButtonElement>('button.story-send-button')!.click(); });
+        await vi.waitFor(async () => {
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); });
+            expect(fetch).toHaveBeenCalledTimes(calls);
+            expect(container.querySelector('button.story-send-button .animate-spin')).toBeNull();
+        });
+    };
+    const sentBaseline = (index: number) => {
+        const payload = JSON.parse(String(fetch.mock.calls[index][1]?.body));
+        const guide = payload.messages.find((row: any) => row.content.includes('方向基线：')).content;
+        return JSON.parse(guide.slice(guide.lastIndexOf('方向基线：') + '方向基线：'.length));
+    };
+    const fl = (panel: any) => panel.relationships.find((row: any) => row.fromId === a.id && row.toId === b.id).axes.FL?.score;
+    const savedFL = async (entry: StoryTheaterEntry) => {
+        const { getStoryRelationshipBaseline } = await import('./storyTheaterRelationships');
+        return fl(getStoryRelationshipBaseline((await DB.getStoryRelationshipHistory(entry)).messages, actors));
+    };
+    try {
+        for (const value of [real, peer, fiction, otherFiction]) await DB.saveStoryTheater(value);
+        await seed(peer, 73); await seed(otherFiction, 99);
+        saveStoryLibrary({ folders: [{ id: 'all-worlds', name: '共通档案', parentId: null, mode: 'shared' }],
+            locations: Object.fromEntries([real, peer, fiction, otherFiction].map(story => [story.id, 'all-worlds'])) });
+        await render(real);
+        expect(container.querySelector('select[aria-label="关系三轴主要角色"]')).toBeNull();
+        await send('归还旧信。', 1);
+        expect(fl(sentBaseline(0))).toBe(73);
+        expect(await savedFL(peer)).toBe(74);
+        const saved = (await DB.getMessagesByCharId(storyTheaterThreadId(real.id), true)).at(-1)!;
+        expect(saved.metadata.theaterCastIds).toEqual([a.id, b.id]);
+        expect(saved.metadata.theaterRelationshipScope).toBe('real');
+        expect(container.textContent).toContain(a.name + ' → ' + b.name);
+        expect(container.textContent).toContain(b.name + ' → ' + a.name);
+        await render(fiction);
+        await send('从另一个世界开始。', 2);
+        expect(fl(sentBaseline(1))).toBeUndefined();
+        expect(await savedFL(fiction)).toBe(32);
+        expect(await savedFL(peer)).toBe(74);
+        expect((await DB.getMessagesByCharId(storyTheaterThreadId(fiction.id), true)).at(-1)?.metadata.theaterRelationshipScope).toBe('theater:' + fiction.id);
+        await render(real);
+        await send('再见面。', 3);
+        expect(fl(sentBaseline(2))).toBe(74);
+        expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain('同一世界的关系历史已更新');
+        expect((await DB.getMessagesByCharId(storyTheaterThreadId(real.id), true)).at(-1)?.role).toBe('user');
+        await send('再见面。', 4);
+        expect(fl(sentBaseline(3))).toBe(82);
+        expect(await savedFL(peer)).toBe(85);
+    } finally {
+        await act(async () => root.unmount()); container.remove();
+        localStorage.removeItem(STORY_LIBRARY_STORAGE_KEY);
+        if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+        vi.unstubAllGlobals();
+    }
+});
+
 it('单次请求处理出演、私轴、自由续写和场外对话，并保留镜像、时间线与共通剧场行为', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -376,15 +477,11 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
             await DB.saveStoryTheater(next);
             entry = next;
         };
+        entry = { ...entry, primaryCharacterId: c.id };
+        await DB.saveStoryTheater(entry);
         await render(entry.id, saveEntry);
-        const picker = container.querySelector<HTMLSelectElement>('select[aria-label="关系三轴主要角色"]')!;
-        expect(picker.value).toBe(a.id);
-        await act(async () => {
-            picker.value = b.id;
-            picker.dispatchEvent(new Event('change', { bubbles: true }));
-        });
-        expect((await DB.getStoryTheaters()).find(row => row.id === entry.id)?.primaryCharacterId).toBe(b.id);
-        await render(entry.id, saveEntry);
+        expect(container.querySelector('select[aria-label="关系三轴主要角色"]')).toBeNull();
+        expect(container.textContent).toContain('按正文实际发生关系事件的人物对分别记录');
         const castFallbackThread = storyTheaterThreadId(entry.id);
         const serializedPanel = '<relationship_panel>' + JSON.stringify({
             primaryId: b.id,
@@ -400,8 +497,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain('未生成有效剧情正文');
         fetch.mockImplementationOnce(async () => reply('<story_text>他伸手接下纸条。</story_text>' + serializedPanel, [[a.id, b.id]]));
         await send(advance(), 21);
-        expect(promptText(20)).toContain('"primaryId":"' + b.id + '"');
-        expect(container.textContent).toContain('关系记录 · ' + b.name);
+        expect(promptText(20)).toContain('"fromId":"' + b.id + '","toId":"' + a.id + '"');
+        expect(container.textContent).toContain('关系记录 · 实际人物对');
         expect(container.textContent).toContain('信任刚刚回暖');
         expect(container.textContent).toContain('他记得自己还欠一句谢谢');
         expect(checked()).toEqual([a.name, b.name]);

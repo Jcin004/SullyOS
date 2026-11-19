@@ -2323,7 +2323,7 @@ export interface StoryTheaterEntry {
     /** 本剧情中用户执笔的身份；缺省时使用真实用户档案。 */
     mask?: StoryTheaterMaskSelection;
     characterIds: string[];
-    /** 关系面板的主要角色，独立于用户执笔身份。 */
+    /** 旧关系面板的主要角色，仅保留备份兼容；新三轴按实际人物对更新。 */
     primaryCharacterId?: string;
     castLimits?: StoryCastLimits;
     castModeEnabled?: boolean;

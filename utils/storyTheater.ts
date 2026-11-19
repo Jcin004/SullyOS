@@ -11,7 +11,7 @@ import type {
     UserProfile,
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
-import { formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel, STORY_RELATIONSHIP_PROMPT_ID, type StoryRelationshipPanel } from './storyTheaterRelationships';
+import { formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel, stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel } from './storyTheaterRelationships';
 import {
     type WorldbookScanMessage,
 } from './worldbook';
@@ -636,6 +636,9 @@ export const resolveStoryPresetDocument = (
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
                 || prompt.content !== oldDefaults.get(prompt.id)?.content)
             .map(prompt => {
+                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && prompt.content === LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT) {
+                    return { ...prompt, content: STORY_RELATIONSHIP_PROMPT };
+                }
                 const oldDefault = oldDefaults.get(prompt.id);
                 const nextDefault = threeAxisDefaults.get(prompt.id);
                 return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content
@@ -1548,7 +1551,7 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
     return blocks;
 };
 
-const formatStoryContextContent = (content: string): string => String(content || '')
+const formatStoryContextContent = (content: string): string => stripStoryRelationshipPanels(String(content || ''))
     .replace(/<scene_header\b[^>]*>[\s\S]*?<\/scene_header\s*>/gi, '')
     .replace(/data:[^\s]+/gi, '[媒体]')
     .trim()
@@ -1681,7 +1684,7 @@ export function formatSharedStoryHistory(
             const input = inputId !== 0 && previous?.role === 'user' ? previous : undefined;
             if (input && (!available(input) || (inputId != null && inputId !== input.id))) return [];
             if (!input && inputId !== 0 && (inputId != null || index !== 0)) return [];
-            const text = [input && `用户：${input.content}`, `剧场：${reply.content}`].filter(Boolean).join('\n');
+            const text = [input && `用户：${input.content}`, `剧场：${stripStoryRelationshipPanels(reply.content)}`].filter(Boolean).join('\n');
             return [{ id: reply.id, entry, text }];
         });
     }).sort((a, b) => b.id - a.id);

@@ -2,6 +2,8 @@ import type { CharacterProfile, Message, StoryTheaterEntry } from '../types';
 import { DB, openDB } from './db';
 import { loadCharacterContextMessages } from './chatContextRange';
 import { storyTimelineTimestampForCharacter } from './storyTheater';
+import { readStoryRelationshipHistory, checkStoryRelationshipGuard, type StoryRelationshipGuard } from './storyRelationshipHistory';
+import { stripStoryRelationshipPanels } from './storyTheaterRelationships';
 
 export async function loadStoryMirrorTimeline(
     entry: StoryTheaterEntry, actorId: string, newestFirst: readonly Message[],
@@ -33,7 +35,8 @@ export async function loadStoryActorContext(
     }));
     const messages = await loadCharacterContextMessages(char);
     return messages.filter(message => !currentMirrors.has(message.id)
-        && !(message.metadata?.source === 'story_theater_memory' && message.metadata?.theaterId === theaterId));
+        && !(message.metadata?.source === 'story_theater_memory' && message.metadata?.theaterId === theaterId))
+        .map(message => message.role === 'assistant' ? { ...message, content: stripStoryRelationshipPanels(message.content) } : message);
 }
 
 export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故事落点重新写这一轮，换一个合理的切入角度、对白和细节展开；保留已确立的事实和用户输入，不把这次操作写进故事，不把尚未发生的旧版本当作既定经历。';
@@ -42,12 +45,13 @@ export const STORY_REROLL_INSTRUCTION = '本轮是重新生成：从同一处故
 export async function replaceStoryTheaterReply(
     original: Message, content: string, metadata: Record<string, unknown>, requireLatest = false,
     timelineByActor?: ReadonlyMap<string, number | undefined>,
+    relationshipGuard?: StoryRelationshipGuard,
 ): Promise<void> {
     const mirrorIds = Object.values((original.metadata?.theaterMirrorIds || {}) as Record<string, number>).map(Number).filter(id => Number.isFinite(id) && id > 0);
     const ids = [...new Set([original.id, ...mirrorIds])];
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const transaction = db.transaction('messages', 'readwrite');
+        const transaction = db.transaction(['messages', 'story_theaters'], 'readwrite');
         const store = transaction.objectStore('messages');
         let failure: Error | undefined;
         transaction.oncomplete = () => resolve();
@@ -72,17 +76,28 @@ export async function replaceStoryTheaterReply(
                 };
             }
         };
-        if (!requireLatest) { replace(); return; }
-        const latest = store.index('charId').openCursor(IDBKeyRange.only(original.charId), 'prev');
-        latest.onsuccess = () => {
-            const cursor = latest.result;
-            if (cursor && cursor.value.metadata?.source !== 'story_theater') { cursor.continue(); return; }
-            if (!cursor || cursor.primaryKey !== original.id) {
-                failure = new Error('剧情已在别处推进，原回复已保留');
-                transaction.abort();
-                return;
-            }
-            replace();
+        const commit = () => {
+            if (!requireLatest) { replace(); return; }
+            const latest = store.index('charId').openCursor(IDBKeyRange.only(original.charId), 'prev');
+            latest.onsuccess = () => {
+                const cursor = latest.result;
+                if (cursor && cursor.value.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+                if (!cursor || cursor.primaryKey !== original.id) {
+                    failure = new Error('剧情已在别处推进，原回复已保留');
+                    transaction.abort();
+                    return;
+                }
+                replace();
+            };
         };
+        if (relationshipGuard) readStoryRelationshipHistory(transaction, relationshipGuard.entry, history => {
+            try {
+                checkStoryRelationshipGuard(history, relationshipGuard);
+                if (original.metadata?.theaterId !== relationshipGuard.entry.id
+                    || metadata.theaterRelationshipScope !== history.scope) throw new Error('关系世界归属不匹配，本次未保存');
+                commit();
+            } catch (error) { failure = error as Error; transaction.abort(); }
+        });
+        else commit();
     });
 }

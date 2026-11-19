@@ -310,8 +310,9 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
                         ...(row.relation_fragments ?? []).map(value => ({ label: '关系碎片', value })),
                     ],
                 }));
-                return <StoryAffinityDetails key={index} title={'关系记录 · ' + panel.primaryName} preview='FL · RI · DI'>
+                return <StoryAffinityDetails key={index} title={panel.primaryName ? '关系记录 · ' + panel.primaryName : '关系记录 · 实际人物对'} preview='FL · RI · DI'>
                     {panel.state_note && <div className='py-3'><LabeledRows lines={[{ label: '自我记录', value: panel.state_note }]} /></div>}
+                    {Object.entries(panel.state_notes ?? {}).map(([id, value]) => <div key={id} className='py-3'><LabeledRows lines={[{ label: value.name + ' · 自我记录', value: value.note }]} /></div>)}
                     {groups.map(group => <StoryAffinityGroup key={group.key} group={group} axisLabels={axisLabels} />)}
                 </StoryAffinityDetails>;
             }
@@ -358,7 +359,6 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const activeMiniTheater = useMemo(() => getActiveStoryMiniTheaterPrompt(effectivePreset.document), [effectivePreset.document]);
     const relationshipPrompt = effectivePreset.document.prompts.find(prompt => prompt.id === STORY_RELATIONSHIP_PROMPT_ID);
     const relationshipsEnabled = relationshipPrompt?.enabled === true;
-    const primaryActor = actors.find(actor => actor.id === entry.primaryCharacterId) || actors[0];
     // The old user-controlled affinity slider stays readable in archived entries; new turns use FL/RI/DI.
     const affinityEnabled = false;
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
@@ -835,8 +835,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
             const interactionTendencies = !castTurn ? [] : savedTendencies.length ? savedTendencies
-                : drawStoryInteractionPlan(candidateIds, castLimits, interactionHistory, Math.random,
-                    relationshipsEnabled || entry.primaryCharacterId ? primaryActor?.id : undefined)
+                : drawStoryInteractionPlan(candidateIds, castLimits, interactionHistory, Math.random)
                     .tendencies;
             const requestActors = rerollOutOfStory ? [] : actors;
             const requestActorNames = requestActors.map(actor => actor.name);
@@ -878,9 +877,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
-            const relationshipBaseline = relationshipsEnabled && primaryActor && requestActors.some(actor => actor.id === primaryActor.id)
-                ? getStoryRelationshipBaseline(history, primaryActor, requestActors)
-                : undefined;
+            const relationshipHistory = relationshipsEnabled && !rerollOutOfStory ? await DB.getStoryRelationshipHistory(promptEntry) : undefined;
+            if (relationshipHistory && !relationshipHistory.exists) throw new Error('剧场已变更或删除，请重新打开后重试');
+            const relationshipBaseline = relationshipHistory ? getStoryRelationshipBaseline(
+                relationshipHistory.messages.filter(message => !rerollTarget || message.id < rerollTarget.id), requestActors,
+            ) : undefined;
+            const relationshipGuard = relationshipHistory ? { entry: promptEntry, signature: relationshipHistory.signature } : undefined;
             const unarchivedHistory = history.filter(message => !mirrorArchived(message, promptEntry));
             const visibleHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
                 ? limitFreeStoryHistory(unarchivedHistory, Math.max(2, entry.archiveAfter || 40))
@@ -967,7 +969,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
                     ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                     ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
-                    ...(relationshipBaseline && !rerollOutOfStory ? [{ role: 'system' as const, content: buildStoryRelationshipGuide(relationshipBaseline, castTurn) }] : []),
+                    ...(relationshipBaseline && !rerollOutOfStory ? [{ role: 'system' as const, content:
+                        (promptEntry.writesToCharacterMemory ? '关系历史归属：真实世界，所有真实时间陪伴剧场共享。'
+                            : '关系历史归属：本虚构剧场独立世界；角色携带记忆和共享档案不改变本世界分数。')
+                        + '\n' + buildStoryRelationshipGuide(relationshipBaseline, castTurn) }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ];
@@ -1052,6 +1057,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const replyMetadata = {
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
+                ...(relationshipHistory && !outOfStory ? { theaterRelationshipScope: relationshipHistory.scope } : {}),
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
                     theaterCastIds: castIds,
@@ -1069,7 +1075,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 throw new Error('这条回复已进入记忆归档，请刷新后查看');
             }
             if (isReroll && rerollTarget && !castTurn) {
-                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true);
+                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, undefined, outOfStory ? undefined : relationshipGuard);
             } else {
                 const makeMirror = promptEntry.writesToCharacterMemory && castTurn && !outOfStory
                     ? (id: string, original: Message) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
@@ -1082,7 +1088,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
-                }, turnInput, castIds, makeMirror, rerollTarget);
+                }, turnInput, castIds, makeMirror, rerollTarget, outOfStory ? undefined : relationshipGuard);
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
@@ -1110,16 +1116,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, primaryActor, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
-
-    const choosePrimary = async (characterId: string) => {
-        if (sendLock.current || archiveLock.current || !actors.some(actor => actor.id === characterId)) return;
-        try {
-            await onEntryChange({ ...entry, primaryCharacterId: characterId, updatedAt: Date.now() });
-        } catch {
-            addToast('主要角色保存失败，请重试', 'error');
-        }
-    };
+    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
     const canWriteOpening = canStart && messages.length === 0 && entry.openingMode === 'assistant';
@@ -1157,7 +1154,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         {requestPreview && <button type='button' onClick={() => setRequestViewer(true)} className='col-span-2 justify-self-start rounded-lg bg-violet-100 px-3 py-2 font-bold text-violet-700'>查看本次发送的提示词</button>}
                         <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
-                        {relationshipsEnabled && actors.length > 0 && <label className='col-span-2 flex items-center gap-3'><span className='shrink-0 text-[9px] font-bold text-slate-500'>关系三轴主要角色</span><select aria-label='关系三轴主要角色' value={primaryActor?.id || ''} onChange={event => void choosePrimary(event.target.value)} disabled={sending} className='min-w-0 flex-1 rounded-lg border border-rose-200 bg-white px-2 py-1.5 text-[11px]'>{actors.map(actor => <option key={actor.id} value={actor.id}>{actor.name}</option>)}</select></label>}
+                        {relationshipsEnabled && <p className='col-span-2 text-[10px] leading-5 text-slate-500'>{entry.writesToCharacterMemory ? '三轴关系与其他真实陪伴剧场共享。' : '三轴关系仅属于本虚构剧场。'}按正文实际发生关系事件的人物对分别记录，其他人保留历史。</p>}
                     </div>
                     <fieldset className='mx-5 mb-3 rounded-xl border border-slate-200 px-3 pb-2'>
                         <legend className='px-1 text-[10px] font-semibold text-slate-600'>本轮出演名单</legend>
