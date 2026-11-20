@@ -221,12 +221,12 @@ describe('糯米机原生剧情预设边界', () => {
         expect(scene.content).toContain('幕后与余波”（幕后暗格后紧接镜头债）');
         expect(scene.content).not.toContain('幕后暗格、世界线、镜头债');
         const exit = document.prompts.find(prompt => prompt.id === 'nmj-v3-exit-check')!;
-        expect(sent.messages.some(message => message.content.includes('启用双向关系时，检查两个方向各自的证据和三轴变化'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('启用双向关系时，确认人物关系的连续性。'))).toBe(true);
         expect(exit.content).toContain('幕后与余波（幕后暗格 → 镜头债）');
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(sent.messages.some(message => message.content.includes('按三轴关系规则检查本轮关系报告'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('角色的关系承接各自的经历、处境与情绪潮线。'))).toBe(true);
         expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方'))).toBe(false);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });

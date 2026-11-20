@@ -64,8 +64,41 @@ describe('按实际人物对的三轴关系', () => {
         const guide = buildStoryRelationshipGuide(state);
         expect(guide).toContain('信任逐渐稳定');
         expect(guide).toContain('我决定兑现承诺');
-        expect(guide).not.toContain('她主动归还旧信');
+        expect(guide).toContain('她主动归还旧信');
         expect(guide).not.toContain(fact.evidence);
+    });
+
+    it('关系天气和相处片段无需数值变化或事件证据，也能进入下一轮历史', () => {
+        const first = generate([pair(a.id, b.id, { FL: { score: 34 } })]);
+        const prior = baseline([message(first)]);
+        const input = proposal([{ ...pair(a.id, b.id, {}),
+            identity: '有些在意的人', cognition: '我开始留意她停顿的样子',
+            relation_note: '见面后有点别扭', relation_fragments: ['她替我留了靠窗的座位'] }]);
+        const issues: string[] = [];
+        const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(input), actors, prior, issue => issues.push(issue));
+        expect(issues).toEqual([]);
+        expect(payload?.updates).toHaveLength(1);
+        const output = reconcileStoryRelationships(stripStoryRelationshipPanels(input), prior, { payload });
+        expect(direction(snapshot(output))?.axes).toEqual({});
+        expect(direction(snapshot(output))?.relation_note).toBe('见面后有点别扭');
+        const carried = baseline([message(first), message(output, 2, { theaterStoryRelationshipEvent: payload })]);
+        expect(direction(carried)).toMatchObject({
+            identity: '有些在意的人', cognition: '我开始留意她停顿的样子',
+            relation_note: '见面后有点别扭', relation_fragments: ['她替我留了靠窗的座位'],
+            axes: { FL: { score: 34 } },
+        });
+        const guide = buildStoryRelationshipGuide(carried);
+        expect(guide).toContain('她替我留了靠窗的座位');
+        expect(guide).toContain('我开始留意她停顿的样子');
+    });
+
+    it('文字与数值分别承接；缺少证据不影响三轴，已有轴可直接报告绝对值', () => {
+        const first = generate([pair(a.id, b.id, { FL: { score: 40 }, RI: { score: 8 } })]);
+        const follow = generate([{ ...pair(a.id, b.id, {
+            FL: { delta: 2 }, RI: { score: 6 },
+        }), relation_note: '熟络了，却有些失落', relation_fragments: ['分开时没再回头'] }], [message(first)]);
+        expect(direction(snapshot(follow))?.axes).toMatchObject({ FL: { score: 42, delta: 2 }, RI: { score: 6, delta: -2 } });
+        expect(direction(snapshot(follow))?.relation_fragments).toEqual(['分开时没再回头']);
     });
 
     it('多人同楼层仅给实际交流的人物方向结算衰减', () => {
@@ -81,18 +114,18 @@ describe('按实际人物对的三轴关系', () => {
     });
 
     it('首次 FL 依据角色卡、既有关系和共同经历，两个方向独立初始化', () => {
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('既有经历、关系状态和当下情境');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('角色自身的性情、经历、处境与情绪潮线');
         const guide = buildStoryRelationshipGuide(baseline(), '虚构剧场 test');
         expect(guide).toContain('关系历史归属：虚构剧场 test');
         expect(guide).toContain('"actors":[{"id":"a"');
         expect(guide).not.toContain('trigger');
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('各自写 trigger 和 evidence');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('这些内容不以分数变化为前提');
         const first = generate([pair(a.id, b.id, { FL: { score: 74, ...fact } }), pair(b.id, a.id, { FL: { score: 63, ...fact } })]);
         expect(direction(snapshot(first))?.axes.FL).toMatchObject({ score: 74, initial: true });
         expect(direction(snapshot(first), b.id, a.id)?.axes.FL?.score).toBe(63);
     });
 
-    it('更新任意人物对，忽略错误绝对值、无证据增量、自指和未知 ID', () => {
+    it('更新任意人物对，优先 delta、允许无需证据的增量，忽略自指和未知 ID', () => {
         const first = generate([
             pair(a.id, b.id, { FL: { score: 98, ...fact }, RI: { score: 20, ...fact } }),
             pair(b.id, a.id, { FL: { score: 10, ...fact }, RI: { score: 2, ...fact } }),
@@ -106,8 +139,8 @@ describe('按实际人物对的三轴关系', () => {
         const panel = snapshot(next)!;
         expect(panel.relationships).toHaveLength(4);
         expect(direction(panel)?.axes).toMatchObject({ FL: { score: 100, delta: 2 } });
-        expect(direction(panel)?.axes.RI).toBeUndefined();
-        expect(direction(baseline([message(first), message(next, 2)]))?.axes.RI?.score).toBe(20);
+        expect(direction(panel)?.axes.RI).toMatchObject({ score: 10, delta: -10 });
+        expect(direction(baseline([message(first), message(next, 2)]))?.axes.RI?.score).toBe(10);
         expect(direction(panel, b.id, a.id)?.axes).toMatchObject({ FL: { score: 0, delta: -10 }, RI: { score: 9, delta: 7 } });
         expect(direction(panel, b.id, c.id)?.axes.FL?.score).toBe(99);
         expect(direction(panel, c.id, b.id)?.axes.FL?.score).toBe(34);
@@ -191,7 +224,7 @@ describe('按实际人物对的三轴关系', () => {
             expect(snapshot(reconcileStoryRelationships(content, baseline()))).toBeUndefined();
             expect(stripStoryRelationshipPanels(content)).toContain('story_text');
         }
-        expect(snapshot(generate([pair(a.id, b.id, { FL: { score: 90 } })]))).toBeUndefined();
+        expect(direction(snapshot(generate([pair(a.id, b.id, { FL: { score: 90 } })]))?.axes.FL?.score).toBe(90);
         expect(snapshot(generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })]))).toBeUndefined();
     });
 

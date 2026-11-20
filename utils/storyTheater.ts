@@ -647,6 +647,7 @@ const legacyRelationshipFingerprints = new Map([
     [1621, '2b3d0df3:7e1934ff'],
     [2288, 'a10a8412:39f3e926'],
     [1981, 'cd119ec3:d72f4bef'],
+    [1710, '70d27b22:e86ac256'], // Prior shipped three-axis default; user edits stay untouched.
 ]);
 
 function isLegacyRelationshipDefault(content: string): boolean {
@@ -688,7 +689,7 @@ export const resolveStoryPresetDocument = (
                     '本轮要求输出关系面板时，<relationship_panel> 必须完整且只出现一次；',
                 )) return { ...prompt, content: nextDefault.content };
                 if (prompt.id === 'nmj-v616-silent-preflight' && nextDefault && prompt.content === nextDefault.content.replace(
-                    '6. 关系侧表：启用双向关系时，按三轴关系规则检查本轮关系报告。',
+                    '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。',
                     '6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。',
                 )) return { ...prompt, content: nextDefault.content };
                 return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content

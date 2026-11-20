@@ -99,38 +99,16 @@ export const LEGACY_REAL_STORY_RELATIONSHIP_PROMPT = LEGACY_PAIR_STORY_RELATIONS
 ].join('\n');
 
 export const STORY_RELATIONSHIP_PROMPT = [
-    "<emotion_core_protocol>",
-    "<system_var>",
-    "FL 关系联结衡量信任、默契和陪伴，RI 恋爱性心动衡量心动程度，DI 失序扰动衡量扰动程度。各轴独立，范围 0–100。",
-    "</system_var>",
-    "<attraction_source>",
-    "事件来源 → 人物自身感知与解读 → 实际反应 → FL/RI/DI 变化。",
-    "结合人物的人格七维、认知方式、审美、价值观、既有经历、关系状态和当下情境理解事件。以下来源是线索，人物的实际反应决定变化轴、方向及幅度。",
-    "1. 身体／审美：外貌、声音、气味、体态、触碰、近距离紧张唤醒。",
-    "2. 能力／人格：才华、专注、判断力、价值观、底线。",
-    "3. 被看见／安全：理解、记住细节、接住情绪、尊重边界、可靠、保护、可放松。",
-    "4. 互惠偏爱：被选择、被主动、被偏爱、好感暗示、熟悉曝光。",
-    "5. 情绪／经历：快乐、松弛、被逗笑、分享日常、陪伴、共患难、遗憾、未完成。",
-    "6. 反差／未知／社会：反差、神秘、探索、他人认可、稀缺竞争、理想化投射。",
-    "7. 成长激励：被对方人格或存在影响，想成为更好的自己、想配得上、想并肩。",
-    "</attraction_source>",
-    "<axis_rules>",
-    "FL：信任、默契、陪伴使联结增加，反感、排斥、不适、失落使联结减少。FL 通常缓慢变化。",
-    "RI：明确的心动才增加，包括原生审美点被击中（如对方独特表达）后产生的恋爱性注意、回味、想靠近、想念或渴望，以及恋爱性排他或亲密占有。心动消退、自我消化、时间或距离造成的实际心动减弱、反感或排斥可使 RI 减少。",
-    "DI：被气、冒犯、受挫、挑衅、斗嘴，好奇、探究欲，少年胜负欲、不服输、竞争性占有，尴尬、惊讶、社交压力，领地意识或面子受触动，均可成为失序来源。按实际注意力、情绪、思考或行动节奏的偏移、反应强度和持续程度确定强度。",
-    "扰动持续记 active，结束记 ended，strength 为 mild、moderate 或 strong。无持续扰动时，程序按已确认的参与范围和既有强度公式结算每轮快速衰减，结束时明显回落。",
-    "</axis_rules>",
-    "<update_rules>",
-    "三轴独立计算，不互相换算。每个方向由起点人物独立判断，仅依据其亲历或明确获知的正篇事实。同一事件影响多轴时各自写 trigger 和 evidence。",
-    "首次有效评分用 score，已有数值用 delta 表示增减，0 分属于已初始化。省略无变化的轴。已初始化的 DI 即使无新增量也可凭证据报告阶段。",
-    "</update_rules>",
-    "<event_log_schema>",
-    "正篇收尾输出一份 <affinity_panel mode=\"three_axes\">，场外省略。每个 <affinity_person> 用 <from_id> 和 <to_id> 写候选人物 ID。",
-    "axis 和 source_type 由 <FL>（友谊）、<RI>（心动）、<DI>（失序）表示。轴内用 <trigger> 写事件，<evidence> 写来源线索或失序源、人物反应和有据的内心推导。按更新规则填 <score> 或 <delta>，DI 填 <phase> 与 <strength>。decay（慢或快）由程序处理。",
-    "relation_identity（认同）、relation_cognition（第一视角认知）、relation_note（质地）、relation_fragment（事实）可独立更新。用 relation_trigger 和 relation_evidence 记录方向证据，质地和片段也可沿用轴证据。<self_record> 填 <character_id> 和 <state_note>。其他人物不能知道未表达的内心。",
-    "<turn_cast> 独立报告真实参与本轮的候选人物 ID，自由续写可在面板外报告，供程序确认衰减范围。真实陪伴共享真实世界关系，虚构剧场使用所属世界的独立记录。",
-    "</event_log_schema>",
-    "</emotion_core_protocol>",
+    "角色对彼此的看法、感受与关系走向，由角色自身的性情、经历、处境与情绪潮线决定。同一场相处在两个人心里可以留下不同的东西。",
+    "FL 关系联结：熟悉、信任、默契与共同经历。RI 恋爱性心动：恋爱性的注意、吸引与靠近意愿。DI 失序扰动：情绪、注意或行动节奏受牵动的程度。三个刻度各为 0–100，随人物实际的心绪起伏。",
+    "人物之间的印象、关系天气与相处片段可以继续发展，三轴数值也可以原样延续。",
+    "",
+    "【关系面板｜供程序承接，不进入剧情正文】",
+    "正文后输出一份 <affinity_panel mode=\"three_axes\">。每个实际发生相处的人物方向可写一个 <affinity_person>，用 <from_id> 和 <to_id> 指明角色；分别呈现双方的看法，不能把一个人的内心当作另一个人知道的事。",
+    "三轴写在 <FL>、<RI>、<DI> 中：首次用 <score> 表示当前数值；已有数值可用 <delta> 表示起伏，也可用 <score> 表示当前数值。没有数值变化时保留原值；如写出 +0，也照常承接。DI 可用 <phase>active 或 ended</phase> 表示扰动仍在或结束，<strength>mild、moderate 或 strong</strength> 表示强度。",
+    "每个方向可独立写 <relation_identity>关系认同</relation_identity>、<relation_cognition>该人物对对方的认识</relation_cognition>、<relation_note>此刻关系的具体质地</relation_note>、<relation_fragment>本轮留下的相处片段</relation_fragment>。这些内容不以分数变化为前提。",
+    "人物自己的新想法可写在 <self_record><character_id>角色 ID</character_id><state_note>内在变化</state_note></self_record>。事件来源如有必要可用 <trigger>、<evidence> 或 <relation_trigger>、<relation_evidence> 补充，均为可选。",
+    "真实陪伴承接同一张关系网，虚构剧场承接各自的关系历史。出演名单 <turn_cast> 仍按出演协议提供。闭合 </affinity_panel>。",
 ].join('\n');
 
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
@@ -413,6 +391,7 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
                 const row = byPair.get(pairKey(previous.fromId, previous.toId));
                 if (!row || !allowed(row.fromId) || !allowed(row.toId)) continue;
                 if (previous.relation_note) row.relation_note = previous.relation_note;
+                if (previous.relation_fragments?.length) row.relation_fragments = previous.relation_fragments;
                 if (previous.identity !== undefined) row.identity = previous.identity;
                 if (previous.cognition !== undefined) row.cognition = previous.cognition;
                 for (const axis of STORY_RELATIONSHIP_AXES) {
@@ -448,9 +427,10 @@ export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, s
     const { actors, state_notes, relationships } = baseline;
     return '关系历史归属：' + scope + '\n方向基线：' + encodePanel({ actors, state_notes,
         relationships: relationships.filter(row => Object.keys(row.axes).length || row.identity !== undefined
-            || row.cognition !== undefined || row.relation_note).map(row => ({
+            || row.cognition !== undefined || row.relation_note || row.relation_fragments?.length).map(row => ({
             fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName,
             identity: row.identity, cognition: row.cognition, relation_note: row.relation_note,
+            relation_fragments: row.relation_fragments,
             axes: Object.fromEntries(Object.entries(row.axes).map(([axis, value]) => [axis, axis === 'DI'
                 ? { score: value.score, strength: value.strength, phase: value.phase } : { score: value.score }])),
         })) });
@@ -461,17 +441,16 @@ export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue |
     const prior = previous?.score ?? 0;
     const trigger = shortText(proposed?.trigger);
     const evidence = shortText(proposed?.evidence);
-    const supported = Boolean(trigger && evidence);
-    if (!previous && (score === undefined || !supported || proposed?.hasScore === false)) return undefined;
-    const change = previous ? integer(proposed?.delta) ?? 0 : score ?? 0;
+    if (!previous && (score === undefined || proposed?.hasScore === false)) return undefined;
+    // AI can state an absolute value or a delta. When both are present, the delta wins.
+    const change = previous ? integer(proposed?.delta) ?? (score === undefined ? 0 : clamp(score) - prior) : score ?? 0;
     if (axis === 'DI') {
         if (proposed) {
-            if (!supported) return undefined;
             const phase = proposed.phase ?? 'active';
             const strength = proposed.strength ?? previous?.strength ?? 'mild';
             const peak = clamp(prior + change);
             const next = phase === 'active' ? peak : decayDI(peak, strength);
-            return { score: next, delta: next - prior, trigger, evidence, strength, phase };
+            return { score: next, delta: next - prior, ...(trigger ? { trigger } : {}), ...(evidence ? { evidence } : {}), strength, phase };
         }
         const next = decayDI(prior, previous?.strength);
         return {
@@ -479,8 +458,8 @@ export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue |
             ...(next !== prior ? { trigger: '无持续扰动', evidence: '扰动回落' } : {}),
         };
     }
-    const next = clamp(prior + (supported ? change : 0));
-    return { score: next, delta: next - prior, ...(supported ? { trigger, evidence } : {}) };
+    const next = clamp(prior + change);
+    return { score: next, delta: next - prior, ...(trigger ? { trigger } : {}), ...(evidence ? { evidence } : {}) };
 }
 
 /** Existing v1 absolute snapshots and v2 canonical events share one replay rule. */
@@ -516,26 +495,20 @@ export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | un
             const value = row.axes[axis];
             if (!value) continue;
             const label = names.get(fromId) + ' → ' + names.get(toId) + ' ' + axis;
-            if (!value.trigger || !value.evidence) { report(label + ' 缺少触发事件或证据'); continue; }
             const prior = previous.get(key)?.axes[axis];
-            if (!prior && value.hasScore === false) report(label + ' 尚未初始化，需要首次评分');
-            if (prior && value.delta === undefined && axis !== 'DI') report(label + ' 缺少 delta，分数保持原值');
+            if (!prior && value.hasScore === false) {
+                report(label + ' 尚未初始化，需要首次评分');
+                continue;
+            }
             axes[axis] = value;
         }
-        const privateEvidence = Boolean(row.trigger && row.evidence);
-        const axisEvidence = Object.keys(axes).length > 0;
-        const identity = privateEvidence ? row.identity : undefined;
-        const cognition = privateEvidence ? row.cognition : undefined;
-        const relation_note = privateEvidence || axisEvidence ? row.relation_note : undefined;
-        const relation_fragments = (privateEvidence || axisEvidence) && row.relation_fragments?.length ? row.relation_fragments : undefined;
-        if (!privateEvidence && (row.identity !== undefined || row.cognition !== undefined
-            || (!axisEvidence && (row.relation_note || row.relation_fragments?.length)))) {
-            report('关系文字缺少触发事件或证据');
-        }
-        if (!axisEvidence && identity === undefined && cognition === undefined && relation_note === undefined && !relation_fragments) continue;
+        const hasAxes = Object.keys(axes).length > 0;
+        const { identity, cognition, relation_note } = row;
+        const relation_fragments = row.relation_fragments?.length ? row.relation_fragments : undefined;
+        if (!hasAxes && identity === undefined && cognition === undefined && relation_note === undefined && !relation_fragments) continue;
         updates.set(key, { mode: 'proposal', direction: {
             fromId, toId, fromName: names.get(fromId)!, toName: names.get(toId)!, axes, identity, cognition,
-            ...(privateEvidence ? { trigger: row.trigger, evidence: row.evidence } : {}),
+            ...(row.trigger ? { trigger: row.trigger } : {}), ...(row.evidence ? { evidence: row.evidence } : {}),
             relation_note, relation_fragments,
         } });
     }
@@ -585,7 +558,7 @@ export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, pr
             if (update.mode === 'canonical') after = replayStoryRelationshipAxis(axis, prior, value, 2);
             else if (update.mode === 'proposal') after = calculateStoryRelationshipAxis(axis, prior, value);
             else if (value.hasScore !== false) after = { ...value };
-            else if (prior && value.trigger && value.evidence) after = calculateStoryRelationshipAxis(axis, prior, value);
+            else if (prior) after = calculateStoryRelationshipAxis(axis, prior, value);
         } else if (axis === 'DI' && update.decayDI && prior) {
             after = calculateStoryRelationshipAxis(axis, prior);
         }
@@ -597,7 +570,7 @@ export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, pr
     for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note', 'relation_fragments'] as const) {
         if (row[field] !== undefined) Object.assign(next, { [field]: row[field] });
     }
-    return { next, display: render && (Object.keys(displayed).length || row.relation_note || row.relation_fragments?.length)
+    return { next, display: render && (Object.keys(displayed).length || row.relation_note !== undefined || row.relation_fragments?.length)
         ? { ...row, axes: displayed } : undefined };
 }
 
@@ -659,11 +632,11 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
                     content = content
                         .replace(/；<u_affinity> 属于执笔灯号；/, '；')
                         .replace(/，最新 U→C 与 reason 又反馈了怎样的阅读体验；/, '；')
-                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：启用双向关系时，按三轴关系规则检查本轮关系报告。')
+                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。')
                         .replace(/^.*(?:理解|读取)执笔灯号.*$/gm, '').trimEnd();
                 }
                 if (prompt.id === 'nmj-v3-exit-check') {
-                    content = content.replace(/每位角色按 character_id[^\n]+/g, '启用双向关系时，检查两个方向各自的证据和三轴变化。');
+                    content = content.replace(/每位角色按 character_id[^\n]+/g, '启用双向关系时，确认人物关系的连续性。');
                 }
                 if (prompt.id === 'nmj-v619-possession-humanity') {
                     content = content.replace('而关系温度与占有拉力同时处在高位', '而真心与占有冲动同时强烈');

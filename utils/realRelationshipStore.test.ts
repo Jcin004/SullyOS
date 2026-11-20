@@ -353,7 +353,7 @@ describe('真实世界关系网独立状态', () => {
         expect(imported.directions[realRelationshipKey(f.from, f.to)]).toBeUndefined();
     });
 
-    it('无效人物、重复方向、缺失证据不被误判为空报告，显式空报告才能撤销重写楼层的事件', async () => {
+    it('无效人物、重复方向、缺少初始值不被误判为空报告，显式空报告才能撤销重写楼层的事件', async () => {
         const f = await fixture('invalid-rewrite');
         const original = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
         const graph = await DB.getRealRelationshipGraph();

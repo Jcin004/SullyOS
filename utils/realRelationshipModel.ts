@@ -137,6 +137,7 @@ export function realRelationshipBaseline(graph: RealRelationshipGraph, actors: r
         relationships: Object.values(graph.directions).filter(row => ids.has(row.fromId) && ids.has(row.toId)).map(row => ({
             fromId: row.fromId, toId: row.toId, fromName: names.get(row.fromId)!, toName: names.get(row.toId)!,
             identity: row.identity, cognition: row.cognition, relation_note: row.relation_note,
+            relation_fragments: row.relation_fragments,
             axes: row.axes,
         })),
     };
