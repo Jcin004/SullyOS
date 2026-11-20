@@ -12,6 +12,7 @@ on:
     paths:
       - .github/workflows/build-autocast-apk.yml
       - assets/presets/night-screening-v6.14.sully.json
+      - assets/presets/three-axis-relationship.sully.prompt.json
       - types.ts
       - utils/storyTheater.ts
       - utils/storyTheaterCast.ts
@@ -19,6 +20,9 @@ on:
       - utils/storyTheaterSessionCast.test.ts
       - utils/storyTheaterRelationships.ts
       - utils/storyTheaterRelationships.test.ts
+      - utils/realRelationshipModel.ts
+      - utils/realRelationshipStore.ts
+      - utils/realRelationshipStore.test.ts
       - utils/storyTheaterReply.ts
       - utils/storyTheaterTurn.test.ts
       - utils/storyTheaterContextSettings.test.ts
