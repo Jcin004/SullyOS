@@ -62,7 +62,7 @@ jobs:
 
       - name: Set separate debug app ID
         run: |
-          node -e "const fs=require('fs');const p='capacitor.config.json';const x=JSON.parse(fs.readFileSync(p,'utf8'));x.appId='com.aetheros.simulator.unifiedstorytest';x.appName='SullyOS Story Test';fs.writeFileSync(p,JSON.stringify(x,null,2)+'\\n')"
+          node -e "const fs=require('fs');const p='capacitor.config.json';const x=JSON.parse(fs.readFileSync(p,'utf8'));x.appId='com.aetheros.simulator.unifiedstorytest';x.appName='SullyOS Story Test';fs.writeFileSync(p,JSON.stringify(x,null,2))"
 
       - name: Generate Android project
         run: |
