@@ -99,6 +99,18 @@ describe('按实际人物对的三轴关系', () => {
         }), relation_note: '熟络了，却有些失落', relation_fragments: ['分开时没再回头'] }], [message(first)]);
         expect(direction(snapshot(follow))?.axes).toMatchObject({ FL: { score: 42, delta: 2 }, RI: { score: 6, delta: -2 } });
         expect(direction(snapshot(follow))?.relation_fragments).toEqual(['分开时没再回头']);
+        expect(direction(baseline([message(first), message(follow, 2)]))?.axes).toMatchObject({
+            FL: { score: 42 }, RI: { score: 6 },
+        });
+    });
+
+    it('没有证据标签的 DI 阶段也可在后续剧情中继续承接', () => {
+        const first = generate([pair(a.id, b.id, { DI: { score: 35, strength: 'mild', phase: 'active' } })]);
+        const second = generate([pair(a.id, b.id, {
+            DI: { phase: 'ended', strength: 'mild' },
+        })], [message(first)]);
+        expect(direction(snapshot(second))?.axes.DI?.score).toBe(30);
+        expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI?.score).toBe(30);
     });
 
     it('多人同楼层仅给实际交流的人物方向结算衰减', () => {

@@ -466,10 +466,11 @@ export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue |
 export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, item: AxisValue, historyVersion?: 2): AxisValue | undefined {
     if (historyVersion !== 2 || item.initial === true) return { score: item.score, strength: item.strength };
     if (!previous) return undefined;
-    // Old canonical DI without a phase represented a passive decay, including older invalid reports.
+    // A canonical event has already been validated. Optional provenance must not erase its change.
+    // DI without a phase still represents a passive decay in older panels.
     return axis === 'DI' ? calculateStoryRelationshipAxis(axis, previous,
-        item.phase && item.strength && item.trigger && item.evidence ? { ...item, delta: item.eventDelta } : undefined)
-        : { score: clamp(previous.score + (item.trigger && item.evidence ? item.eventDelta ?? item.delta ?? 0 : 0)), strength: item.strength };
+        item.phase && item.strength ? { ...item, delta: item.eventDelta ?? item.delta ?? 0 } : undefined)
+        : { score: clamp(previous.score + (item.eventDelta ?? item.delta ?? 0)), strength: item.strength };
 }
 
 /** Validate one already-parsed report and record the participation-based DI decision. */
@@ -565,7 +566,8 @@ export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, pr
         if (!after) continue;
         next.axes[axis] = after;
         if (render && (value || after.score !== prior?.score)) displayed[axis] = { ...after, initial: !prior,
-            eventDelta: prior ? value?.eventDelta ?? value?.delta ?? 0 : value?.score };
+            eventDelta: prior ? value?.eventDelta ?? value?.delta
+                ?? (value?.score === undefined ? 0 : clamp(value.score) - prior.score) : value?.score };
     }
     for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note', 'relation_fragments'] as const) {
         if (row[field] !== undefined) Object.assign(next, { [field]: row[field] });
