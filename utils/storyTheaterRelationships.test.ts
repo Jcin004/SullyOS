@@ -3,7 +3,9 @@ import type { Message } from '../types';
 import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks, BUILTIN_NIGHT_SCREENING_PRESET, resolveStoryPresetDocument } from './storyTheater';
 import { buildStoryRelationshipGuide, buildStoryRelationshipPayload, getStoryRelationshipBaseline, parseStoryRelationshipContent,
     reconcileStoryRelationships, restrictStoryRelationshipsToCast,
-    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
+    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID,
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
+    PREVIOUS_STORY_RELATIONSHIP_PROMPT, LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 
 const a = { id: 'a', name: '狛治' }, b = { id: 'b', name: '香奈乎' }, c = { id: 'c', name: '狛治' };
 const actors = [a, b, c];
@@ -194,16 +196,27 @@ describe('按实际人物对的三轴关系', () => {
         expect(snapshot(generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })]))).toBeUndefined();
     });
 
-    it('升级未改写的中心式三轴默认规则，保留自定义文本、开关和名字', () => {
+    it.each([
+        ['中心式', LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT],
+        ['人物对', LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT],
+        ['真实关系网', LEGACY_REAL_STORY_RELATIONSHIP_PROMPT],
+        ['单个示例', PREVIOUS_STORY_RELATIONSHIP_PROMPT],
+        ['四个示例', LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT],
+    ])('内置与导入预设都只升级未改写的%s默认三轴正文', (_version, content) => {
         const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
-        const legacy = { ...document, prompts: document.prompts.map(p => p.id === STORY_RELATIONSHIP_PROMPT_ID
-            ? { ...p, name: '我的关系规则', enabled: false, content: LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT } : p) };
-        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID))
-            .toMatchObject({ name: '我的关系规则', enabled: false, content: STORY_RELATIONSHIP_PROMPT });
-        legacy.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!.content += '\n我自己改过';
-        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)?.content).toContain('我自己改过');
-        legacy.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!.content = LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT;
-        expect(resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacy).prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID))
-            .toMatchObject({ name: '我的关系规则', enabled: false, content: STORY_RELATIONSHIP_PROMPT });
+        const relation = { ...document.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!,
+            name: '我的关系规则', enabled: false, content };
+        const worldbook = { id: 'author-worldbook', name: '自定义世界书', role: 'system' as const, enabled: true,
+            content: '角色所在的世界书规则。' };
+        const others = document.prompts.filter(p => p.id !== STORY_RELATIONSHIP_PROMPT_ID);
+        // Keep a deliberate order that differs from the built-in preset.
+        const legacy = { ...document, prompts: [worldbook, relation, ...others] };
+        const upgraded = { ...legacy, prompts: [worldbook, { ...relation, content: STORY_RELATIONSHIP_PROMPT }, ...others] };
+        const custom = { ...legacy, prompts: [worldbook, { ...relation, content: content + '\n我自己改过' }, ...others] };
+        for (const builtIn of [true, false]) {
+            const preset = { ...BUILTIN_NIGHT_SCREENING_PRESET, builtIn };
+            expect(resolveStoryPresetDocument(preset, legacy)).toEqual(upgraded);
+            expect(resolveStoryPresetDocument(preset, custom)).toEqual(custom);
+        }
     });
 });

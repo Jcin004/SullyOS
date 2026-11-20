@@ -106,7 +106,8 @@ export const PREVIOUS_STORY_RELATIONSHIP_PROMPT = LEGACY_REAL_STORY_RELATIONSHIP
         '<affinity_panel mode="three_axes"><affinity_person><from_id>起点ID</from_id><to_id>终点ID</to_id><FL><delta>5</delta><trigger>触发事件</trigger><evidence>具体事实</evidence></FL></affinity_person></affinity_panel>',
     ].join('\n');
 
-export const STORY_RELATIONSHIP_PROMPT = [
+// Exact text from the prior default. Used only to recognize and migrate untouched presets.
+export const LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT = [
     "从本轮正篇的亲历或明确获知的事实评估人物关系。用候选人物 ID 标识起点和终点，各方向独立。只同场、被提及、交流倾向和非正篇小剧场不能作为加减分的证据。三个轴独立，范围均为 0–100。",
     "FL 关系联结（Friendship Level）：衡量信任、熟悉、默契和陪伴。首次参考角色卡、既有关系与共同经历。理解、陪伴、合作、可靠、安心和主动支持可增加，失信、反感、排斥、失落、冲突和具体经历造成的疏离可减少，通常缓慢变化。",
     "RI 恋爱性心动（Romance Index）：原生审美受触动、对外貌或声音等产生恋爱性注意、回味某个瞬间、想靠近或想念、渴望亲密、恋爱性排他和亲密占有，都可能增加。心动消退、吸引减弱、自我消化、重新认识、反感或实际冷却可减少。时间和距离只有造成可辨认的心动变化才扣分。轻微心动也要记录，区分恋爱性排他与竞争性占有。RI 不自动衰减。",
@@ -127,6 +128,31 @@ export const STORY_RELATIONSHIP_PROMPT = [
     "<affinity_person><from_id>A</from_id><to_id>B</to_id><RI><delta>2</delta><trigger>近距离说话</trigger><evidence>我想以后还和她这样亲近</evidence></RI><DI><delta>4</delta><phase>active</phase><strength>mild</strength><trigger>突然靠近</trigger><evidence>我一时慌乱，把原本要问的话忘了</evidence></DI></affinity_person>",
     "关系认同 relation_identity、第一视角认知 relation_cognition、稳定关系质地 relation_note、本轮事实 relation_fragment 可独立更新。用 relation_trigger 和 relation_evidence 给方向事实作证；轴的事实也可作为关系质地和片段的依据。自我记录用 <self_record><character_id>人物ID</character_id><state_note>亲历后的新理解</state_note></self_record>。认同、认知和自我记录为人物私有，其他人物不能知道未表达的内心。",
     "关系与 <turn_cast> 分别报告。自由续写也可在面板外用 <turn_cast> 填写实际交集清楚的候选人物 ID 数组，供程序判定安静楼层的 DI 回落。",
+].join('\n');
+
+export const STORY_RELATIONSHIP_PROMPT = [
+    "人物主体判断：事件发生 → 人物自身感知与解读 → 产生实际反应 → 判断 FL/RI/DI 的变化。",
+    "以每个方向的起点人物为主体。只根据该人物亲历或明确获知的正篇事实，结合其人格七维、认知方式、审美、价值观、既有经历、当前关系状态与当下情境，推导其独有的解读。再根据本轮实际形成的感受、认知、注意力或行为变化，决定更新哪一轴和变化幅度。事件本身不能直接决定分值。同一事件在两个方向可能产生不同反应，也可能没有变化。仅同场、被提及、交流倾向及非正篇小剧场不构成评分依据。",
+    "FL、RI、DI 各为 0–100，独立判断，不互相换算。同一事件影响多轴时，各自写 trigger 和 evidence。首次参考角色卡、既有关系与共同经历，结合本轮实际反应确定初值。",
+    "FL 关系联结（Friendship Level）：衡量信任、默契、熟悉、陪伴与联结程度。信任、默契或陪伴使人物更愿联结时可以增加。反感、排斥、不适或失落削弱联结时可以减少。FL 通常缓慢变化。",
+    "RI 恋爱性心动（Romance Index）：明确的心动才增加，轻微而明确的心动也有效。审美牵引是原生审美点被触动，包括对方独特的表达，并由此产生恋爱性注意、回味、想靠近、想念或渴望。亲密排他体现为出于恋爱性的排他或亲密占有。心动消退、自我消化、时间或距离带来的实际情感变化，以及反感、排斥使恋爱性吸引降低时，可以减少。RI 只随实际情感变化更新。",
+    "DI 失序扰动（Disorder Index）：衡量人物的注意力、情绪、思考或行动节奏被对方扰动的程度。被气、冒犯、受挫、挑衅、斗嘴、好奇与探究欲、少年胜负欲、不服输、竞争性占有、尴尬、惊讶、社交压力、领地意识或面子受到触动，只有实际引起失序才增加。按注意力偏移、反应强度和持续程度判断 mild / moderate / strong。",
+    "",
+    "吸引与注意力来源是独立参考模块。结合人物自身的人格七维、经历、认知与情境辨认下面的线索，用人物的实际反应确定变化轴及幅度。",
+    "1. 身体/审美：外貌、声音、气味、体态、触碰、近距离紧张唤醒。",
+    "2. 能力／人格：才华、专注、判断力、价值观、底线。",
+    "3. 被看见／安全：理解、记住细节、接住情绪、尊重边界、可靠、保护、可放松。",
+    "4. 互惠偏爱：被选择、被主动、被偏爱、好感暗示、熟悉曝光。",
+    "5. 情绪／经历：快乐、松弛、被逗笑、分享日常、陪伴、共患难、遗憾、未完成。",
+    "6. 反差／未知／社会：反差、神秘、探索、他人认可、稀缺竞争、理想化投射。",
+    "7. 成长激励：被对方人格或存在影响，想成为更好的自己、想配得上、想并肩。",
+    "",
+    "正篇结束后输出一份 <affinity_panel mode=\"three_axes\">。每个有变化的方向使用 <affinity_person>，用 <from_id> 和 <to_id> 填候选人物 ID。场外对话省略面板。",
+    "事件记录映射：axis 与 source_type 由轴标签表示，即 <FL>（友谊与联结）、<RI>（心动）、<DI>（失序）。在对应轴标签内用 <trigger> 写本轮触发事件，用 <evidence> 写来源线索或失序源、起点人物如何感知与解读，以及实际如何反应。内心推导须有该人物能获知的事实支撑。",
+    "每轴首次有效评分用 <score>，已有分值用 <delta> 表示增减。0 分属于已初始化。没有发生变化的轴省略。衰减节奏由现有机制决定，FL 通常缓变，RI 随事实更新，DI 可快速回落。axis、source_type 和 decay 不另写 XML 字段。",
+    "DI 用 <phase> 标记 active 或 ended，用 <strength> 标记 mild、moderate 或 strong。已经初始化时，持续扰动即使没有新增量也可凭证据报告 active；结束时报告 ended。没有持续扰动且无需显式报告时省略 DI，程序按现有参与范围和事件强度结算每轮自然衰减，扰动结束后按强度回落。",
+    "关系认同 relation_identity、第一视角认知 relation_cognition、稳定关系质地 relation_note、本轮事实 relation_fragment 可独立更新。用 relation_trigger 和 relation_evidence 记录方向事实；轴的证据也可支撑关系质地和事实片段。自我记录用 <self_record>，内填 <character_id> 和 <state_note>。认同、认知和自我记录为人物私有，其他人物不能知道未表达的内心。",
+    "关系与 <turn_cast> 分别报告。自由续写也可在面板外用 <turn_cast> 提供实际参与本轮的候选人物 ID 数组，供程序确认自然衰减范围。",
 ].join('\n');
 
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;

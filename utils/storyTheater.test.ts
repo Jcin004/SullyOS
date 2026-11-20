@@ -204,6 +204,11 @@ describe('糯米机原生剧情预设边界', () => {
         const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
         const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
+        expect(axes.content).toBe(affinity.content);
+        expect(axes.content).toContain('事件发生 → 人物自身感知与解读 → 产生实际反应 → 判断 FL/RI/DI 的变化');
+        expect(axes.content).toContain('axis 与 source_type 由轴标签表示');
+        expect(axes.content).toContain('<affinity_panel mode="three_axes">');
+        expect(axes.content).not.toMatch(/<(?:score|delta)>[+-]?\d|<(?:axis|source_type|decay)>/);
         expect(axes.content).toContain('RI 恋爱性心动');
         expect(axes.content).toContain('DI 失序扰动');
         expect(sent.origins.get(axes)?.presetText).toBe(affinity.content);

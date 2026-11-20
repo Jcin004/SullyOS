@@ -11,7 +11,12 @@ import type {
     UserProfile,
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
-import { formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel, stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT, PREVIOUS_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel } from './storyTheaterRelationships';
+import {
+    formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel,
+    stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT,
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
+    PREVIOUS_STORY_RELATIONSHIP_PROMPT, LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel,
+} from './storyTheaterRelationships';
 import {
     type WorldbookScanMessage,
 } from './worldbook';
@@ -622,6 +627,13 @@ const nativePromptById = new Map(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts
 const rawPromptById = new Map(RAW_NIGHT_SCREENING.prompts.map(prompt => [prompt.id, prompt]));
 const previousNativeById = new Map(LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT.prompts.map(prompt => [prompt.id, prompt]));
 const previousRawById = new Map(getPreviousStoryRelationshipDocument(RAW_NIGHT_SCREENING).prompts.map(prompt => [prompt.id, prompt]));
+const legacyRelationshipDefaults = new Set([
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT,
+    LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT,
+    LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
+    PREVIOUS_STORY_RELATIONSHIP_PROMPT,
+    LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT,
+]);
 
 /** Only recognize untouched defaults; saved prompt text and order are user data. */
 export const resolveStoryPresetDocument = (
@@ -638,7 +650,7 @@ export const resolveStoryPresetDocument = (
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
                 || prompt.content !== oldDefaults.get(prompt.id)?.content)
             .map(prompt => {
-                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && [LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT, PREVIOUS_STORY_RELATIONSHIP_PROMPT].includes(prompt.content)) {
+                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && legacyRelationshipDefaults.has(prompt.content)) {
                     return { ...prompt, content: STORY_RELATIONSHIP_PROMPT };
                 }
                 const oldDefault = oldDefaults.get(prompt.id);
