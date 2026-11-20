@@ -113,15 +113,15 @@ describe('按实际人物对的三轴关系', () => {
         expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI?.score).toBe(30);
     });
 
-    it('多人同楼层仅给实际交流的人物方向结算衰减', () => {
+    it('多人交流名单只帮助识别出场，不擅自令人物失序减弱', () => {
         const first = generate([pair(a.id, b.id, { DI: { score: 20, ...fact } }),
             pair(a.id, c.id, { DI: { score: 20, ...fact } })]);
         const state = baseline([message(first)]);
         const cast = new Set(actors.map(actor => actor.id));
         expect(buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast, interactions: [] })).toBeUndefined();
-        const payload = buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast, interactions: [[a.id, b.id]] });
-        const carried = baseline([message(first), message('一起等车', 2, { theaterStoryRelationshipEvent: payload })]);
-        expect(direction(carried, a.id, b.id)?.axes.DI?.score).toBe(15);
+        expect(buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast, interactions: [[a.id, b.id]] })).toBeUndefined();
+        const carried = baseline([message(first), message('一起等车', 2)]);
+        expect(direction(carried, a.id, b.id)?.axes.DI?.score).toBe(20);
         expect(direction(carried, a.id, c.id)?.axes.DI?.score).toBe(20);
     });
 
@@ -191,18 +191,19 @@ describe('按实际人物对的三轴关系', () => {
         expect(baseline([message('<affinity_panel><active_char>狛治</active_char><state_note>无法辨别同名人物</state_note></affinity_panel>')]).state_notes).toEqual({});
     });
 
-    it.each([['mild', 75, 70], ['moderate', 56, 39], ['strong', 64, 51]] as const)(
-        'DI %s 保留结束/回落逻辑；未记录的人物对保持历史', (strength, ended, idle) => {
+    it.each([['mild', 75], ['moderate', 56], ['strong', 64]] as const)(
+        'DI %s 在明确结束时回落；没有本轮变化就承接原值', (strength, ended) => {
             const first = generate([pair(a.id, b.id, { FL: { score: 57, ...fact }, RI: { score: 23, ...fact }, DI: { score: 80, ...fact, strength, phase: 'active' } })]);
             const second = generate([pair(a.id, b.id, { DI: { delta: 0, ...fact, strength, phase: 'ended' } })], [message(first)]);
             expect(direction(snapshot(second))?.axes.DI).toMatchObject({ score: ended, delta: ended - 80, ...fact });
             const history = [message(first), message(second, 2)];
             const state = baseline(history);
             const payload = buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast: new Set([a.id, b.id]), interactions: [] });
+            expect(payload).toBeUndefined();
             const third = reconcileStoryRelationships('<story_text>他们照常等车。</story_text>', state, { payload });
-            expect(direction(snapshot(third))?.axes).toMatchObject({ DI: { score: idle } });
-            expect(direction(baseline([...history, message(third, 3, { theaterStoryRelationshipEvent: payload })]))?.axes)
-                .toMatchObject({ FL: { score: 57 }, RI: { score: 23 }, DI: { score: idle } });
+            expect(snapshot(third)).toBeUndefined();
+            expect(direction(baseline([...history, message(third, 3)]))?.axes)
+                .toMatchObject({ FL: { score: 57 }, RI: { score: 23 }, DI: { score: ended } });
             expect(direction(baseline([message(first), message('无面板', 2)]))?.axes.DI?.score).toBe(80);
             const other = generate([pair(b.id, c.id, { FL: { score: 20, ...fact } })], [message(first)]);
             expect(direction(baseline([message(first), message(other, 2)]))?.axes.DI?.score).toBe(80);

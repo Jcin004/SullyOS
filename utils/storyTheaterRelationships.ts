@@ -473,15 +473,14 @@ export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | un
         : { score: clamp(previous.score + (item.eventDelta ?? item.delta ?? 0)), strength: item.strength };
 }
 
-/** Validate one already-parsed report and record the participation-based DI decision. */
+/** Accept independently described character states. Participation never invents a DI change. */
 export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | undefined, actors: readonly Actor[],
-    baseline: StoryRelationshipPanel, report: RelationshipIssue, participation?: StoryRelationshipParticipation): StoryRelationshipPayload | undefined {
+    baseline: StoryRelationshipPanel, report: RelationshipIssue, _participation?: StoryRelationshipParticipation): StoryRelationshipPayload | undefined {
     const names = new Map(actors.map(actor => [actor.id, actor.name]));
     const resolve = storyCandidateResolver(actors);
     const previous = new Map(baseline.relationships.map(row => [pairKey(row.fromId, row.toId), row]));
     const updates = new Map<string, StoryRelationshipUpdate>();
     const seen = new Set<string>();
-    const explicitDI = new Set<string>();
     for (const row of panel?.relationships ?? []) {
         let fromId: string, toId: string;
         try { fromId = resolve(row.fromId); toId = resolve(row.toId); }
@@ -490,7 +489,6 @@ export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | un
         const key = pairKey(fromId, toId);
         if (seen.has(key)) { report('面板重复报告了同一人物方向'); return; }
         seen.add(key);
-        if (row.axes.DI) explicitDI.add(key);
         const axes: Relationship['axes'] = {};
         for (const axis of STORY_RELATIONSHIP_AXES) {
             const value = row.axes[axis];
@@ -521,18 +519,6 @@ export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | un
     if (!updates.size && !Object.keys(stateNotes).length && panel?.hadRelationshipEntries) {
         report('没有可写入的关系方向');
         return;
-    }
-    if (participation) for (const [key, row] of previous) {
-        if (!row.axes.DI || explicitDI.has(key)) continue;
-        const { cast, interactions } = participation;
-        if (!cast.has(row.fromId) || !cast.has(row.toId)) continue;
-        const sameScene = cast.size === 2 || updates.has(key)
-            || interactions.some(group => group.includes(row.fromId) && group.includes(row.toId));
-        if (!sameScene) continue;
-        const update = updates.get(key) ?? { mode: 'proposal', direction: {
-            fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName, axes: {},
-        } };
-        updates.set(key, { ...update, decayDI: true });
     }
     if (!panel && !updates.size) return;
     return { version: 1, updates: [...updates.values()], stateNotes };

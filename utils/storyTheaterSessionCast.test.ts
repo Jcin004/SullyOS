@@ -32,7 +32,7 @@ function convertedPreset() {
     return parseStoryTheaterPreset(JSON.stringify(convertSillyTavernStoryPreset(source).document), 'switch.sully.json');
 }
 
-it.each([true, false])('真实=%s：统一上下文、独立解析、单次计算与在场 DI 回落', async isReal => {
+it.each([true, false])('真实=%s：统一上下文、独立解析、单次计算与人物 DI 自主变化', async isReal => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
@@ -114,13 +114,13 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
         await send(3);
         expect(parse).toHaveBeenCalledTimes(1);
         if (isReal) expect(calculate).toHaveBeenCalledTimes(1);
-        expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 15 } });
+        expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 20 } });
         const third = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(third.metadata?.theaterPrivateAxes).toEqual({ [actors[0].id]: '我整理自己的信件' });
         if (isReal) expect(third.metadata?.theaterMirrorIds[actors[0].id]).toBeGreaterThan(0);
-        expect(third.metadata[isReal ? 'theaterRealRelationshipEvent' : 'theaterStoryRelationshipEvent'].updates[0].decayDI).toBe(true);
+        expect(third.metadata[isReal ? 'theaterRealRelationshipEvent' : 'theaterStoryRelationshipEvent'].updates[0].decayDI).toBeUndefined();
         expect(third.content).toContain('<score>10</score><delta>5</delta>');
-        await send(4); expect((await current()).axes.DI?.score).toBe(15);
+        await send(4); expect((await current()).axes.DI?.score).toBe(20);
         const fourth = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(fourth.metadata.theaterRelationshipIssue).toBe('三轴关系面板未闭合');
         expect(mocks.toast).toHaveBeenCalledWith('关系记录：三轴关系面板未闭合', 'error');
@@ -136,21 +136,21 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
         const baseline = JSON.parse(guide.slice(guide.lastIndexOf('方向基线：') + '方向基线：'.length));
         expect(baseline.relationships.find((row: any) => row.fromId === actors[0].id).axes)
             .toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
-        await send(5); expect((await current()).axes.DI?.score).toBe(15);
-        await send(6); expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 10 } });
+        await send(5); expect((await current()).axes.DI?.score).toBe(20);
+        await send(6); expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 20 } });
         await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!.click());
-        await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(15); });
-        // The replaced floor no longer subtracts five, and the later free turn has its own confirmed participation.
+        await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(20); });
+        // Rewriting a floor leaves DI unchanged unless the new character state explicitly changes it.
         const free = { ...entry, castModeEnabled: false };
         await DB.saveStoryTheater(free);
         await render(free);
         await send(8);
         const latest = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(latest.metadata.theaterCastIds).toBeUndefined();
-        expect((await current()).axes.DI?.score).toBe(10);
-        // Deleting the earlier FL + natural-decay event replays the later free turn from the surviving score.
+        expect((await current()).axes.DI?.score).toBe(20);
+        // Deleting the FL event preserves the last explicitly established DI state.
         await act(async () => DB.deleteMessage(third.id));
-        expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 15 } });
+        expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
         expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[1].id, actors[0].id])]).toBeUndefined();
         if (!isReal) expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[0].id, actors[1].id])]).toBeUndefined();
     } finally {
