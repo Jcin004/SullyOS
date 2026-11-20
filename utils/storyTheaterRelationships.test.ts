@@ -56,7 +56,9 @@ describe('按实际人物对的三轴关系', () => {
         });
         const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(raw), actors, previous, () => {});
         const content = reconcileStoryRelationships(stripStoryRelationshipPanels(raw), previous, { payload });
-        expect(snapshot(content)?.relationships[0]).toMatchObject({ relation_note: '信任逐渐稳定', axes: {} });
+        expect(snapshot(content)?.relationships[0]).toMatchObject({
+            relation_note: '信任逐渐稳定', axes: { FL: { score: 30, delta: 0 }, RI: { score: 7, delta: 0 } },
+        });
         expect(content).not.toContain('我更愿意主动交谈');
         const state = baseline([message(start), message('<story_text>正文。</story_text>', 2, { theaterStoryRelationshipEvent: payload })]);
         expect(direction(state)).toMatchObject({ identity: '朋友', cognition: '我更愿意主动交谈', relation_fragments: ['她主动归还旧信'],
@@ -79,7 +81,7 @@ describe('按实际人物对的三轴关系', () => {
         expect(issues).toEqual([]);
         expect(payload?.updates).toHaveLength(1);
         const output = reconcileStoryRelationships(stripStoryRelationshipPanels(input), prior, { payload });
-        expect(direction(snapshot(output))?.axes).toEqual({});
+        expect(direction(snapshot(output))?.axes).toMatchObject({ FL: { score: 34, delta: 0 } });
         expect(direction(snapshot(output))?.relation_note).toBe('见面后有点别扭');
         const carried = baseline([message(first), message(output, 2, { theaterStoryRelationshipEvent: payload })]);
         expect(direction(carried)).toMatchObject({
@@ -101,6 +103,20 @@ describe('按实际人物对的三轴关系', () => {
         expect(direction(snapshot(follow))?.relation_fragments).toEqual(['分开时没再回头']);
         expect(direction(baseline([message(first), message(follow, 2)]))?.axes).toMatchObject({
             FL: { score: 42 }, RI: { score: 6 },
+        });
+    });
+
+    it('仅关系认知变化也可显示旧三轴；展示用 +0 不会重复触发 DI 回落', () => {
+        const first = generate([pair(a.id, b.id, { FL: { score: 60 }, DI: { score: 20, phase: 'ended', strength: 'mild' } })]);
+        const raw = proposal([{ ...pair(a.id, b.id, {}), cognition: '我开始怀疑自己的判断' }]);
+        const state = baseline([message(first)]);
+        const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(raw), actors, state, () => {});
+        expect(payload?.updates[0].direction.axes).toEqual({});
+        const next = reconcileStoryRelationships(stripStoryRelationshipPanels(raw), state, { payload });
+        expect(direction(snapshot(next))?.cognition).toBe('我开始怀疑自己的判断');
+        expect(direction(snapshot(next))?.axes).toMatchObject({ FL: { score: 60, delta: 0 }, DI: { score: 15, delta: 0 } });
+        expect(direction(baseline([message(first), message(next, 2)]))?.axes).toMatchObject({
+            FL: { score: 60 }, DI: { score: 15 },
         });
     });
 

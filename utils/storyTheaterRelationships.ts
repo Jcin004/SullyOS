@@ -1,4 +1,5 @@
 import type { Message, StoryTheaterPresetDocument } from '../types';
+import threeAxisRelationshipPrompt from '../assets/presets/three-axis-relationship.sully.prompt.json';
 import { storyCandidateResolver } from './storyTheaterCast';
 
 export const STORY_RELATIONSHIP_PROMPT_ID = 'nmj-v65-affinity-control';
@@ -98,18 +99,8 @@ export const LEGACY_REAL_STORY_RELATIONSHIP_PROMPT = LEGACY_PAIR_STORY_RELATIONS
     '真实关系的称谓、认知与三轴独立更新。没有变化的轴省略并维持原值；DI 只有明确记录本轴事件时才计算，包括 ended 回落。数值 0 已初始化，缺少该轴才是尚未初始化。',
 ].join('\n');
 
-export const STORY_RELATIONSHIP_PROMPT = [
-    "角色对彼此的看法、感受与关系走向，由角色自身的性情、经历、处境与情绪潮线决定。同一场相处在两个人心里可以留下不同的东西。",
-    "FL 关系联结：熟悉、信任、默契与共同经历。RI 恋爱性心动：恋爱性的注意、吸引与靠近意愿。DI 失序扰动：情绪、注意或行动节奏受牵动的程度。三个刻度各为 0–100，随人物实际的心绪起伏。",
-    "人物之间的印象、关系天气与相处片段可以继续发展，三轴数值也可以原样延续。",
-    "",
-    "【关系面板｜供程序承接，不进入剧情正文】",
-    "正文后输出一份 <affinity_panel mode=\"three_axes\">。每个实际发生相处的人物方向可写一个 <affinity_person>，用 <from_id> 和 <to_id> 指明角色；分别呈现双方的看法，不能把一个人的内心当作另一个人知道的事。",
-    "三轴写在 <FL>、<RI>、<DI> 中：首次用 <score> 表示当前数值；已有数值可用 <delta> 表示起伏，也可用 <score> 表示当前数值。没有数值变化时保留原值；如写出 +0，也照常承接。DI 可用 <phase>active 或 ended</phase> 表示扰动仍在或结束，<strength>mild、moderate 或 strong</strength> 表示强度。",
-    "每个方向可独立写 <relation_identity>关系认同</relation_identity>、<relation_cognition>该人物对对方的认识</relation_cognition>、<relation_note>此刻关系的具体质地</relation_note>、<relation_fragment>本轮留下的相处片段</relation_fragment>。这些内容不以分数变化为前提。",
-    "人物自己的新想法可写在 <self_record><character_id>角色 ID</character_id><state_note>内在变化</state_note></self_record>。事件来源如有必要可用 <trigger>、<evidence> 或 <relation_trigger>、<relation_evidence> 补充，均为可选。",
-    "真实陪伴承接同一张关系网，虚构剧场承接各自的关系历史。出演名单 <turn_cast> 仍按出演协议提供。闭合 </affinity_panel>。",
-].join('\n');
+/** The editable preset asset owns all relationship-generation wording. */
+export const STORY_RELATIONSHIP_PROMPT = threeAxisRelationshipPrompt.content;
 
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
 
@@ -468,6 +459,10 @@ export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | un
     if (!previous) return undefined;
     // A canonical event has already been validated. Optional provenance must not erase its change.
     // DI without a phase still represents a passive decay in older panels.
+    // +0 in a reader-facing snapshot is continuity, not an extra DI decay event.
+    if (axis === 'DI' && item.eventDelta === 0 && item.delta === 0 && !item.phase) {
+        return { score: previous.score, strength: previous.strength };
+    }
     return axis === 'DI' ? calculateStoryRelationshipAxis(axis, previous,
         item.phase && item.strength ? { ...item, delta: item.eventDelta ?? item.delta ?? 0 } : undefined)
         : { score: clamp(previous.score + (item.eventDelta ?? item.delta ?? 0)), strength: item.strength };
@@ -558,8 +553,19 @@ export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, pr
     for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note', 'relation_fragments'] as const) {
         if (row[field] !== undefined) Object.assign(next, { [field]: row[field] });
     }
-    return { next, display: render && (Object.keys(displayed).length || row.relation_note !== undefined || row.relation_fragments?.length)
-        ? { ...row, axes: displayed } : undefined };
+    const visible = Object.keys(displayed).length > 0 || row.identity !== undefined
+        || row.cognition !== undefined || row.relation_note !== undefined || Boolean(row.relation_fragments?.length);
+    if (render && visible) {
+        // Display established axes at +0 when only the relationship's texture changed.
+        // These display-only values do not enter the event ledger as updates.
+        for (const axis of STORY_RELATIONSHIP_AXES) {
+            if (displayed[axis] || !next.axes[axis]) continue;
+            const value = next.axes[axis]!;
+            displayed[axis] = { score: value.score, delta: 0, initial: false, eventDelta: 0,
+                ...(value.strength ? { strength: value.strength } : {}) };
+        }
+    }
+    return { next, display: render && visible ? { ...row, axes: displayed } : undefined };
 }
 
 export function appendStoryRelationshipPanel(prose: string, relationships: Relationship[], state_notes: StoryRelationshipPayload['stateNotes']): string {
@@ -597,6 +603,8 @@ export function formatStoryRelationshipPanel(panel: StoryRelationshipPanel): str
                 const evidence = [value.trigger, value.evidence].filter(Boolean).join(' · ');
                 return [axis + ' ' + STORY_RELATIONSHIP_LABELS[axis] + '：' + value.score + delta + (evidence ? ' · ' + evidence : '')];
             }),
+            ...(row.identity !== undefined ? ['关系认同：' + row.identity] : []),
+            ...(row.cognition !== undefined ? ['关系认知：' + row.cognition] : []),
             row.relation_note || '',
             ...(row.relation_fragments ?? []),
         ].filter(Boolean).join('\n')),
@@ -611,7 +619,7 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))
             .map(prompt => {
                 if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID) {
-                    return { ...prompt, name: '💗双向关系｜FL · RI · DI', content: STORY_RELATIONSHIP_PROMPT };
+                    return { ...prompt, name: threeAxisRelationshipPrompt.name, content: STORY_RELATIONSHIP_PROMPT };
                 }
                 let { name, content } = prompt;
                 if (prompt.id === 'nmj-v65-section-affinity-start') name = '🧩↓双向关系｜FL · RI · DI';
@@ -620,11 +628,11 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
                     content = content
                         .replace(/；<u_affinity> 属于执笔灯号；/, '；')
                         .replace(/，最新 U→C 与 reason 又反馈了怎样的阅读体验；/, '；')
-                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。')
+                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：检查已启用关系模块的输出格式。')
                         .replace(/^.*(?:理解|读取)执笔灯号.*$/gm, '').trimEnd();
                 }
                 if (prompt.id === 'nmj-v3-exit-check') {
-                    content = content.replace(/每位角色按 character_id[^\n]+/g, '启用双向关系时，确认人物关系的连续性。');
+                    content = content.replace(/每位角色按 character_id[^\n]+/g, '启用双向关系时，核对关系面板的角色 ID 与格式。');
                 }
                 if (prompt.id === 'nmj-v619-possession-humanity') {
                     content = content.replace('而关系温度与占有拉力同时处在高位', '而真心与占有冲动同时强烈');

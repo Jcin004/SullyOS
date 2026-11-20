@@ -115,15 +115,6 @@ export const REAL_COMPANION_MEMORY_GUARD = [
     '- 可以自然遗忘或记错角色确实可能记错的细枝末节，但不得借此创造对用户不利或未经用户确认的共同历史。',
 ].join('\n');
 
-export const RELATIONSHIP_TEXTURE_GUIDE = [
-    '### 关系温度 · 高位不等于静止',
-    '- 关系温度是长期底座，不是每轮必须变化的进度条。尤其达到 95—100 后，没有真正改变关系的新事实就保持原值与 +0，不为制造新鲜感反复涨跌。',
-    '- 数值稳定时，变化应落在关系质地：默契如何落地、边界是否被尊重、哪件小事仍然刺手、彼此依赖的方式、刚形成的共同习惯、未说开的分歧或本轮完成的一次修复。',
-    '- <relation_note> 每轮只写一句最能概括此刻质地的关系天气，避免连续复用“甜蜜、亲密、信任加深”等空泛同义句。',
-    '- 在 <relation_note> 之后可追加 1—3 条 <relation_fragment>关系碎片</relation_fragment>；每条是一句基于本轮具体事实的短观察。维度按事实轮换，不写散乱 Markdown，不复述分数，不预测结局。',
-    '- 若本轮确实没有值得记录的新纹理，可以不输出 relation_fragment；不要硬编碎念。',
-].join('\n');
-
 const NATIVE_MARKERS: Array<NonNullable<StoryTheaterPresetPrompt['marker']>> = [
     'characters', 'world_before', 'user', 'world_after', 'scenario', 'examples', 'history',
 ];
@@ -688,9 +679,15 @@ export const resolveStoryPresetDocument = (
                     '本轮要求输出关系面板时，<affinity_panel mode="three_axes"> 必须完整且只出现一次；',
                     '本轮要求输出关系面板时，<relationship_panel> 必须完整且只出现一次；',
                 )) return { ...prompt, content: nextDefault.content };
-                if (prompt.id === 'nmj-v616-silent-preflight' && nextDefault && prompt.content === nextDefault.content.replace(
-                    '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。',
+                if (prompt.id === 'nmj-v616-silent-preflight' && nextDefault && [
                     '6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。',
+                    '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。',
+                ].some(legacy => prompt.content === nextDefault.content.replace(
+                    '6. 关系侧表：检查已启用关系模块的输出格式。', legacy
+                ))) return { ...prompt, content: nextDefault.content };
+                if (prompt.id === 'nmj-v3-exit-check' && nextDefault && prompt.content === nextDefault.content.replace(
+                    '启用双向关系时，核对关系面板的角色 ID 与格式。',
+                    '启用双向关系时，确认人物关系的连续性。'
                 )) return { ...prompt, content: nextDefault.content };
                 return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content
                     ? { ...prompt, content: nextDefault.content, name: prompt.name === oldDefault.name ? nextDefault.name : prompt.name }

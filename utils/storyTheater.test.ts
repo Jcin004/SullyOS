@@ -38,7 +38,6 @@ import {
     parseStoryTheaterPreset,
     normalizeStoryTheater,
     REAL_COMPANION_MEMORY_GUARD,
-    RELATIONSHIP_TEXTURE_GUIDE,
     resolveStoryPresetDocument,
     resolveStoryTheaterMask,
     selectStoryArchiveBatch,
@@ -198,19 +197,15 @@ describe('糯米机原生剧情预设边界', () => {
         expect(affinity.content).toContain('FL 关系联结');
         expect(affinity.content).toContain('RI 恋爱性心动');
         expect(affinity.content).toContain('DI 失序扰动');
-        expect(affinity.content).toContain('身体／审美');
-        expect(affinity.content).toContain('成长激励');
+        expect(affinity.content).toContain('角色自身的性情、经历、处境与情绪潮线');
+        expect(affinity.content).toContain('这些内容不以分数变化为前提');
         expect(document.prompts.some(prompt => ['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))).toBe(false);
         const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
         const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
         expect(axes.content).toBe(affinity.content);
-        expect([...axes.content.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual([
-            'emotion_core_protocol', 'system_var', 'attraction_source', 'axis_rules', 'update_rules', 'event_log_schema',
-        ]);
-        const axisRules = axes.content.split('<axis_rules>')[1].split('</axis_rules>')[0];
-        expect([...axisRules.matchAll(/^(FL|RI|DI)：/gm)].map(match => match[1])).toEqual(['FL', 'RI', 'DI']);
-        expect(axes.content).toContain('事件来源 → 人物自身感知与解读 → 实际反应 → FL/RI/DI 变化');
+        expect(axes.content).not.toContain('事件来源 → 人物自身感知与解读 → 实际反应 → FL/RI/DI 变化');
+        expect(axes.content).toContain('【关系面板｜供程序承接，不进入剧情正文】');
         expect(axes.content).toContain('<affinity_panel mode="three_axes">');
         expect(axes.content).not.toMatch(/<(?:score|delta)>[+-]?\d|<(?:axis|source_type|decay)>/);
         expect(axes.content).toContain('RI 恋爱性心动');
@@ -221,12 +216,12 @@ describe('糯米机原生剧情预设边界', () => {
         expect(scene.content).toContain('幕后与余波”（幕后暗格后紧接镜头债）');
         expect(scene.content).not.toContain('幕后暗格、世界线、镜头债');
         const exit = document.prompts.find(prompt => prompt.id === 'nmj-v3-exit-check')!;
-        expect(sent.messages.some(message => message.content.includes('启用双向关系时，确认人物关系的连续性。'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('启用双向关系时，核对关系面板的角色 ID 与格式。'))).toBe(true);
         expect(exit.content).toContain('幕后与余波（幕后暗格 → 镜头债）');
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(sent.messages.some(message => message.content.includes('角色的关系承接各自的经历、处境与情绪潮线。'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('6. 关系侧表：检查已启用关系模块的输出格式。'))).toBe(true);
         expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方'))).toBe(false);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
@@ -823,10 +818,13 @@ describe('本轮关系备注', () => {
         expect(unnoticed).toContain('不覆盖用户对其他角色单独设置的察觉状态');
     });
 
-    it('满值后保持数值底座，允许关系质地继续变化', () => {
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('95—100');
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('<relation_fragment>');
-        expect(RELATIONSHIP_TEXTURE_GUIDE).toContain('不写散乱 Markdown');
+    it('预设是唯一关系文案来源，其他默认段落只检查技术格式', () => {
+        expect(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(
+            prompt => prompt.id === 'nmj-v65-affinity-control'
+        )?.content).toContain('这些内容不以分数变化为前提');
+        expect(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(
+            prompt => prompt.id === 'nmj-v616-silent-preflight'
+        )?.content).not.toContain('角色的关系承接各自的经历、处境与情绪潮线');
     });
 
     it('绝对关系值由前端按上一轮加减 delta，纠正模型把 41 - 1 算成 42', () => {
