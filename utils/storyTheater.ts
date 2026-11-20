@@ -306,6 +306,16 @@ export const resolveStoryTheaterMask = (
     return { selection: { type: 'user' }, name: user.name || '你', avatar: user.avatar, description: user.bio || '' };
 };
 
+export const normalizeStoryPresetGeneration = (
+    generation?: Partial<StoryTheaterPresetDocument['generation']>,
+): StoryTheaterPresetDocument['generation'] => ({
+    temperature: clampNumber(generation?.temperature, 0, 2, 0.9),
+    topP: clampNumber(generation?.topP, 0, 1, 1),
+    frequencyPenalty: clampNumber(generation?.frequencyPenalty, -2, 2, 0),
+    presencePenalty: clampNumber(generation?.presencePenalty, -2, 2, 0),
+    maxTokens: Math.round(clampNumber(generation?.maxTokens, 256, 32000, 8000)),
+});
+
 const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPresetDocument => {
     if (!value || value.schema !== 'sullyos.story-preset' || value.version !== 1 || !Array.isArray(value.prompts)) {
         throw new Error('不是受支持的糯米机剧情预设');
@@ -320,21 +330,20 @@ const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPreset
             section: { id: String(prompt.section.id), name: String(prompt.section.name || '自定义分组'), edge: prompt.section.edge },
         } : {}),
         ...(NATIVE_MARKERS.includes(prompt?.marker) ? { marker: prompt.marker } : {}),
-        ...(prompt?.scope === 'story_theater' || prompt?.scope === 'story_theater_story' ? { scope: prompt.scope } : {}),
+        ...(value.promptLayout === 'ordered' && !prompt?.marker && !prompt?.section
+            && Number.isSafeInteger(prompt?.inChat?.depth) && prompt.inChat.depth >= 0
+            && Number.isSafeInteger(prompt.inChat.order)
+            ? { inChat: { depth: prompt.inChat.depth, order: prompt.inChat.order } } : {}),
+        ...(['story_theater', 'story_theater_story', 'story_only'].includes(prompt?.scope) ? { scope: prompt.scope } : {}),
     }));
     if (prompts.length === 0) throw new Error('预设中没有提示词条目');
     return {
         schema: 'sullyos.story-preset',
         version: 1,
+        ...(value.promptLayout === 'ordered' ? { promptLayout: 'ordered' as const } : {}),
         name: String(value.name || fallbackName || '未命名剧情预设'),
         description: String(value.description || ''),
-        generation: {
-            temperature: clampNumber(value.generation?.temperature, 0, 2, 0.9),
-            topP: clampNumber(value.generation?.topP, 0, 1, 1),
-            frequencyPenalty: clampNumber(value.generation?.frequencyPenalty, -2, 2, 0),
-            presencePenalty: clampNumber(value.generation?.presencePenalty, -2, 2, 0),
-            maxTokens: Math.round(clampNumber(value.generation?.maxTokens, 256, 32000, 8000)),
-        },
+        generation: normalizeStoryPresetGeneration(value.generation),
         prompts,
         assistantPrefill: String(value.assistantPrefill || ''),
     };
@@ -561,6 +570,7 @@ const LEGACY_THEATER_PROMPT_CONTENT: Record<string, string[]> = {
 
 /** 给旧预设补入最新版出演协议；只迁移未被用户改写的旧默认提示词。 */
 export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocument): StoryTheaterPresetDocument => {
+    if (document.promptLayout === 'ordered') return document;
     const defaults = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt =>
         prompt.id === STORY_THEATER_SECTION_START
         || prompt.id === STORY_THEATER_SECTION_END
@@ -658,6 +668,7 @@ export const resolveStoryPresetDocument = (
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
     const document = override || preset.document;
+    if (document.promptLayout === 'ordered') return document;
     const oldDefaults = preset.builtIn ? previousNativeById : rawPromptById;
     const threeAxisDefaults = preset.builtIn ? nativePromptById : previousRawById;
     return ensureStoryTheaterPromptSection({
@@ -845,9 +856,16 @@ export const applyStoryPresetChoice = (
 });
 
 const macroReplace = (text: string, userName: string, characterNames: string[]): string => text
-    .replace(/\{\{user\}\}/gi, userName || '你')
-    .replace(/\{\{char\}\}/gi, characterNames.join('、') || '角色')
-    .replace(/\{\{group\}\}/gi, characterNames.join('、') || '角色');
+    .replace(/\{\{(user|char|group)\}\}/gi, (_, macro: string) => macro.toLowerCase() === 'user'
+        ? userName || '你' : characterNames.join('、') || '角色');
+
+const orderedPromptMacros = (text: string, userName: string, actors: string[], lastUserMessage: string): string => (
+    text.replace(/\{\{(user|char|group|charIfNotGroup|lastUserMessage)\}\}/gi, (original, macro: string) => {
+        if (macro.toLowerCase() === 'lastusermessage') return lastUserMessage;
+        if (macro.toLowerCase() === 'charifnotgroup') return actors.length === 1 ? actors[0] : '';
+        return macroReplace(original, userName, actors);
+    })
+);
 
 const theaterMacroReplace = (text: string, values: Record<string, string> = {}): string => text
     .replace(/\{\{theater_[a-z0-9_]+\}\}/gi, token => values[token.slice(2, -2)] ?? '');
@@ -1186,6 +1204,7 @@ export const compileStoryPreset = (input: {
     preset?: StoryTheaterPreset | null;
     slots: StoryPromptSlots;
     historyMessages?: StoryApiMessage[];
+    pendingTurn?: StoryApiMessage;
     userName: string;
     characterNames: string[];
     storyTheaterMode?: 'story' | 'out_of_story';
@@ -1203,8 +1222,14 @@ export const compileStoryPreset = (input: {
     const worldBeforePrompts = document.prompts.filter(prompt => prompt.marker === 'world_before');
     const enabledWorldBeforePrompt = worldBeforePrompts.find(prompt => prompt.enabled);
     const firstEnabledCharacterIndex = document.prompts.findIndex(prompt => prompt.enabled && prompt.marker === 'characters');
-    const shouldBackfillWorldBefore = worldBeforePrompts.length === 0 && Boolean(slots.worldBefore.trim());
-    const shouldMoveWorldBeforeAheadOfCharacters = Boolean(
+    const explicitOrder = document.promptLayout === 'ordered';
+    const shouldBackfillWorldBefore = !explicitOrder && worldBeforePrompts.length === 0 && Boolean(slots.worldBefore.trim());
+    const depthPrompts: Array<{ message: StoryApiMessage; depth: number; order: number }> = [];
+    const lastUserMessage = explicitOrder
+        ? input.pendingTurn?.content ?? input.historyMessages?.slice().reverse().find(message => message.role === 'user')?.content ?? ''
+        : '';
+    let historyIndex = -1;
+    const shouldMoveWorldBeforeAheadOfCharacters = !explicitOrder && Boolean(
         enabledWorldBeforePrompt
         && firstEnabledCharacterIndex >= 0
         && document.prompts.indexOf(enabledWorldBeforePrompt) > firstEnabledCharacterIndex
@@ -1230,6 +1255,7 @@ export const compileStoryPreset = (input: {
         if (!prompt.enabled || prompt.section) continue;
         if (prompt.scope === 'story_theater' && !input.storyTheaterMode) continue;
         if (prompt.scope === 'story_theater_story' && input.storyTheaterMode !== 'story') continue;
+        if (prompt.scope === 'story_only' && input.storyTheaterMode === 'out_of_story') continue;
         if (input.interactionTendenciesEnabled === false && prompt.id === 'nmj-v67-theater-interaction-bias') continue;
         // Relationship rules are authored in the preset; out-of-story turns only skip their panel.
         if (input.relationshipMode === 'skip' && prompt.id === STORY_RELATIONSHIP_PROMPT_ID) continue;
@@ -1239,6 +1265,10 @@ export const compileStoryPreset = (input: {
         if (prompt.marker) {
             if (injectedMarkers.has(prompt.marker)) continue;
             injectedMarkers.add(prompt.marker);
+            if (prompt.marker === 'history' && explicitOrder && (input.historyMessages || input.pendingTurn)) {
+                historyIndex = messages.length;
+                continue;
+            }
             if (prompt.marker === 'history' && input.historyMessages) {
                 messages.push(...input.historyMessages);
                 continue;
@@ -1246,10 +1276,15 @@ export const compileStoryPreset = (input: {
             raw = slotForMarker(prompt.marker, slots);
         }
         if (!raw.trim()) continue;
-        const content = macroReplace(theaterMacroReplace(raw, input.storyTheaterValues), userName, characterNames).trim();
-        if (!content) continue;
-        const message = { role: prompt.role, content };
-        messages.push(message);
+        const withTheaterValues = explicitOrder && prompt.id.startsWith('st-')
+            ? raw : theaterMacroReplace(raw, input.storyTheaterValues);
+        const rendered = explicitOrder && !prompt.marker
+            ? orderedPromptMacros(withTheaterValues, userName, characterNames, lastUserMessage)
+            : macroReplace(withTheaterValues, userName, characterNames);
+        if (!rendered.trim()) continue;
+        const message = { role: prompt.role, content: explicitOrder && !prompt.marker ? rendered : rendered.trim() };
+        if (explicitOrder && prompt.inChat && !prompt.marker) depthPrompts.push({ message, ...prompt.inChat });
+        else messages.push(message);
         origins.set(message, {
             label: prompt.marker ? '运行时填入 · ' + prompt.name : defaultOutOfStory ? '运行时协议 · ' + prompt.name : '预设 · ' + prompt.name,
             ...(!prompt.marker ? { presetText: prompt.content } : {}),
@@ -1262,8 +1297,42 @@ export const compileStoryPreset = (input: {
         messages.unshift({ role: 'system', content: macroReplace(slots.worldBefore, userName, characterNames).trim() });
     }
 
+    if (explicitOrder && (historyIndex >= 0 || depthPrompts.length || input.pendingTurn)) {
+        const history = [...(input.historyMessages ?? []), ...(input.pendingTurn ? [input.pendingTurn] : [])];
+        const roleOrder = { assistant: 0, user: 1, system: 2 };
+        depthPrompts.sort((a, b) => b.depth - a.depth || a.order - b.order || roleOrder[a.message.role] - roleOrder[b.message.role]);
+        const withDepth: StoryApiMessage[] = [];
+        let cursor = 0;
+        for (let index = 0; index < depthPrompts.length; index++) {
+            const { message, depth, order } = depthPrompts[index];
+            const offset = Math.max(0, history.length - depth);
+            const peers = [message];
+            while (index + 1 < depthPrompts.length) {
+                const next = depthPrompts[index + 1];
+                if (next.depth !== depth || next.order !== order || next.message.role !== message.role) break;
+                peers.push(next.message);
+                index++;
+            }
+            const combined = peers.length === 1 ? message : { role: message.role, content: peers.map(peer => peer.content).join('\n') };
+            if (peers.length > 1) {
+                const sources = peers.map(peer => origins.get(peer));
+                origins.set(combined, {
+                    label: sources.map(source => source?.label).filter(Boolean).join('；'),
+                    presetText: sources.map(source => source?.presetText).filter(Boolean).join('\n'),
+                });
+            }
+            withDepth.push(...history.slice(cursor, offset), combined);
+            cursor = offset;
+        }
+        withDepth.push(...history.slice(cursor));
+        messages.splice(historyIndex < 0 ? messages.length : historyIndex, 0, ...withDepth);
+    }
+
     const prefill = String(document.assistantPrefill || '').trim();
-    const assistantPrefill = prefill ? { role: 'assistant' as const, content: macroReplace(prefill, userName, characterNames) } : undefined;
+    const prefillContent = explicitOrder
+        ? orderedPromptMacros(prefill, userName, characterNames, lastUserMessage)
+        : macroReplace(prefill, userName, characterNames);
+    const assistantPrefill = prefillContent.trim() ? { role: 'assistant' as const, content: prefillContent } : undefined;
 
     if (assistantPrefill) origins.set(assistantPrefill, { label: '预设 · 助手预填', presetText: prefill });
     return {
@@ -1321,6 +1390,27 @@ export const appendStoryUserTurn = (
         { role: 'user', content: userContent },
         ...(assistantPrefill ? [assistantPrefill] : []),
     ];
+};
+
+/** Inserts runtime guards before the current input while preserving authored post-history rules. */
+export const assembleStoryPresetTurn = (
+    compiled: StoryApiMessage[],
+    runtime: StoryApiMessage[],
+    pendingTurn: StoryApiMessage,
+    assistantPrefill?: StoryApiMessage,
+    forceUserLastMessage = false,
+): StoryApiMessage[] => {
+    const pendingIndex = compiled.indexOf(pendingTurn);
+    if (pendingIndex >= 0 && !forceUserLastMessage) {
+        return [
+            ...compiled.slice(0, pendingIndex), ...runtime, ...compiled.slice(pendingIndex),
+            ...(assistantPrefill ? [assistantPrefill] : []),
+        ];
+    }
+    const before = pendingIndex < 0 ? compiled : compiled.filter(message => message !== pendingTurn);
+    const assembled = appendStoryUserTurn([...before, ...runtime], pendingTurn.content, assistantPrefill, forceUserLastMessage);
+    assembled[assembled.length - (assistantPrefill && !forceUserLastMessage ? 2 : 1)] = pendingTurn;
+    return assembled;
 };
 
 export const dedupeTheaterWorldbooks = (characters: CharacterProfile[]): MountedWorldbook[] => {

@@ -5,7 +5,8 @@ import { expect, it, vi } from 'vitest';
 import StoryTheaterSession from '../components/date/story/StoryTheaterSession';
 import type { CharacterProfile, StoryTheaterEntry } from '../types';
 import { DB } from './db';
-import { createBlankStoryPreset, createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
+import { createBlankStoryPreset, createStoryTheaterDraft, parseStoryTheaterPreset, storyTheaterThreadId } from './storyTheater';
+import { convertSillyTavernStoryPreset, readSillyTavernStoryPreset } from './sillyTavernStoryPreset';
 import { STORY_RELATIONSHIP_PROMPT_ID } from './storyTheaterRelationships';
 import * as relationshipRules from './storyTheaterRelationships';
 import { moveStoryInLibrary, saveStoryLibrary, STORY_LIBRARY_STORAGE_KEY, type StoryLibrary } from './storyTheaterLibrary';
@@ -22,6 +23,15 @@ vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
 
+function convertedPreset() {
+    const source = readSillyTavernStoryPreset(JSON.stringify({
+        main_prompt: '续写换预设前的剧情。',
+        jailbreak_prompt: '源预设的历史后置规则。',
+        assistant_prefill: '<story_text>',
+    }), 'switch.json');
+    return parseStoryTheaterPreset(JSON.stringify(convertSillyTavernStoryPreset(source).document), 'switch.sully.json');
+}
+
 it.each([true, false])('真实=%s：统一上下文、独立解析、单次计算与在场 DI 回落', async isReal => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -30,7 +40,7 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
         { id: `independent-b-${isReal}`, name: '香奈乎', avatar: '', systemPrompt: '人物卡' }] as CharacterProfile[];
     Object.assign(mocks.state, { characters: actors, userProfile: { name: '本人' }, theme: {},
         apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' }, memoryPalaceConfig: {}, addToast: mocks.toast });
-    const preset = createBlankStoryPreset('独立解析');
+    let preset = createBlankStoryPreset('独立解析');
     preset.document.prompts.push({ id: STORY_RELATIONSHIP_PROMPT_ID, name: '关系', enabled: true, role: 'system', content: 'FL/RI/DI' });
     const entry = { ...createStoryTheaterDraft(), id: `independent-session-${isReal}`, characterIds: actors.map(actor => actor.id),
         writesToCharacterMemory: isReal, carryCharacterMemory: true, archiveMode: 'manual' as const, castLimits: { minGroups: 1, maxGroups: 1 },
@@ -83,7 +93,21 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
         await DB.saveStoryTheater(entry);
         await render(entry);
         await send(1); expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20, phase: 'active', strength: 'mild' } });
-        await send(2); expect((await current()).axes.DI?.score).toBe(20); expect((await current()).identity).toBe('可信的朋友');
+        const oldRows = await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true);
+        const oldRelationship = await current();
+        preset = convertedPreset();
+        const switched = { ...entry, presetId: preset.id };
+        await DB.saveStoryTheaterPreset(preset);
+        await DB.saveStoryTheater(switched);
+        await render(switched);
+        expect(await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).toEqual(oldRows);
+        expect(await current()).toEqual(oldRelationship);
+        await send(2);
+        const switchedMessages = JSON.parse(String(fetch.mock.calls[1][1]?.body)).messages as Array<{role: string; content: string}>;
+        const latestInput = switchedMessages.findIndex(row => row.role === 'user' && row.content === '继续归还信件 2');
+        expect(latestInput).toBeGreaterThan(-1);
+        expect(switchedMessages.findIndex(row => row.content === '源预设的历史后置规则。')).toBeGreaterThan(latestInput);
+        expect(switchedMessages.some(row => row.content.includes('我整理自己的信件'))).toBe(true); expect((await current()).axes.DI?.score).toBe(20); expect((await current()).identity).toBe('可信的朋友');
         const second = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(second.metadata?.theaterCastStatus).toBe('invalid'); expect(second.metadata?.theaterCastIds).toEqual([]);
         parse.mockClear(); calculate.mockClear();
@@ -254,6 +278,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         addToast: mocks.toast,
     });
     const preset = createBlankStoryPreset('验收预设');
+    let activePreset = preset;
     preset.document.prompts[0].content += ' 检查隐藏 theater-fixture-api-key。';
     preset.document.assistantPrefill = '<story_text>';
     const privateAxes = (ids: string[], note = '整理旧线索') => '<private_axes>' + JSON.stringify(Object.fromEntries(
@@ -299,7 +324,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     let second = { ...entry, id: 'other-cast-session', title: '第二剧场' };
     const render = (id: string, onEntryChange: (next: StoryTheaterEntry) => void | Promise<void> = () => {}) => act(async () => {
         root.render(createElement(StoryTheaterSession, {
-            key: id, entry: id === second.id ? second : entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange,
+            key: id, entry: id === second.id ? second : entry, preset: activePreset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange,
         }));
     });
     const advance = () => container.querySelector<HTMLButtonElement>('button.story-send-button')!;
@@ -398,6 +423,15 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect((await DB.getMessagesByCharId(thread, true)).at(-1)?.metadata.theaterPrivateAxes)
             .toEqual({ [a.id]: '整理旧线索', [c.id]: '整理旧线索' });
 
+        const savedBeforeSwitch = await DB.getMessagesByCharId(thread, true);
+        const mirrorsBeforeSwitch = await DB.getMessagesByCharId(a.id, true);
+        activePreset = convertedPreset();
+        entry = { ...entry, presetId: activePreset.id };
+        await DB.saveStoryTheaterPreset(activePreset);
+        await DB.saveStoryTheater(entry);
+        await render(entry.id);
+        expect(await DB.getMessagesByCharId(thread, true)).toEqual(savedBeforeSwitch);
+        expect(await DB.getMessagesByCharId(a.id, true)).toEqual(mirrorsBeforeSwitch);
         await setInput('我翻到另一页。');
         await send(advance(), 4);
         await vi.waitFor(() => expect(mocks.archive.mock.calls.map(call => call[1])).toEqual([a.id, c.id, b.id, c.id]));
@@ -431,6 +465,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(tendencies(4)).toBe(tendencies(3));
         expect(promptText(4)).toContain('整理旧线索');
 
+        activePreset = preset;
         await render('other-cast-session');
         await setInput('在另一个地方开场。');
         await send(advance(), 6);
@@ -482,6 +517,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(await timeline(c.id)).toEqual([at(10), at(13), at(13), at(18)]);
 
         historyPrompt.enabled = true;
+        activePreset = preset;
         await render('other-cast-session');
         await render(entry.id);
         await send(container.querySelector<HTMLButtonElement>('button[aria-label="继续当前剧情"]')!, 10);

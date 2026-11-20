@@ -2367,13 +2367,17 @@ export interface StoryTheaterPresetPrompt {
     section?: { id: string; name: string; edge: 'start' | 'end' };
     /** marker 由发送器替换为角色/世界书/用户/场景/历史，不把占位条目当普通正文。 */
     marker?: 'characters' | 'world_before' | 'user' | 'world_after' | 'scenario' | 'examples' | 'history';
-    /** 仅在出演模式对应回合注入；提示词正文仍由预设编辑器管理。 */
-    scope?: 'story_theater' | 'story_theater_story';
+    /** 相对于本轮输入和剧场历史的深度，0 表示在本轮输入之后。 */
+    inChat?: { depth: number; order: number };
+    /** 通过原生模式限制该协议的注入回合。 */
+    scope?: 'story_theater' | 'story_theater_story' | 'story_only';
 }
 
 export interface StoryTheaterPresetDocument {
     schema: 'sullyos.story-preset';
     version: 1;
+    /** 显式编排槽位及协议条目，保留历史槽位之后的提示词位置。 */
+    promptLayout?: 'ordered';
     name: string;
     description?: string;
     generation: {

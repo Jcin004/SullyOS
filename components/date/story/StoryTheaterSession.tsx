@@ -12,7 +12,7 @@ import { ContextBuilder } from '../../../utils/context';
 import { safeResponseJson, extractContent } from '../../../utils/safeApi';
 import {
     appendStoryAffinityInputs,
-    appendStoryUserTurn,
+    assembleStoryPresetTurn,
     buildBareTheaterActorContext,
     buildStoryAffinityAwarenessReminder,
     buildStoryBackstageAftermathReminder,
@@ -927,8 +927,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 summaries ? `### 常驻事件盒\n${summaries}` : '',
                 vectorRecall ? buildStoryArchiveMemoryEnvelope(vectorRecall) : '',
             ].filter(Boolean).join('\n\n');
-            const miniTheaterReminder = buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, requestActorNames);
-            const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
+            const skipStoryModules = rerollOutOfStory && effectivePreset.document.promptLayout === 'ordered';
+            const miniTheaterReminder = skipStoryModules ? '' : buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, requestActorNames);
+            const backstageAftermathReminder = skipStoryModules ? '' : buildStoryBackstageAftermathReminder(effectivePreset.document);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, relationshipsEnabled);
@@ -964,7 +965,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     }) : undefined;
                     compiled = compileStoryPreset({
                         preset: effectivePreset, userName: promptIdentityName, characterNames: requestActorNames,
-                        historyMessages, storyTheaterMode, storyTheaterValues,
+                        historyMessages, storyTheaterMode, storyTheaterValues, pendingTurn,
                         interactionTendenciesEnabled: interactionEnabled,
                         relationshipMode: relationshipsEnabled ? (rerollOutOfStory ? 'skip' : 'axes') : undefined,
                         slots: {
@@ -973,9 +974,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             scenario, worldBefore: slots.before, worldAfter: slots.after, history: '',
                         },
                     });
-                    const payloadBeforeTurn = [
-                    ...compiled.messages,
-                    ...(!hasPresetHistory ? historyMessages : []),
+                    const runtimeMessages = [
+                    ...(!hasPresetHistory && effectivePreset.document.promptLayout !== 'ordered' ? historyMessages : []),
                     ...(promptEntry.writesToCharacterMemory && !rerollOutOfStory ? [{ role: 'system' as const, content: REAL_COMPANION_MEMORY_GUARD }] : []),
                     ...(promptEntry.writesToCharacterMemory && !rerollOutOfStory ? [{ role: 'system' as const, content: [
                         '将本轮正文结束时的剧情时间写入 <scene_header><time>，优先使用 YYYY-MM-DD HH:mm；如果只知道相对推进，写明确的“3天后”等，不要借用现实日期。',
@@ -993,10 +993,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     // 关闭出演模式：和官方原版一样，所有剧情请求都保留原生助手预填。
                     const nativePrefill = !castTurn && !rerollOutOfStory
                         ? compiled.assistantPrefill : undefined;
-                    const assembled = appendStoryUserTurn(payloadBeforeTurn, modelInput, nativePrefill, promptEntry.forceUserLastMessage === true);
-                    const pendingIndex = nativePrefill && !promptEntry.forceUserLastMessage ? assembled.length - 2 : assembled.length - 1;
-                    assembled[pendingIndex] = pendingTurn;
-                    return assembled;
+                    return assembleStoryPresetTurn(compiled.messages, runtimeMessages, pendingTurn, nativePrefill, promptEntry.forceUserLastMessage === true);
 
                     },
             });
