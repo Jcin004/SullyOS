@@ -19,6 +19,7 @@ import {
 } from '../../../utils/storyTheater';
 import StoryMaskBox from './StoryMaskBox';
 import StoryPresetMaker from './StoryPresetMaker';
+import StoryPresetConverter from './StoryPresetConverter';
 import { archiveStoryManually } from '../../../utils/storyTheaterArchive';
 import StoryTheaterEditor from './StoryTheaterEditor';
 import StoryTheaterSession from './StoryTheaterSession';
@@ -35,7 +36,7 @@ interface Props {
     onClose: () => void;
 }
 
-type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors' | 'archives' | 'relationships';
+type View = 'list' | 'editor' | 'session' | 'preset' | 'convert-preset' | 'masks' | 'vectors' | 'archives' | 'relationships';
 
 const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig, apiConfig } = useOS();
@@ -259,6 +260,10 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         onOpenMaskBox={draft => { if (maskLocked || draft.writesToCharacterMemory) return; setActiveEntry(draft); setView('masks'); }}
     />;
 
+    if (view === 'convert-preset') return <StoryPresetConverter onBack={() => setView('list')} onImport={async preset => {
+        await savePreset(preset);
+        setView('list');
+    }} />;
     if (view === 'relationships') return <React.Suspense fallback={<div className='grid h-full place-items-center text-sm text-slate-500'>正在打开关系网…</div>}><RealRelationshipNetwork onBack={() => setView(relationshipReturn)} /></React.Suspense>;
     if (view === 'vectors' && activeEntry) return <StoryVectorMemoryPanel entry={activeEntry} onBack={() => setView('session')} />;
     if (view === 'archives' && activeEntry) return <StoryArchivePanel entry={activeEntry} masks={masks} onBack={() => setView('session')} onUpdated={next => {setActiveEntry(next);setEntries(current => current.map(item => item.id === next.id ? next : item));}} />;
@@ -332,7 +337,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
 
                 {!currentFolder && <section className='mt-6 pt-6 border-t border-slate-200'>
                     <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>Native presets</div><h2 className='mt-1 text-lg font-semibold'>糯米机预设制作器</h2></div><div className='flex gap-2'><button onClick={() => importInput.current?.click()} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><UploadSimple size={17} /></button><button onClick={() => { setEditingPreset(createBlankStoryPreset()); setView('preset'); }} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><Plus size={17} /></button></div></div>
-                    <p className='mt-2 text-[10px] leading-5 text-slate-500'>仅支持导入与导出糯米机专属剧情预设文件，不支持其他应用的预设格式。</p>
+                    <button type='button' onClick={() => setView('convert-preset')} className='mt-3 min-h-10 rounded-xl border border-violet-200 bg-violet-50 px-3 text-xs font-semibold text-violet-700'>转换酒馆预设</button>
                     <input ref={importInput} type='file' accept='.json,.png,application/json,image/png' className='hidden' onChange={async event => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) await importPreset(file); }} />
                     <div className='mt-4 divide-y divide-slate-200'>{presets.map(preset => <div key={preset.id} className='flex items-center gap-2'><button onClick={() => { setEditingPreset(preset); setView('preset'); }} className='min-w-0 flex-1 py-3 flex items-center gap-3 text-left'><span className={`w-2 h-2 rounded-full ${preset.builtIn ? 'bg-amber-400' : 'bg-violet-500'}`} /><span className='min-w-0 flex-1 text-xs font-semibold truncate'>{preset.name}</span><span className='text-[9px] text-slate-400'>{preset.builtIn ? '内置只读' : `${preset.document.prompts.length} 条`}</span></button><button onClick={() => { void downloadStoryPreset(preset); }} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400' title={`导出 ${preset.name}`}><DownloadSimple size={15} /></button></div>)}</div>
                 </section>}
