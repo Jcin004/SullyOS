@@ -33,6 +33,7 @@ import {
     maybeCompressEventBoxes,
 } from './eventBoxCompression';
 import { EventBoxDB, MemoryNodeDB, MemoryVectorDB } from './db';
+import { deleteNodeAndLinkedArchive } from './linkedArchiveDeletion';
 import { bulkSetArchived } from './supabaseVector';
 
 const llmConfig = { baseUrl: 'https://llm.example/v1', apiKey: 'key', model: 'flash' };
@@ -181,6 +182,7 @@ describe('regenerateEventBoxSummary', () => {
         expect(sourcePrompt).toContain('第一条归档原始记忆');
         expect(sourcePrompt).toContain('第二条活跃原始记忆');
         expect(sourcePrompt).not.toContain('旧坏总结');
+        expect(requestBody.messages[0].content).not.toContain('旧盒名');
 
         const savedBox = (await EventBoxDB.getById('box-1'))!;
         expect(savedBox.sealed).toBe(true);
@@ -329,6 +331,23 @@ describe('regenerateEventBoxSummary', () => {
 });
 
 describe('automatic compression rate-limit safety', () => {
+    it('discards an in-flight compression when a source in the old summary is deleted', async () => {
+        const current = { ...box(), liveMemoryIds: ['live-1', 'live-2', 'live-3', 'live-4'] };
+        await EventBoxDB.save(current);
+        for (const id of current.liveMemoryIds) await MemoryNodeDB.save(memory(id, `待压缩 ${id}`));
+        mocks.responses.push(completion('包含已删除来源的过期结果。'));
+        mocks.getEmbeddings.mockImplementationOnce(async () => {
+            await deleteNodeAndLinkedArchive((await MemoryNodeDB.getById('archived-1'))!);
+            return [new Float32Array([1, 0, 0])];
+        });
+
+        expect(await maybeCompressEventBoxes(['box-1'], llmConfig, embeddingConfig, '角色'))
+            .toEqual({ compressed: 0, skipped: 1 });
+        expect(await MemoryNodeDB.getById('archived-1')).toBeUndefined();
+        expect(await MemoryNodeDB.getById('summary-1')).toMatchObject({ archived: true, content: 'Wait, let’s count...旧坏总结' });
+        expect((await EventBoxDB.getById('box-1'))?.liveMemoryIds).toEqual(current.liveMemoryIds);
+    });
+
     it('embedding failure leaves summary, vectors and live nodes unchanged', async () => {
         const current = box(); current.liveMemoryIds = ['live-1', 'live-2', 'live-3', 'live-4']; current.sealed = false;
         await EventBoxDB.save(current);

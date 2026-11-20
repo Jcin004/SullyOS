@@ -1,4 +1,5 @@
 import { ContextBuilder } from './context';
+import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
 import { describe, expect, it } from 'vitest';
 import type { CharacterProfile, Message, StoryTheaterPreset, UserProfile } from '../types';
 import { STORY_PRESET_SIMPLE_CHOICES } from '../components/date/story/StoryPresetMaker';
@@ -73,6 +74,13 @@ describe('共通剧场原文预算', () => {
         expect(small).not.toContain('旧回复');
         expect(formatSharedStoryHistory(sources, () => false, 24_000, 8_000)).toBe('');
     });
+});
+
+it('交流倾向组合默认关闭，并保留已有剧场的显式选择', () => {
+    const draft = createStoryTheaterDraft();
+    expect(draft.interactionTendenciesEnabled).toBe(false);
+    expect(normalizeStoryTheater({ ...draft, interactionTendenciesEnabled: undefined }).interactionTendenciesEnabled).toBe(false);
+    expect(normalizeStoryTheater({ ...draft, interactionTendenciesEnabled: true }).interactionTendenciesEnabled).toBe(true);
 });
 
 it('旧剧场默认沿用自动出演，显式关闭的设置在读取时保留', () => {
@@ -171,8 +179,7 @@ describe('糯米机原生剧情预设边界', () => {
         expect(document.schema).toBe('sullyos.story-preset');
         expect(document.version).toBe(1);
         expect(document.name).toContain('V6.27');
-        expect(document.prompts).toHaveLength(130);
-        expect(document.prompts.filter(prompt => prompt.enabled)).toHaveLength(53);
+        expect(document.prompts).toHaveLength(137);
         const serialized = JSON.stringify(document);
         expect(serialized).not.toContain('prompt_order');
         expect(serialized).not.toContain('extensions');
@@ -181,33 +188,88 @@ describe('糯米机原生剧情预设边界', () => {
         expect(serialized).not.toContain('{{getvar::');
     });
 
-    it('默认开启项都有真实发送内容或原生插槽，且关系与组合输出协议没有旧结构冲突', () => {
+    it('内置预设直接显示完整三轴，发送时沿用预设原文', () => {
         const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
-        const enabled = document.prompts.filter(prompt => prompt.enabled);
+        const enabled = document.prompts.filter(prompt => prompt.enabled && prompt.id !== 'nmj-v67-theater-continuity');
         expect(new Set(document.prompts.map(prompt => prompt.id)).size).toBe(document.prompts.length);
         expect(enabled.every(prompt => Boolean(prompt.marker || prompt.content.trim()))).toBe(true);
         const affinity = document.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
-        expect(affinity.content).toContain('<affinity_person>');
-        expect(affinity.content).toContain('<character_id>');
-        expect(affinity.content).toContain('<c_to_u_score>');
-        expect(affinity.content).toContain('<trust>');
-        expect(affinity.content).toContain('<repair_will>');
-        expect(affinity.content).not.toContain('<c_score>');
-        expect(affinity.content).not.toContain('<u_score>');
+        expect(affinity.name).toContain('FL · RI · DI');
+        expect(affinity.content).toContain('FL 关系联结');
+        expect(affinity.content).toContain('RI 恋爱性心动');
+        expect(affinity.content).toContain('DI 失序扰动');
+        expect(affinity.content).toContain('身体/审美');
+        expect(affinity.content).toContain('成长激励');
+        expect(document.prompts.some(prompt => ['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))).toBe(false);
+        const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
+        const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
+        expect(axes.content).toContain('RI 恋爱性心动');
+        expect(axes.content).toContain('DI 失序扰动');
+        expect(sent.origins.get(axes)?.presetText).toBe(affinity.content);
+        expect(sent.messages.map(message => message.content).join('\n')).not.toContain('<c_to_u_score>');
         const scene = document.prompts.find(prompt => prompt.id === 'nmj-v3-scene-header')!;
         expect(scene.content).toContain('幕后与余波”（幕后暗格后紧接镜头债）');
         expect(scene.content).not.toContain('幕后暗格、世界线、镜头债');
         const exit = document.prompts.find(prompt => prompt.id === 'nmj-v3-exit-check')!;
-        expect(exit.content).toContain('按 character_id 独立续接 C→U、U→C 与五维状态');
+        expect(sent.messages.some(message => message.content.includes('启用双向关系时，检查两个方向各自的证据和三轴变化'))).toBe(true);
         expect(exit.content).toContain('幕后与余波（幕后暗格 → 镜头债）');
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(preflight.content).toContain('按 character_id 逐人续接 C→U、U→C 与五维关系混音');
+        expect(sent.messages.some(message => message.content.includes('按三轴关系规则检查本轮关系报告'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方'))).toBe(false);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
 
-    it('旧 V6.14 快捷覆盖只继承开关，正文与新增层升级到 V6.27', () => {
+    it('关闭交流倾向组合只移除引导提示，保留出演、事后互动与私轴协议', () => {
+        const args = {
+            preset: BUILTIN_NIGHT_SCREENING_PRESET,
+            storyTheaterMode: 'story' as const,
+            userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
+            storyTheaterValues: {
+                theater_candidate_data: '[]', theater_interaction_tendencies: '[]',
+                theater_previous_interactions: '[]', theater_unrealized_tendencies: '[]',
+                theater_previous_axes: '', theater_prefill: '', theater_mode_state: '剧情续写', theater_cast_data: '[]',
+            },
+        };
+        const on = compileStoryPreset({ ...args, interactionTendenciesEnabled: true });
+        const off = compileStoryPreset({ ...args, interactionTendenciesEnabled: false });
+        const onText = on.messages.map(message => message.content).join('\n');
+        const offText = off.messages.map(message => message.content).join('\n');
+        expect(onText).toContain('本轮交流倾向：');
+        expect(offText).not.toContain('本轮交流倾向：');
+        expect(offText).toContain('<turn_cast>');
+        expect(offText).toContain('<interaction_result>');
+        expect(offText).toContain('<private_axes>');
+    });
+
+    it('不再按旧预设原文临时替换提示词，场外仍不发送三轴面板', () => {
+        const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
+        const replaced = ['nmj-v616-silent-preflight', 'nmj-v3-exit-check', 'nmj-v3-scene-header'];
+        const custom = {
+            ...BUILTIN_NIGHT_SCREENING_PRESET,
+            document: { ...document, prompts: document.prompts.map(prompt => {
+                if (replaced.includes(prompt.id)) return { ...prompt, content: '自定义规则：' + prompt.id };
+                if (prompt.id === 'nmj-v65-affinity-control') return { ...prompt, content: '自定义三轴关系规则' };
+                return prompt;
+            }) },
+        };
+        const args = { preset: custom, userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } };
+        const story = compileStoryPreset({ ...args, storyTheaterMode: 'story', relationshipMode: 'axes' });
+        const storyText = story.messages.map(message => message.content);
+        for (const id of replaced) expect(storyText).toContain('自定义规则：' + id);
+        expect(storyText).toContain('自定义三轴关系规则');
+        const outside = compileStoryPreset({ ...args, storyTheaterMode: 'out_of_story', relationshipMode: 'skip' });
+        const outsideText = outside.messages.map(message => message.content);
+        expect(outsideText).not.toContain('自定义三轴关系规则');
+        for (const id of replaced) expect(outsideText).toContain('自定义规则：' + id);
+        expect(outsideText).toContain('只输出 <out_of_story>正文</out_of_story>。');
+    });
+
+    it('内置预设覆盖保留用户的正文、顺序和开关', () => {
         const legacyOverride = {
             ...BUILTIN_NIGHT_SCREENING_PRESET.document,
             name: '糯米鸡｜夜班放映室 V6.14',
@@ -220,8 +282,36 @@ describe('糯米机原生剧情预设边界', () => {
         const resolved = resolveStoryPresetDocument(BUILTIN_NIGHT_SCREENING_PRESET, legacyOverride);
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-second')).toMatchObject({ enabled: false });
         expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')).toMatchObject({ enabled: true });
-        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toContain('本条与“第二人称”误同时开启时，本条优先');
-        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')?.enabled).toBe(true);
+        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v3-pov-third')?.content).toBe('旧第三人称正文');
+        expect(resolved.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')).toBeUndefined();
+    });
+
+    it('迁移未编辑的旧五维预设，保留用户手写内容及开关', () => {
+        const legacyControl = nightScreeningV627.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-control')!;
+        const legacyOpaque = nightScreeningV627.prompts.find(prompt => prompt.id === 'nmj-v65-affinity-opaque')!;
+        const imported: StoryTheaterPreset = {
+            ...BUILTIN_NIGHT_SCREENING_PRESET, id: 'legacy-imported', builtIn: false,
+            document: {
+                ...BUILTIN_NIGHT_SCREENING_PRESET.document,
+                prompts: [
+                    ...BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id === legacyControl.id
+                        ? { ...prompt, name: legacyControl.name, content: legacyControl.content, enabled: false } : prompt),
+                    { ...legacyOpaque, role: 'system' as const },
+                ],
+            },
+        };
+        const migrated = resolveStoryPresetDocument(imported);
+        const control = migrated.prompts.find(prompt => prompt.id === legacyControl.id)!;
+        expect(control.enabled).toBe(false);
+        expect(control.name).toContain('FL · RI · DI');
+        expect(control.content).toContain('成长激励');
+        expect(migrated.prompts.find(prompt => prompt.id === legacyOpaque.id)).toBeUndefined();
+        const edited: StoryTheaterPreset = {
+            ...imported, document: { ...imported.document, prompts: imported.document.prompts.map(prompt =>
+                prompt.id === legacyControl.id ? { ...prompt, content: '我自己修改的关系提示词' } : prompt) },
+        };
+        expect(resolveStoryPresetDocument(edited).prompts.find(prompt => prompt.id === legacyControl.id)?.content)
+            .toBe('我自己修改的关系提示词');
     });
 
     it('拒绝其它应用的 prompt/completion JSON', () => {
@@ -623,9 +713,9 @@ describe('手机端预设分层', () => {
         expect(theater?.ids).toContain('nmj-v6-side-channel-wrong-reel');
     });
 
-    it('把 V6.27 合并为九个大区并锁定角色与世界', () => {
+    it('把 V6.27 合并为含出演模式的十个大区并锁定角色与世界', () => {
         const groups = getStoryPresetPromptGroups(BUILTIN_NIGHT_SCREENING_PRESET.document);
-        expect(groups.map(group => group.key)).toEqual(['startup', 'input', 'sources', 'story', 'tone', 'camera', 'output', 'extras', 'exit']);
+        expect(groups.map(group => group.key)).toEqual(['startup', 'input', 'sources', 'theater', 'story', 'tone', 'camera', 'output', 'extras', 'exit']);
         expect(groups.find(group => group.key === 'sources')?.protected).toBe(true);
         const sourcePrompts = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt => groups.find(group => group.key === 'sources')?.promptIds.includes(prompt.id));
         expect(sourcePrompts.every(isProtectedStoryPrompt)).toBe(true);

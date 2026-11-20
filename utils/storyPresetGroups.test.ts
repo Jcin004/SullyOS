@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addStoryPresetGroup, renameStoryPresetGroup, ungroupStoryPresetGroup, moveStoryPresetPromptToGroup, getStoryPresetPromptGroups, createBlankStoryPreset, parseStoryTheaterPreset, compileStoryPreset, BUILTIN_NIGHT_SCREENING_PRESET, duplicateStoryPreset } from './storyTheater';
+import { addStoryPresetGroup, renameStoryPresetGroup, ungroupStoryPresetGroup, moveStoryPresetPromptToGroup, getStoryPresetPromptGroups, createBlankStoryPreset, parseStoryTheaterPreset, compileStoryPreset, BUILTIN_NIGHT_SCREENING_PRESET, duplicateStoryPreset, ensureStoryTheaterPromptSection } from './storyTheater';
 
 describe('剧情自定义大区', () => {
     it('空分组可保存、改名、导出导入，移动条目后正文只发送一次', () => {
@@ -27,7 +27,7 @@ describe('剧情自定义大区', () => {
         const scoped = document.prompts.filter(prompt => prompt.scope);
         expect(scoped.length).toBe(7);
         const off = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: ['角色'], slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
-        expect(off.messages.map(row => row.content).join('\n')).not.toContain('根据用户最新输入选择剧情模式');
+        expect(off.messages.map(row => row.content).join('\n')).not.toContain('本轮模式：');
         const on = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: ['角色'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
@@ -41,30 +41,34 @@ describe('剧情自定义大区', () => {
             },
         });
         const contents = on.messages.map(row => row.content);
-        const modeIndex = contents.findIndex(value => value.includes('根据用户最新输入选择剧情模式'));
-        const castIndex = contents.findIndex(value => value.includes('按代码预先确定的出演名单'));
-        const tendencyIndex = contents.findIndex(value => value.includes('本轮交流倾向：'));
-        const continuityIndex = contents.findIndex(value => value.includes('保持人物的时间、位置'));
-        const outputIndex = contents.findIndex(value => value.includes('剧情模式按顺序输出'));
-        const recordIndex = contents.findIndex(value => value.includes('在剧情正文结束后、私轴之前输出'));
-        const axesIndex = contents.findIndex(value => value.includes('读取并承接各角色最近的私轴'));
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex].every(index => index >= 0)).toBe(true);
-        expect([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, continuityIndex, outputIndex, recordIndex, axesIndex])].sort((a, b) => a - b));
+        const modeIndex = contents.findIndex(value => value.includes('本轮模式：'));
+        const castIndex = contents.findIndex(value => value.includes('候选角色（ID、姓名）'));
+        const tendencyIndex = contents.findIndex(value => value.includes('本轮随机交流倾向：'));
+        const outputIndex = contents.findIndex(value => value.includes('剧情模式先写完整正文'));
+        const recordIndex = contents.findIndex(value => value.includes('直接交谈或有针对性的实际互动'));
+        const axesIndex = contents.findIndex(value => value.includes('最近的私轴：'));
+        expect([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex].every(index => index >= 0)).toBe(true);
+        expect([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex]).toEqual([...([modeIndex, castIndex, tendencyIndex, outputIndex, recordIndex, axesIndex])].sort((a, b) => a - b));
         expect(contents.join('\n')).toContain('剧情续写');
         expect(contents.join('\n')).toContain('继续整理行李');
         expect(contents.join('\n')).toContain('<interaction_result>');
-        expect(contents.join('\n')).toContain('本轮交流倾向：');
+        expect(contents.join('\n')).toContain('本轮随机交流倾向：');
         expect(contents.join('\n')).toContain('背景角色B');
         expect(contents.join('\n')).toContain('<scene_header>');
+        expect(contents[outputIndex]).toMatch(/完整正文[\s\S]*<turn_cast>[\s\S]*<interaction_result>[\s\S]*<private_axes>/);
+        expect(contents[outputIndex]).toContain('自然姓名');
+        expect(contents[outputIndex]).toContain('数组写 []');
+        expect(contents[recordIndex]).toContain('不为填写记录制造互动');
+        expect(contents[recordIndex]).toContain('不影响剧情生成');
         const outOfStory = compileStoryPreset({
             preset: BUILTIN_NIGHT_SCREENING_PRESET, userName: '用户', characterNames: [],
             slots: { actors: '', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
             storyTheaterMode: 'out_of_story',
             storyTheaterValues: { theater_mode_state: '场外重写' },
         });
-        expect(outOfStory.messages.map(row => row.content).join('\n')).toContain('场外模式只输出');
-        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('按代码预先确定的出演名单');
-        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('在剧情正文结束后、私轴之前输出');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).toContain('只输出 <out_of_story>');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('候选角色（ID、姓名）');
+        expect(outOfStory.messages.map(row => row.content).join('\n')).not.toContain('<interaction_result>');
     });
 
     it('旧预设在解析时补入出演模式区，不覆盖已有提示词', () => {
@@ -95,9 +99,9 @@ describe('剧情自定义大区', () => {
         };
         const imported = parseStoryTheaterPreset(JSON.stringify(legacy), 'older-theater.json');
         const cast = imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')!;
-        expect(cast.content).toContain('按代码预先确定的出演名单');
-        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('不要依据交流倾向或可能性推断互动');
-        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')?.content).toContain('将倾向组作为本轮注意力偏置');
+        expect(cast.content).toContain('独处、沉默或独立行动');
+        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-record')?.content).toContain('有针对性的实际互动');
+        expect(imported.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-interaction-bias')?.content).toContain('多人和重叠组提示可选的交流方向');
         const promptOrder = imported.document.prompts.map(prompt => prompt.id);
         expect(promptOrder.indexOf('custom-theater-note')).toBeGreaterThan(promptOrder.indexOf('nmj-v67-theater-cast'));
         expect(promptOrder.indexOf('custom-theater-note')).toBeLessThan(promptOrder.indexOf('nmj-v67-theater-continuity'));
@@ -111,8 +115,9 @@ describe('剧情自定义大区', () => {
                 : prompt.id === 'nmj-v67-theater-output' ? { ...prompt, content: previousOutputEcho } : prompt),
         };
         const migratedProtocol = parseStoryTheaterPreset(JSON.stringify(previousProtocol), 'previous-code-cast.json');
-        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content).not.toContain('<turn_cast>');
-        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')?.content).not.toContain('<turn_cast>');
+        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content).toBe(cast.content);
+        expect(migratedProtocol.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-output')?.content)
+            .toMatch(/完整正文[\s\S]*<turn_cast>/);
 
         const edited = {
             ...legacy,
@@ -122,6 +127,42 @@ describe('剧情自定义大区', () => {
         const preserved = parseStoryTheaterPreset(JSON.stringify(edited), 'edited-theater.json');
         expect(preserved.document.prompts.find(prompt => prompt.id === 'nmj-v67-theater-cast')?.content)
             .toBe('用户亲自修改的出演名单规则。');
+    });
+
+    it('迁移上一版互动默认文案为可省略协议，保留用户自定义文案', () => {
+        const previous = {
+            'nmj-v67-theater-output': '剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、<interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。场外只输出 <out_of_story>正文</out_of_story>。',
+            'nmj-v67-theater-interaction-record': '按正文中实际发生的直接交谈或有针对性的实际互动分组，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计；无互动写 []。',
+        };
+        for (const custom of [false, true]) {
+            const old = { ...BUILTIN_NIGHT_SCREENING_PRESET.document, prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt =>
+                prompt.id in previous ? { ...prompt, content: custom ? '用户的互动记录规则。' : previous[prompt.id as keyof typeof previous] } : prompt) };
+            const migrated = parseStoryTheaterPreset(JSON.stringify(old), 'previous.json');
+            for (const id of Object.keys(previous)) {
+                expect(migrated.document.prompts.find(prompt => prompt.id === id)?.content)
+                    .toBe(custom ? '用户的互动记录规则。' : BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(prompt => prompt.id === id)?.content);
+            }
+        }
+    });
+
+    it('升级姓名报告前一版的原样默认文本，保留用户手写、启停、顺序与角色设置，重复升级幂等', () => {
+        const previous: Record<string, string> = {
+            'nmj-v67-theater-cast': '候选角色（ID、姓名）：{{theater_candidate_data}}\n出演包括在正文中独处、沉默或独立行动的角色。仅被提及的角色和用户执笔身份不列入。',
+            'nmj-v67-theater-output': '剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、可省略的事后记录 <interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。无互动时可省略互动记录或写 []，照常生成正文。场外只输出 <out_of_story>正文</out_of_story>。',
+            'nmj-v67-theater-interaction-record': '正文完成后，可用 <interaction_result> 记录实际发生的直接交谈或有针对性的实际互动，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计。此记录可省略，无互动时也可写 []；不影响剧情生成，不为填写记录制造互动。',
+        };
+        for (const custom of [false, true]) {
+            const document = { ...BUILTIN_NIGHT_SCREENING_PRESET.document,
+                prompts: BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => prompt.id in previous
+                    ? { ...prompt, enabled: false, role: 'user' as const, content: previous[prompt.id] + (custom ? ' 用户补充。' : '') } : prompt) };
+            const upgraded = ensureStoryTheaterPromptSection(document);
+            expect(upgraded.prompts.map(prompt => prompt.id)).toEqual(document.prompts.map(prompt => prompt.id));
+            for (const id of Object.keys(previous)) {
+                expect(upgraded.prompts.find(prompt => prompt.id === id)).toMatchObject({ enabled: false, role: 'user',
+                    content: custom ? previous[id] + ' 用户补充。' : BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(prompt => prompt.id === id)!.content });
+            }
+            expect(ensureStoryTheaterPromptSection(upgraded)).toEqual(upgraded);
+        }
     });
 
     it('保留内置区的保护规则，不允许把系统连接位移出或将普通条目移入', () => {

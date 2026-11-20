@@ -1,6 +1,6 @@
 import {meetingAppearance} from '../../../utils/meetingAppearance';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { loadStoryActorContext, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
+import { loadStoryActorContext, loadStoryMirrorTimeline, replaceStoryTheaterReply, STORY_REROLL_INSTRUCTION } from '../../../utils/storyTheaterReply';
 import { generateStoryArchiveSummary } from '../../../utils/storyTheaterArchive';
 import { Archive, ArrowBendDownRight, ArrowClockwise, ArrowLeft, Broadcast, CaretDown, CaretLeft, CaretRight, ChatCircleDots, Clock, Database, DownloadSimple, Eye, EyeSlash, FilmSlate, GearSix, HeartStraight, Key, MapPin, PaperPlaneTilt, PencilSimple, SlidersHorizontal, SpinnerGap, Trash, X } from '@phosphor-icons/react';
 import { useOS } from '../../../context/OSContext';
@@ -25,7 +25,6 @@ import {
     buildTheaterPersona,
     compileStoryPreset,
     prepareStoryGenerationSettings,
-    reconcileStoryAffinityScores,
     dedupeTheaterWorldbooks,
     describeEmptyStoryCompletion,
     describeStoryApiError,
@@ -34,9 +33,9 @@ import {
     formatSharedStoryHistory,
     formatStoryActorContexts,
     formatStoryTheaterExport,
+    formatStoryRequestPreview,
     getActiveStoryMiniTheaterPrompt,
     getPendingStoryRetryInput,
-    getStoryCharacterContextLimit,
     isStoryUserLastCompatibilityError,
     makeStoryTheaterId,
     makeStoryTheaterFileName,
@@ -49,12 +48,16 @@ import {
     selectStoryArchiveBatch,
     storyTheaterMemoryRecipientIds,
     storyTheaterThreadId,
-    storyTimelineTimestampForCharacter,
     type StoryAffinityInput,
     type StoryApiMessage,
     type StoryGenerationSettings,
 } from '../../../utils/storyTheater';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, collectUnrealizedStoryTendencies, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, type StoryInteractionHistoryEntry, type StoryPrivateAxis } from '../../../utils/storyTheaterCast';
+import {
+    buildStoryRelationshipGuide, getStoryRelationshipBaseline, readStoryRelationshipPayload, reconcileStoryRelationships,
+    STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
+    parseStoryRelationshipContent, stripStoryRelationshipPanels,
+} from '../../../utils/storyTheaterRelationships';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, latestStoryPrivateAxes, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, storyReportSummary, storyTurnActorIds, type StoryInteractionHistoryEntry } from '../../../utils/storyTheaterCast';
 import {
     getMemoryPalaceHighWaterMark,
     processMessageRange,
@@ -64,6 +67,8 @@ import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/a
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton } from './StoryTheaterTheme';
+import { legacyRealRelationshipPayload, realRelationshipBaseline, realRelationshipGraphBefore, realRelationshipPayload } from '../../../utils/realRelationshipModel';
+import { realRelationshipSignature } from '../../../utils/realRelationshipStore';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
     buildStoryContinueInstruction,
@@ -78,6 +83,7 @@ interface Props {
     onEdit: () => void;
     onOpenVectorMemory?: () => void;
     onOpenArchives?: () => void;
+    onOpenRelationships?: () => void;
     onEntryChange: (entry: StoryTheaterEntry) => Promise<void> | void;
 }
 
@@ -173,11 +179,11 @@ const affinityNumber = (lines: DisplayLine[], labels: string[]): number | undefi
     return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : undefined;
 };
 
-const StoryAffinityGroup: React.FC<{ group: DisplayGroup }> = ({ group }) => {
+const StoryAffinityGroup: React.FC<{ group: DisplayGroup; axisLabels?: readonly string[] }> = ({ group, axisLabels = AFFINITY_DIMENSIONS }) => {
     const cToU = affinityNumber(group.lines, ['角色对你的温度', '关系温度']);
     const uToC = affinityNumber(group.lines, ['你对角色的温度', '你的关系温度']);
-    const dimensions = AFFINITY_DIMENSIONS.map(label => ({ label, value: affinityNumber(group.lines, [label]) })).filter(item => item.value !== undefined);
-    const compactLabels = new Set<string>(['角色对你的温度', '关系温度', '你对角色的温度', '你的关系温度', ...AFFINITY_DIMENSIONS]);
+    const dimensions = axisLabels.map(label => ({ label, value: affinityNumber(group.lines, [label]) })).filter(item => item.value !== undefined);
+    const compactLabels = new Set<string>(['角色对你的温度', '关系温度', '你对角色的温度', '你的关系温度', ...axisLabels]);
     const notes = group.lines.filter(line => !compactLabels.has(line.label || ''));
     return <section className='py-4 first:pt-0'>
         <div className='text-[11px] font-bold text-rose-700'>{group.title || '主要角色'}</div>
@@ -185,10 +191,16 @@ const StoryAffinityGroup: React.FC<{ group: DisplayGroup }> = ({ group }) => {
             <div className='rounded-xl bg-rose-50 px-3 py-2'><div className='text-[8px] font-bold text-rose-400'>{group.title || '角色'} → 你</div><div className='mt-0.5 text-lg font-serif font-semibold text-rose-700'>{cToU ?? '—'}<span className='ml-1 text-[8px] font-sans text-rose-300'>/ 100</span></div></div>
             <div className='rounded-xl bg-violet-50 px-3 py-2'><div className='text-[8px] font-bold text-violet-400'>你 → {group.title || '角色'}</div><div className='mt-0.5 text-lg font-serif font-semibold text-violet-700'>{uToC ?? '—'}<span className='ml-1 text-[8px] font-sans text-violet-300'>/ 100</span></div></div>
         </div>}
-        {dimensions.length > 0 && <div className='mt-3 grid gap-2'>{dimensions.map(item => <div key={item.label} className='grid grid-cols-[56px_1fr_24px] items-center gap-2'><span className='text-[8px] font-bold text-slate-400'>{item.label}</span><span className='h-1.5 rounded-full bg-slate-200 overflow-hidden'><i className='block h-full rounded-full bg-gradient-to-r from-violet-300 to-rose-400' style={{ width: `${item.value}%` }} /></span><span className='text-[8px] text-right tabular-nums text-slate-400'>{item.value}</span></div>)}</div>}
+        {dimensions.length > 0 && <div className='mt-3 grid gap-2'>{dimensions.map(item => <div key={item.label} className='grid grid-cols-[minmax(56px,auto)_1fr_24px] items-center gap-2'><span className='text-[8px] font-bold text-slate-400'>{item.label}</span><span className='h-1.5 rounded-full bg-slate-200 overflow-hidden'><i className='block h-full rounded-full bg-gradient-to-r from-violet-300 to-rose-400' style={{ width: `${item.value}%` }} /></span><span className='text-[8px] text-right tabular-nums text-slate-400'>{item.value}</span></div>)}</div>}
         {notes.length > 0 && <div className='mt-3'><LabeledRows lines={notes} /></div>}
     </section>;
 };
+
+const StoryAffinityDetails: React.FC<{ title: string; preview: string; children: React.ReactNode }> = ({ title, preview, children }) =>
+    <details className='group border-y border-rose-200'>
+        <summary className='list-none cursor-pointer py-3.5 flex items-center gap-3'><span className='w-8 h-8 rounded-full bg-rose-50 text-rose-500 grid place-items-center'><HeartStraight size={15} weight='fill' /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-rose-700'>{title}</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{preview}</span></span><CaretDown size={13} className='text-rose-400 transition-transform group-open:rotate-180' /></summary>
+        <div className='pb-3 pl-11 divide-y divide-rose-100'>{children}</div>
+    </details>;
 
 interface DisplayGroup { title: string; lines: DisplayLine[]; }
 
@@ -282,6 +294,31 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
                 const options = replies.length > 0 ? replies : lines.filter(line => line.value).map(line => line.value);
                 return <section key={index} className='py-4 border-y border-slate-300'><div className='flex items-center gap-2 text-[10px] font-bold text-slate-600'><ArrowBendDownRight size={15} />下一步可以这样写</div><div className='mt-3 divide-y divide-slate-200'>{options.map((option, optionIndex) => <button key={optionIndex} onClick={() => onChoose?.(option)} className='w-full py-3 flex items-start gap-3 text-left'><span className='w-5 h-5 shrink-0 rounded-full bg-violet-100 text-violet-700 grid place-items-center text-[9px] font-bold'>{optionIndex + 1}</span><span className='text-[12px] leading-5 text-slate-700'>{option}</span></button>)}</div></section>;
             }
+
+            if (block.relationship) {
+                const panel = block.relationship;
+                const axisLabels = STORY_RELATIONSHIP_AXES.map(axis => axis + ' · ' + STORY_RELATIONSHIP_LABELS[axis]);
+                const groups = panel.relationships.map(row => ({
+                    key: JSON.stringify([row.fromId, row.toId]),
+                    title: row.fromName + ' → ' + row.toName,
+                    lines: [
+                        ...STORY_RELATIONSHIP_AXES.flatMap((axis, i) => {
+                            const value = row.axes[axis];
+                            if (!value) return [];
+                            const note = [value.delta ? (value.delta > 0 ? '+' : '') + value.delta : '', value.trigger, value.evidence].filter(Boolean).join(' · ');
+                            return [{ label: axisLabels[i], value: String(value.score) },
+                                ...(note ? [{ label: axis + ' 本轮变化', value: note }] : [])];
+                        }),
+                        ...(row.relation_note ? [{ label: '关系天气', value: row.relation_note }] : []),
+                        ...(row.relation_fragments ?? []).map(value => ({ label: '关系碎片', value })),
+                    ],
+                }));
+                return <StoryAffinityDetails key={index} title={panel.primaryName ? '关系记录 · ' + panel.primaryName : '关系记录 · 实际人物对'} preview='FL · RI · DI'>
+                    {panel.state_note && <div className='py-3'><LabeledRows lines={[{ label: '自我记录', value: panel.state_note }]} /></div>}
+                    {Object.entries(panel.state_notes ?? {}).map(([id, value]) => <div key={id} className='py-3'><LabeledRows lines={[{ label: value.name + ' · 自我记录', value: value.note }]} /></div>)}
+                    {groups.map(group => <StoryAffinityGroup key={group.key} group={group} axisLabels={axisLabels} />)}
+                </StoryAffinityDetails>;
+            }
             if (block.kind === 'affinity') {
                 const personGroups = groupDisplayLines(lines, '人物', ['角色 ID']);
                 const groups = personGroups.length > 0 ? personGroups : [{ title: '主要角色', lines: lines.filter(line => line.label !== '角色 ID') }];
@@ -290,10 +327,9 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
                     const uToC = affinityNumber(group.lines, ['你对角色的温度', '你的关系温度']);
                     return `${group.title}${cToU !== undefined ? `→你 ${cToU}` : ''}${uToC !== undefined ? ` · 你→${group.title} ${uToC}` : ''}`;
                 }).join(' · ');
-                return <details key={index} className='group border-y border-rose-200'>
-                    <summary className='list-none cursor-pointer py-3.5 flex items-center gap-3'><span className='w-8 h-8 rounded-full bg-rose-50 text-rose-500 grid place-items-center'><HeartStraight size={15} weight='fill' /></span><span className='min-w-0 flex-1'><strong className='block text-xs text-rose-700'>双向关系 · {groups.length} 位角色</strong><span className='block mt-0.5 truncate text-[9px] text-slate-400'>{preview || '展开查看逐角色温度与关系维度'}</span></span><CaretDown size={13} className='text-rose-400 transition-transform group-open:rotate-180' /></summary>
-                    <div className='pb-3 pl-11 divide-y divide-rose-100'>{groups.map((group, groupIndex) => <StoryAffinityGroup key={`${group.title}-${groupIndex}`} group={group} />)}</div>
-                </details>;
+                return <StoryAffinityDetails key={index} title={'双向关系 · ' + groups.length + ' 位角色'} preview={preview || '展开查看逐角色温度与关系维度'}>
+                    {groups.map((group, groupIndex) => <StoryAffinityGroup key={group.title + ':' + groupIndex} group={group} />)}
+                </StoryAffinityDetails>;
             }
             return <section key={index} className='pl-4 border-l-2 border-slate-300'><div className='text-[10px] font-bold text-slate-500'>{block.title || '附加信息'}</div><div className='mt-2'><LabeledRows lines={lines} /></div></section>;
         })}
@@ -301,7 +337,7 @@ export const StoryOutput: React.FC<{ content: string; onChoose?: (text: string) 
     return reading ? <div><div className='meeting-prose'>{blocks.filter(block=>block.kind==='story').map((block,index)=><p key={index}>{block.text}</p>)}</div>{(blocks.some(block=>block.kind!=='story')||relationship)&&<details className='mt-5 text-slate-500'><summary className='cursor-pointer text-xs py-2'>场景与补充</summary>{rendered}</details>}</div> : rendered;
 };
 
-const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onOpenArchives, onEntryChange }) => {
+const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, onEdit, onOpenVectorMemory, onOpenArchives, onOpenRelationships, onEntryChange }) => {
     const { characters, userProfile, apiConfig, memoryPalaceConfig, remoteVectorConfig, addToast } = useOS();
     const threadId = storyTheaterThreadId(entry.id);
     const actors = useMemo(() => characters.filter(char => entry.characterIds.includes(char.id)
@@ -311,6 +347,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         return characters.filter(char => recipientIds.has(char.id));
     }, [characters, entry]);
     const mask = useMemo(() => resolveStoryTheaterMask(entry.mask, userProfile, characters, masks), [characters, entry.mask, masks, userProfile]);
+    const theaterCharMeta = useMemo(() => {
+        if (actors.length === 1) return { charId: actors[0].id, charName: actors[0].name };
+        if (actors.length > 1) return { charId: actors[0].id, charName: actors.map(actor => actor.name).join('、') };
+        const maskChar = mask.characterId ? characters.find(char => char.id === mask.characterId) : undefined;
+        return { charId: maskChar?.id, charName: maskChar?.name };
+    }, [actors, characters, mask.characterId]);
     const youLabel = mask.selection.type === 'user' ? '你' : `你（${mask.name}）`;
     const promptIdentityName = mask.name.trim() && mask.name.trim() !== '你' ? mask.name.trim() : '当前用户侧角色';
     const effectivePreset = useMemo<StoryTheaterPreset>(() => ({
@@ -318,11 +360,15 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         document: resolveStoryPresetDocument(preset, entry.presetOverride),
     }), [entry.presetOverride, preset]);
     const activeMiniTheater = useMemo(() => getActiveStoryMiniTheaterPrompt(effectivePreset.document), [effectivePreset.document]);
-    const affinityEnabled = useMemo(() => effectivePreset.document.prompts.some(prompt => prompt.id === 'nmj-v65-affinity-control' && prompt.enabled), [effectivePreset.document]);
+    const relationshipPrompt = effectivePreset.document.prompts.find(prompt => prompt.id === STORY_RELATIONSHIP_PROMPT_ID);
+    const relationshipsEnabled = relationshipPrompt?.enabled === true;
+    // The old user-controlled affinity slider stays readable in archived entries; new turns use FL/RI/DI.
+    const affinityEnabled = false;
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
-    const castLimits = useMemo(() => normalizeStoryCastLimits(entry.castLimits, actors.length), [entry.castLimits, actors.length]);
+    const castLimits = useMemo(() => normalizeStoryCastLimits({ minGroups: entry.castLimits?.minGroups, maxGroups: entry.castLimits?.maxGroups }, actors.length), [entry.castLimits, actors.length]);
     const castEnabled = entry.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
+    const interactionEnabled = entry.interactionTendenciesEnabled === true;
+    const canStart = !castEnabled || (actors.length > 0 && (!interactionEnabled || canDrawStoryInteractionPlan(actors.length, castLimits)));
     const [messages, setMessages] = useState<Message[]>([]);
     const latestReply = [...messages].reverse().find(message => message.role === 'assistant');
     const currentCastIds = new Set(storyCastIdsFromMessage(latestReply));
@@ -331,12 +377,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const rowsById = useMemo(() => new Map(messages.map(message => [message.id, message])), [messages]);
     const [axisViewer, setAxisViewer] = useState<{ messageId: number; actorId: string } | null>(null);
     const axisMessage = axisViewer && rowsById.get(axisViewer.messageId);
-    const displayedAxis = axisViewer && axisMessage && storyPrivateAxesFromMessage(axisMessage, rowsById)[axisViewer.actorId];
+    const displayedAxis = axisViewer && axisMessage && storyPrivateAxesFromMessage(axisMessage)[axisViewer.actorId];
+    const [axisEdit, setAxisEdit] = useState<{ original: Message; draft: string } | null>(null);
+    const [castEdit, setCastEdit] = useState<{ original: Message; ids: string[] } | null>(null);
+    const [savingTurn, setSavingTurn] = useState(false);
+    const [turnEditError, setTurnEditError] = useState('');
+    const turnEditLock = useRef(false);
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
     const [memoryStatus, setMemoryStatus] = useState('');
     const [contextTokens, setContextTokens] = useState(0);
     const [contextTokensExact, setContextTokensExact] = useState(false);
+    const [requestPreview, setRequestPreview] = useState('');
+    const [requestViewer, setRequestViewer] = useState(false);
     const [showAffinityInput, setShowAffinityInput] = useState(false);
     const [affinityDrafts, setAffinityDrafts] = useState<Record<string, AffinityDraft>>({});
     const [selectedAffinityActorId, setSelectedAffinityActorId] = useState('');
@@ -359,10 +412,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const bottomRef = useRef<HTMLDivElement>(null);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const longPressOrigin = useRef<{ x: number; y: number } | null>(null);
+    const messageRead = useRef(0);
 
     const loadMessages = useCallback(async () => {
+        const request = ++messageRead.current;
         const rows = await DB.getMessagesByCharId(threadId, true);
-        setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
+        if (request === messageRead.current) {
+            setMessages(rows.filter(message => message.metadata?.source === 'story_theater').sort((a, b) => a.id - b.id));
+        }
     }, [threadId]);
 
     useEffect(() => { void loadMessages(); }, [loadMessages]);
@@ -377,6 +434,9 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         setEditingMessage(null);
         setDeletingMessage(null);
         setAxisViewer(null);
+        setAxisEdit(null);
+        setCastEdit(null);
+        setTurnEditError('');
     }, [entry.id]);
     const patchAffinityDraft = useCallback((characterId: string, patch: Partial<AffinityDraft>) => {
         setAffinityDrafts(current => ({
@@ -457,6 +517,67 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setMutatingMessage(false);
         }
     }, [addToast, deletingMessage, entry.writesToCharacterMemory, loadMessages, mutatingMessage, relatedMessageIds]);
+
+    const openAxis = (message: Message, actorId: string) => {
+        setTurnEditError('');
+        setAxisEdit(null);
+        setAxisViewer({ messageId: message.id, actorId });
+    };
+    const closeAxis = () => {
+        if (turnEditLock.current) return;
+        setAxisEdit(null);
+        setAxisViewer(null);
+        setTurnEditError('');
+    };
+    const saveTurnEdit = async (save: () => Promise<void>, done: () => void) => {
+        if (turnEditLock.current) return;
+        turnEditLock.current = true;
+        setSavingTurn(true);
+        setTurnEditError('');
+        try {
+            await save();
+            await loadMessages();
+            done();
+            addToast('本轮记录已保存', 'success');
+        } catch (error) {
+            setTurnEditError(error instanceof Error ? error.message : String(error));
+        } finally {
+            turnEditLock.current = false;
+            setSavingTurn(false);
+        }
+    };
+    const saveCast = () => {
+        if (!castEdit) return;
+        const { original, ids } = castEdit;
+        void saveTurnEdit(async () => {
+            const mirrored = entry.writesToCharacterMemory || Object.keys(original.metadata?.theaterMirrorIds ?? {}).length > 0;
+            const timelines = new Map<string, number | undefined>();
+            if (mirrored) {
+                const rows = await DB.getMessagesByCharId(threadId, true);
+                const prior = rows.filter(row => row.id < original.id
+                    && row.id !== original.metadata?.theaterInputId && row.metadata?.source === 'story_theater').reverse();
+                await Promise.all(ids.filter(id => !original.metadata?.theaterMirrorIds?.[id]).map(async id => {
+                    timelines.set(id, await loadStoryMirrorTimeline(entry, id, prior));
+                }));
+                if (memoryRuns.current > 0) throw new Error('角色正在整理记忆，请稍后保存出演名单');
+            }
+            await DB.commitStoryTheaterTurn(original, undefined, ids, mirrored
+                ? (id, row) => createStoryTheaterMirrorMessage(entry, id, row, timelines.get(id)) : undefined, { castEdit: original });
+        }, () => setCastEdit(null));
+    };
+    const turnDetails = (message: Message) => {
+        const issue = message.metadata?.theaterRelationshipIssue;
+        const relationshipNotice = typeof issue === 'string' && issue
+            ? <p className='mt-3 text-xs text-amber-700'>关系记录：{issue}</p> : null;
+        if (!storyTurnActorIds(message).length) return relationshipNotice;
+        const names = storyCastIdsFromMessage(message).map(id => characters.find(actor => actor.id === id)?.name ?? '已移除角色');
+        return <div className='mt-3 text-xs text-violet-700'><div>{storyReportSummary(message)}</div>{relationshipNotice}<button type='button' aria-label='编辑本轮出演名单及私轴'
+            onClick={() => { setTurnEditError(''); setCastEdit({ original: message, ids: storyCastIdsFromMessage(message) }); }}
+            className='mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-left text-xs text-violet-700'>
+            <PencilSimple size={14} className='shrink-0' />
+            <span className='truncate'>本轮出演名单 / 镜像记忆对象 · {names.join('、') || '未选角色'}</span>
+        </button></div>;
+    };
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, sending]);
     const pageCount = Math.max(1, Math.ceil(messages.length / STORY_PAGE_SIZE));
     useEffect(() => { setMessagePage(Math.max(0, pageCount - 1)); }, [messages.length, pageCount]);
@@ -511,14 +632,19 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }
     }, [actors, addToast, entry, exporting, mask.name, messages]);
 
-    const callCompletion = useCallback(async (payload: Array<{ role: string; content: string }>, settings?: Partial<StoryGenerationSettings>, onPromptTokens?: (tokens: number) => void): Promise<string> => {
+    const callCompletion = useCallback(async (
+        payload: Array<{ role: string; content: string }>,
+        settings?: Partial<StoryGenerationSettings>,
+        onPromptTokens?: (tokens: number) => void,
+        purpose = '剧情见面生成',
+    ): Promise<string> => {
         const generationSettings = prepareStoryGenerationSettings(settings, entry.omitSamplingParams === true);
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
             body: JSON.stringify({ model: apiConfig.model, messages: payload, stream: false, ...generationSettings }),
-            __sullyMeta: { appId: 'date', appName: '见面', purpose: '剧情见面生成' },
-        } as RequestInit & { __sullyMeta: { appId: string; appName: string; purpose: string } });
+            __sullyMeta: { appId: 'date', appName: '见面', ...theaterCharMeta, purpose },
+        } as RequestInit);
         const data = await safeResponseJson(response);
         if (!response.ok) throw new Error(describeStoryApiError(response.status, data));
         const reportedPromptTokens = Number(data?.usage?.prompt_tokens);
@@ -526,7 +652,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const content = extractContent(data).trim();
         if (!content) throw new Error(describeEmptyStoryCompletion(data));
         return content;
-    }, [apiConfig, entry.omitSamplingParams]);
+    }, [apiConfig, entry.omitSamplingParams, theaterCharMeta]);
 
     const buildActorContexts = useCallback(async (
         actors: CharacterProfile[], query: string, currentStoryMessages: readonly Message[],
@@ -536,8 +662,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         const allBookIds = new Set(actors.flatMap(actor => (actor.mountedWorldbooks || []).map(book => book.id)));
         const contexts: { actor: CharacterProfile; core: string; recent: Message[] }[] = [];
         for (const actor of actors) {
-            const limit = getStoryCharacterContextLimit(entry.characterContextLimits[actor.id]);
-            const recent = await loadStoryActorContext(actor, entry.id, limit, currentStoryMessages);
+            const recent = await loadStoryActorContext(actor, entry.id, currentStoryMessages);
             let recalled = '';
             const embedding = memoryPalaceConfig.embedding;
             if (actor.memoryPalaceEnabled && embedding?.baseUrl && embedding?.apiKey) {
@@ -556,14 +681,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             contexts.push({ actor, core, recent });
         }
         return formatStoryActorContexts(contexts, userProfile.name, mask.name, entry.writesToCharacterMemory);
-    }, [entry.id, entry.carryCharacterMemory, entry.characterContextLimits, entry.writesToCharacterMemory, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
+    }, [entry.id, entry.carryCharacterMemory, entry.writesToCharacterMemory, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
 
     const buildMaskMemoryContext = useCallback(async (query: string): Promise<string> => {
         if (!entry.carryCharacterMemory || !mask.characterId) return '';
         const maskCharacter = characters.find(char => char.id === mask.characterId);
         if (!maskCharacter) return '';
-        const limit = getStoryCharacterContextLimit(entry.characterContextLimits[maskCharacter.id]);
-        const recent = await loadStoryActorContext(maskCharacter, entry.id, limit);
+        const recent = await loadStoryActorContext(maskCharacter, entry.id);
         let recalled = '';
         const embedding = memoryPalaceConfig.embedding;
         if (maskCharacter.memoryPalaceEnabled && embedding?.baseUrl && embedding?.apiKey) {
@@ -580,7 +704,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             headerOverride: `[你当前身份的既有记忆：${maskCharacter.name}]`,
         }, { skipTimeAwareness: true }));
         return `${core}\n${formatActorRecentMessages(maskCharacter, recent, userProfile.name, mask.name)}`.trim();
-    }, [actors, characters, entry.id, entry.carryCharacterMemory, entry.characterContextLimits, entry.writesToCharacterMemory, mask.characterId, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
+    }, [actors, characters, entry.id, entry.carryCharacterMemory, entry.writesToCharacterMemory, mask.characterId, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
 
     const independentRecall = useCallback(async (query: string, recent: Message[], activeEntry: StoryTheaterEntry = entry): Promise<string> => {
         if (activeEntry.writesToCharacterMemory || !activeEntry.archives.some(archive => archive.strategy === 'vector')) return '';
@@ -636,7 +760,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
             if (entry.archiveStrategy === 'summary') {
                 setMemoryStatus(`正在把 ${batch.length} 条正文压成事件盒……`);
-                summary = await generateStoryArchiveSummary(entry.title, batch, apiConfig);
+                summary = await generateStoryArchiveSummary(entry.title, batch, apiConfig, theaterCharMeta);
             } else {
                 const embedding = memoryPalaceConfig.embedding;
                 const light = memoryPalaceConfig.lightLLM?.baseUrl ? memoryPalaceConfig.lightLLM : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model };
@@ -676,10 +800,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             archiveLock.current = false;
             setMemoryStatus('');
         }
-    }, [addToast, apiConfig, castEnabled, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, threadId]);
+    }, [addToast, apiConfig, castEnabled, entry, loadMessages, mask.name, memoryPalaceConfig, onEntryChange, theaterCharMeta, threadId]);
 
     const send = useCallback(async (rerollTarget?: Message, continueRequested = false) => {
-        if (sendLock.current || (!canStart && continueRequested) || (rerollTarget && memoryRuns.current > 0)) return;
+        if (sendLock.current || turnEditLock.current || (!canStart && continueRequested) || (rerollTarget && memoryRuns.current > 0)) return;
         sendLock.current = true;
         setSending(true);
         setRerollingId(rerollTarget?.id || null);
@@ -706,27 +830,21 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 && (castEnabled || !Object.keys(latest.metadata?.theaterMirrorIds || {}).length);
             const fixedMessage = isReroll ? latest : retry ? latest : undefined;
             const rerollOutOfStory = isReroll && latest.metadata?.theaterOutOfStory === true;
-            // 重试与重写沿用原轮预先抽出的出演名单和交流倾向。
-            const reuseFixedPlan = isReroll || retry;
-            const fixedCastIds = rerollOutOfStory || (!reuseFixedPlan && !castEnabled)
-                ? undefined : storyCastIdsFromMessage(fixedMessage);
-            const fixedTendencies = fixedMessage ? storyInteractionTendenciesFromMessage(fixedMessage) : [];
-            const castTurn = !rerollOutOfStory && (isReroll ? Boolean(fixedCastIds?.length) : retry ? Boolean(fixedCastIds?.length) || castEnabled : castEnabled);
+            const savedCastMode = Array.isArray(fixedMessage?.metadata?.theaterInteractionTendencies)
+                || Array.isArray(fixedMessage?.metadata?.theaterCastIds)
+                || storyCastIdsFromMessage(fixedMessage).length > 0;
+            const castTurn = !rerollOutOfStory && (isReroll ? savedCastMode : savedCastMode || castEnabled);
+            const candidateIds = actors.map(actor => actor.id);
+            const savedTendencies = storyInteractionTendenciesFromMessage(fixedMessage)
+                .filter(group => group.every(id => candidateIds.includes(id)));
             const interactionHistory: StoryInteractionHistoryEntry[] = before
                 .filter(message => message.role === 'assistant' && message.id !== rerollTarget?.id && !message.metadata?.theaterOutOfStory)
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
-            const generatedPlan = castTurn && !fixedCastIds?.length
-                ? drawStoryInteractionPlan(actors.map(actor => actor.id), castLimits, interactionHistory)
-                : undefined;
-            const selectedCastIds = castTurn ? (fixedCastIds?.length ? fixedCastIds : generatedPlan?.castIds ?? []) : [];
-            const interactionTendencies = castTurn
-                ? (fixedCastIds?.length ? fixedTendencies : generatedPlan?.tendencies ?? [])
-                : [];
-            if (castTurn && !selectedCastIds.length) throw new Error('无法生成有效出演名单，请检查出演人数与交流倾向组数设置。');
-            const requestActors = rerollOutOfStory ? [] : castTurn
-                ? characters.filter(actor => selectedCastIds.includes(actor.id)) : actors;
-            if (castTurn && requestActors.length !== selectedCastIds.length) throw new Error('原出演名单中有角色已不存在，无法沿用名单重写');
+            const interactionTendencies = !castTurn || !interactionEnabled ? [] : savedTendencies.length ? savedTendencies
+                : drawStoryInteractionPlan(candidateIds, castLimits, interactionHistory, Math.random)
+                    .tendencies;
+            const requestActors = rerollOutOfStory ? [] : actors;
             const requestActorNames = requestActors.map(actor => actor.name);
             // 重新生成与失败重试都从消息标记恢复“继续”，模型始终收到模式专属调度词；
             // 数据库、阅读页与角色镜像只留下简洁的“（继续）”。
@@ -751,7 +869,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             charId: threadId, role: 'user', type: 'text', content: text,
                             metadata: {
                                 source: 'story_theater', theaterId: entry.id,
-                                ...(castTurn ? { theaterCastIds: selectedCastIds, theaterCandidateIds: actors.map(actor => actor.id), theaterInteractionTendencies: interactionTendencies } : {}),
+                                ...(castTurn ? { theaterCandidateIds: candidateIds, theaterInteractionTendencies: interactionTendencies } : {}),
                                 ...(affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                                 ...(isContinueTurn ? { theaterContinue: true } : {}),
                             },
@@ -766,39 +884,31 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.metadata?.source === 'story_theater')
                 .sort((a, b) => a.id - b.id);
             const history = current.filter(message => message.id !== userMessageId && message.id !== rerollTarget?.id);
+            const storedRealGraph = relationshipsEnabled && promptEntry.writesToCharacterMemory && !rerollOutOfStory
+                ? await DB.getRealRelationshipGraph() : undefined;
+            const realGraph = storedRealGraph ? realRelationshipGraphBefore(storedRealGraph, rerollTarget?.id) : undefined;
+            const relationshipHistory = relationshipsEnabled && !promptEntry.writesToCharacterMemory && !rerollOutOfStory
+                ? await DB.getStoryRelationshipHistory(promptEntry) : undefined;
+            if (relationshipHistory && !relationshipHistory.exists) throw new Error('剧场已变更或删除，请重新打开后重试');
+            const relationshipBaseline = realGraph ? realRelationshipBaseline(realGraph, requestActors) : relationshipHistory ? getStoryRelationshipBaseline(
+                relationshipHistory.messages.filter(message => !rerollTarget || message.id < rerollTarget.id), requestActors,
+            ) : undefined;
+            const relationshipGuard = storedRealGraph ? { entry: promptEntry, signature: realRelationshipSignature(storedRealGraph) }
+                : relationshipHistory ? { entry: promptEntry, signature: relationshipHistory.signature } : undefined;
             const unarchivedHistory = history.filter(message => !mirrorArchived(message, promptEntry));
-            const visibleHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
+            const recentHistory = entry.writesToCharacterMemory && (!castEnabled || history.some(message => message.metadata?.theaterFreeStory))
                 ? limitFreeStoryHistory(unarchivedHistory, Math.max(2, entry.archiveAfter || 40))
                 : unarchivedHistory;
-            const previousAxes = new Map<string, StoryPrivateAxis>();
-            if (castTurn) {
-                const historyById = new Map(history.map(message => [message.id, message]));
-                for (const message of [...history].reverse()) {
-                    if (message.role !== 'assistant') continue;
-                    const axes = storyPrivateAxesFromMessage(message, historyById);
-                    for (const actor of requestActors) {
-                        if (axes[actor.id] && !previousAxes.has(actor.id)) previousAxes.set(actor.id, axes[actor.id]);
-                    }
-                    if (previousAxes.size === requestActors.length) break;
-                }
-            }
+            const visibleHistory = relationshipsEnabled ? recentHistory.map(message =>
+                message.role === 'assistant' && !message.metadata?.theaterOutOfStory
+                    ? { ...message, content: stripStoryRelationshipPanels(message.content) } : message) : recentHistory;
+            const previousAxes = latestStoryPrivateAxes(castTurn ? history : [], requestActors.map(actor => actor.id));
             const timelineByActor = new Map<string, number | undefined>();
             if (promptEntry.writesToCharacterMemory) {
-                const previousLayers = [...current].reverse().filter(message => !rerollTarget || message.id < rerollTarget.id);
+                const previousLayers = [...current].reverse()
+                    .filter(message => !rerollTarget || message.id < rerollTarget.id && message.id !== userMessageId);
                 await Promise.all(requestActors.map(async actor => {
-                    let previous: number | undefined;
-                    for (const layer of previousLayers) {
-                        const id = layer.metadata?.theaterMirrorIds?.[actor.id];
-                        if (!Number.isSafeInteger(id) || id <= 0) continue;
-                        const mirror = await DB.getMessageById(id);
-                        const timestamp: unknown = mirror?.metadata?.theaterTimelineTimestamp;
-                        if (mirror?.charId === actor.id && mirror.metadata?.theaterId === promptEntry.id
-                            && typeof timestamp === 'number' && Number.isFinite(new Date(timestamp).getTime())) {
-                            previous = timestamp;
-                            break;
-                        }
-                    }
-                    timelineByActor.set(actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, previous));
+                    timelineByActor.set(actor.id, await loadStoryMirrorTimeline(promptEntry, actor.id, previousLayers));
                 }));
             }
             const initialTimeline = requestActors.flatMap(actor => {
@@ -819,10 +929,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             ].filter(Boolean).join('\n\n');
             const miniTheaterReminder = buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, requestActorNames);
             const backstageAftermathReminder = buildStoryBackstageAftermathReminder(effectivePreset.document);
-            const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn && !fixedCastIds?.length) : '';
+            const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn) : '';
             const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
-            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, castTurn && !fixedCastIds?.length);
-            const modelInput = appendStoryAffinityInputs(modelText, affinityInputs);
+            const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, relationshipsEnabled);
+            const modelInput = relationshipsEnabled || rerollOutOfStory ? modelText : appendStoryAffinityInputs(modelText, affinityInputs);
             const hasPresetHistory = effectivePreset.document.prompts.some(prompt => prompt.enabled && prompt.marker === 'history');
             const historyRows = hasPresetHistory ? visibleHistory
                 : visibleHistory.slice(visibleHistory.map(message => message.metadata?.theaterOutOfStory === true).lastIndexOf(false) + 1);
@@ -830,9 +940,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 ...message,
                 content: '[' + (message.metadata?.theaterOutOfStory
                     ? message.role === 'user' ? '场外对话 · 用户' : '场外对话 · AI'
-                    : message.role === 'user' ? promptIdentityName + '给出的推进（用户侧）' : '上一层剧场正文') + ']\n' + message.content,
+                    : message.role === 'user' ? promptIdentityName + '给出的推进（用户侧）' : '上一层剧场正文') + ']\n'
+                    + message.content,
             })));
             const pendingTurn = { role: 'user' as const, content: modelInput };
+            const relationshipContext = buildStoryRelationshipGuide(relationshipBaseline,
+                realGraph ? '真实世界' : `虚构剧场 ${promptEntry.id}`);
             let compiled!: ReturnType<typeof compileStoryPreset>;
             const payload = ContextBuilder.buildWorldbookRequest<StoryApiMessage>({
                 books: selectedBooks, userName: promptIdentityName, charName: requestActorNames.join('、'),
@@ -846,13 +959,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         proposals: interactionTendencies,
                         previousAxes: Object.fromEntries(previousAxes),
                         previousInteractions: interactionHistory,
-                        unrealizedTendencies: collectUnrealizedStoryTendencies(interactionHistory),
-                        modeState: rerollOutOfStory ? '场外重写' : (isContinueTurn || assistantOpening || fixedCastIds?.length ? '剧情续写' : '按最新输入判断'),
+                        modeState: rerollOutOfStory ? '场外重写' : (isContinueTurn || assistantOpening || isReroll ? '剧情续写' : '按最新输入判断'),
                         prefill: storyTheaterMode === 'story' ? effectivePreset.document.assistantPrefill : '',
                     }) : undefined;
                     compiled = compileStoryPreset({
                         preset: effectivePreset, userName: promptIdentityName, characterNames: requestActorNames,
                         historyMessages, storyTheaterMode, storyTheaterValues,
+                        interactionTendenciesEnabled: interactionEnabled,
+                        relationshipMode: relationshipsEnabled ? (rerollOutOfStory ? 'skip' : 'axes') : undefined,
                         slots: {
                             actors: actorContext,
                             persona: [buildTheaterPersona(mask), maskMemoryContext].filter(Boolean).join('\n\n'),
@@ -872,6 +986,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(multiAffinityGuide ? [{ role: 'system' as const, content: multiAffinityGuide }] : []),
                     ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                     ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
+                    ...(relationshipContext ? [{ role: 'system' as const, content: relationshipContext }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ];
@@ -885,6 +1000,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
 
                     },
             });
+            compiled.origins.set(pendingTurn, { label: '本轮用户输入' });
+            for (const message of historyMessages) compiled.origins.set(message, { label: '运行时填入 · 剧场历史' });
             if (promptEntry.forceUserLastMessage && payload[payload.length - 1]?.role !== 'user') {
                 payload.push({ role: 'user', content: '请按以上要求继续本轮剧情。' });
             }
@@ -907,84 +1024,120 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             let promptTokenCountExact = false;
             setContextTokens(promptTokenCount);
             setContextTokensExact(false);
-            const generated = await callCompletion(payload, compiled.settings, reported => {
-                promptTokenCount = reported;
-                promptTokenCountExact = true;
-                setContextTokens(reported);
-                setContextTokensExact(true);
-            });
-            const outOfStoryBody = (isReroll && !rerollOutOfStory) || fixedCastIds?.length || isContinueTurn || assistantOpening ? undefined : parseOutOfStoryReply(generated);
+            setRequestPreview(formatStoryRequestPreview(payload, compiled.origins, [apiConfig.apiKey,
+                memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey]));
+            const generated = await callCompletion(
+                payload,
+                compiled.settings,
+                reported => {
+                    promptTokenCount = reported;
+                    promptTokenCountExact = true;
+                    setContextTokens(reported);
+                    setContextTokensExact(true);
+                },
+                isReroll ? '重随剧情见面' : assistantOpening ? '剧情见面开场' : '剧情见面生成',
+            );
+            const reportedOutOfStory = parseOutOfStoryReply(generated);
+            const outOfStoryBody = reportedOutOfStory === undefined ? undefined : stripStoryRelationshipPanels(reportedOutOfStory);
             const outOfStory = outOfStoryBody !== undefined;
-            if (rerollOutOfStory && !outOfStory) throw new Error('重写场外回复时需要继续使用场外模式。');
-            const { interactions, body, axes } = outOfStory
-                ? { interactions: [], body: outOfStoryBody, axes: undefined }
+            if (rerollOutOfStory && !outOfStoryBody) throw new Error('重写场外回复时需要继续使用场外模式。');
+            if (outOfStory && ((isReroll && !rerollOutOfStory) || isContinueTurn || assistantOpening)) {
+                throw new Error('本轮需要返回剧情正文。');
+            }
+            if (outOfStory && !outOfStoryBody) throw new Error('本轮没有场外正文，请重试。');
+            // In free continuation this report only supplies participation for DI, never mirrors or private axes.
+            const freeCast = !outOfStory && !castTurn && relationshipsEnabled && /<\/?turn_cast\b/i.test(generated)
+                ? parseStoryTheaterReply(assertStoryRerollBody(generated, true), requestActors) : undefined;
+            const { castIds, castStatus, interactions, interactionStatus, body, axes } = outOfStory
+                ? { castIds: [], castStatus: undefined, interactions: [], interactionStatus: undefined, body: outOfStoryBody, axes: undefined }
                 : castTurn
-                    ? parseStoryTheaterReply(generated, actors.map(actor => actor.id), selectedCastIds)
-                    : { interactions: [], body: assertStoryRerollBody(generated), axes: undefined };
-            const castActors = requestActors;
-            const mirrorRecipientIds = castTurn && !outOfStory ? selectedCastIds : [];
-            const mirrorActors = requestActors.filter(actor => mirrorRecipientIds.includes(actor.id));
+                    ? parseStoryTheaterReply(generated, actors)
+                    : { castIds: [], castStatus: undefined, interactions: [], interactionStatus: undefined,
+                        body: freeCast?.body ?? assertStoryRerollBody(generated), axes: undefined };
+            const actualCast = new Set(castIds);
+            const mirrorActors = actors.filter(actor => actualCast.has(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
-            // 不能将未完成的出演元数据与预设开头拼成一段假正文。
-            if (castTurn && !body.replace(/<[^>]*>/g, '').trim()) {
+            const prose = (castTurn || relationshipsEnabled) && !outOfStory ? stripStoryRelationshipPanels(body) : body;
+            if ((castTurn || relationshipsEnabled) && !prose.replace(/<[^>]*>/g, '').trim()) {
                 throw new Error('本轮未生成有效剧情正文，已保留用户输入，可重试。');
             }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
-            const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(body);
+            const storyBody = relationshipBaseline ? prose : body;
+            const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(storyBody);
             // 自由续写按官方原版补回预填；出演模式才做防止重复场景标签的处理。
-            const needsPrefill = prefill && !body.startsWith(prefill)
+            const needsPrefill = prefill && !storyBody.startsWith(prefill)
                 && (!castTurn || !hasNativeOpening);
-            const rawContent = needsPrefill ? `${prefill}${body}` : body;
-            // 演员可能隔几轮才回来，取各自最近一次的关系状态（含已归档正文）。
-            const previousAssistantContent = [...history].reverse().filter(message => message.role === 'assistant' && !message.metadata?.theaterOutOfStory).map(message => message.content);
-            const content = affinityEnabled && !outOfStory
-                ? reconcileStoryAffinityScores(
-                    rawContent,
-                    previousAssistantContent,
-                    affinityInputs,
-                    (castTurn ? castActors : requestActors).map(actor => ({ id: actor.id, name: actor.name })),
-                    actors.length === 1,
-                )
+            const rawContent = needsPrefill ? `${prefill}${storyBody}` : storyBody;
+            const relationshipIssues = new Set<string>();
+            const reportRelationshipIssue = (reason: string) => relationshipIssues.add(reason);
+            // Read the model response before optional cast/axis tags can discard the report.
+            const panel = relationshipBaseline && !outOfStory ? parseStoryRelationshipContent(generated, reportRelationshipIssue) : undefined;
+            const confirmedCast = freeCast?.castStatus === 'reported' ? new Set(freeCast.castIds)
+                : castStatus === 'reported' ? actualCast : undefined;
+            const participation = confirmedCast && !relationshipIssues.size ? { cast: confirmedCast, interactions } : undefined;
+            const relationshipEvent = relationshipBaseline && !outOfStory
+                ? realRelationshipPayload(panel, requestActors, relationshipBaseline, reportRelationshipIssue, participation) : undefined;
+            const fictionalEvent = relationshipHistory && !outOfStory
+                ? relationshipEvent ?? (rerollTarget && relationshipIssues.size
+                    ? readStoryRelationshipPayload(rerollTarget.metadata?.theaterStoryRelationshipEvent) ?? legacyRealRelationshipPayload(rerollTarget)
+                    : undefined)
+                : undefined;
+            const content = relationshipHistory && !outOfStory
+                ? reconcileStoryRelationships(rawContent, relationshipBaseline, { payload: fictionalEvent })
                 : rawContent;
+            const previousEvent = storedRealGraph?.events.find(event => event.id === `story:${rerollTarget?.id}`);
+            const relationshipIssue = [...relationshipIssues].slice(0, 3).join('；');
+            const privateAxes = axes && Object.keys(axes).length ? axes : undefined;
             const replyMetadata = {
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
+                ...(relationshipsEnabled && !outOfStory ? { theaterRelationshipIssue: relationshipIssue || undefined } : {}),
+                ...(relationshipHistory && !outOfStory ? { theaterRelationshipScope: relationshipHistory.scope, theaterStoryRelationshipEvent: fictionalEvent } : {}),
+                ...(storedRealGraph && !outOfStory ? {
+                    theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
+                    theaterRealRelationshipEvent: relationshipEvent
+                        ?? (previousEvent && { version: previousEvent.version, updates: previousEvent.updates, stateNotes: previousEvent.stateNotes }),
+                } : {}),
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
-                    theaterCastIds: selectedCastIds,
-                    theaterCandidateIds: actors.map(actor => actor.id),
+                    theaterCastIds: castIds,
+                    theaterCastStatus: castStatus,
+                    theaterCandidateIds: candidateIds,
                     theaterInteractionTendencies: interactionTendencies,
                     theaterInteractionGroups: interactions,
-                } : {}),
-                ...(axes && Object.keys(axes).length ? {
-                    theaterPrivateAxes: axes,
-                    theaterPrivateAxesInputRevision: turnInput?.metadata?.theaterInputRevision,
+                    theaterInteractionStatus: interactionStatus,
+                    theaterPrivateAxes: privateAxes,
+                    theaterPrivateAxesInputRevision: privateAxes ? turnInput?.metadata?.theaterInputRevision : undefined,
                 } : {}),
                 ...(!castTurn && !outOfStory ? { theaterFreeStory: true } : {}),
             };
-            if (isReroll && rerollTarget) {
-                if (cannotRerollStoryReply(rerollTarget, promptEntry)) throw new Error('这条回复已进入记忆归档，请刷新后查看');
-                const finalTimes = new Map(castActors.map(actor => [
-                    actor.id, storyTimelineTimestampForCharacter(promptEntry, actor.id, timelineByActor.get(actor.id), content),
-                ]));
-                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, finalTimes, previousUser);
+            if (isReroll && rerollTarget && cannotRerollStoryReply(rerollTarget, promptEntry)) {
+                throw new Error('这条回复已进入记忆归档，请刷新后查看');
+            }
+            if (isReroll && rerollTarget && !castTurn) {
+                await replaceStoryTheaterReply(rerollTarget, content, replyMetadata, true, undefined, outOfStory ? undefined : relationshipGuard);
             } else {
-                if (userMessageId && (!turnInput || turnInput.content.trim() !== text)) throw new Error('本轮输入已被修改，请刷新后重试');
+                const makeMirror = promptEntry.writesToCharacterMemory && castTurn && !outOfStory
+                    ? (id: string, original: Message) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
+                    : undefined;
+                const inputMirrors = (turnInput?.metadata?.theaterMirrorIds ?? {}) as Record<string, number>;
+                if (Object.entries(inputMirrors).some(([id, mirror]) =>
+                    (!makeMirror || !actualCast.has(id)) && mirror > 0 && mirror <= getMemoryPalaceHighWaterMark(id))) {
+                    throw new Error('本轮输入已进入角色记忆归档，无法更换镜像接收者');
+                }
                 await DB.commitStoryTheaterTurn({
                     charId: threadId, role: 'assistant', type: 'text', content, timestamp: Date.now(),
                     metadata: { source: 'story_theater', theaterId: entry.id, theaterInputId: userMessageId, ...replyMetadata },
-                }, turnInput, selectedCastIds, entry.writesToCharacterMemory && castTurn && !outOfStory
-                    ? (id, original) => createStoryTheaterMirrorMessage(promptEntry, id, original, timelineByActor.get(id))
-                    : undefined,
-                    entry.writesToCharacterMemory && castTurn && !outOfStory ? mirrorRecipientIds : undefined);
+                }, turnInput, castIds, makeMirror, rerollTarget, outOfStory ? undefined : relationshipGuard);
             }
             if (!isContinueTurn) setInput('');
             setAffinityDrafts({});
             setShowAffinityInput(false);
             await loadMessages();
+            if (relationshipIssue) addToast('关系记录：' + relationshipIssue, 'error');
             if (outOfStory) return;
             if (entry.writesToCharacterMemory) {
-                if (!isReroll && castTurn) void applyActorMemoryPipeline(mirrorActors);
+                if (!isReroll && castTurn && mirrorActors.length) void applyActorMemoryPipeline(mirrorActors);
                 if (!isReroll && !castTurn) await archiveIfNeeded();
             } else void archiveIfNeeded();
         } catch (error: any) {
@@ -1004,8 +1157,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
-
+    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, interactionEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
     const canWriteOpening = canStart && messages.length === 0 && entry.openingMode === 'assistant';
@@ -1023,6 +1175,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='min-w-0 flex-1'><div className='text-[9px] tracking-[.24em] uppercase font-bold text-violet-500'>Story theater</div><h1 className='font-serif font-semibold truncate'>{entry.title}</h1></div>
                 {onOpenArchives && <button disabled={sending||!!memoryStatus} onClick={onOpenArchives} className='w-9 h-9 rounded-full grid place-items-center text-violet-600 disabled:opacity-30' title='查看事件盒与转化记忆' aria-label='查看事件盒与转化记忆'><Archive size={18} /></button>}
                 {onOpenVectorMemory && <button onClick={onOpenVectorMemory} className='w-9 h-9 rounded-full grid place-items-center text-violet-600' title='本剧情向量记忆' aria-label='本剧情向量记忆'><Database size={18} /></button>}
+                {entry.writesToCharacterMemory && onOpenRelationships && <button disabled={sending} onClick={onOpenRelationships} aria-label='真实世界人物关系网' className='grid h-9 w-9 place-items-center rounded-full text-violet-600 disabled:opacity-30'><HeartStraight size={18} /></button>}
                 <button disabled={exporting || messages.length === 0} onClick={() => void exportStory()} className='w-9 h-9 rounded-full grid place-items-center text-violet-600 disabled:opacity-30' title='导出全部剧情原文' aria-label='导出全部剧情原文'>{exporting ? <SpinnerGap size={18} className='animate-spin' /> : <DownloadSimple size={18} />}</button>
                 <StoryAppearanceButton />
                 <button disabled={sending || !!memoryStatus} onClick={() => { if (!sendLock.current && !archiveLock.current) onEdit(); }} className='w-9 h-9 rounded-full grid place-items-center'><GearSix size={19} /></button>
@@ -1040,8 +1193,10 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         <div><span className='block text-[8px] font-bold text-slate-400'>记忆方式</span><span className='block mt-1 truncate text-slate-600'>{entry.writesToCharacterMemory ? '写入角色记忆' : entry.archiveStrategy === 'summary' ? '独立事件盒' : '独立向量分区'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>结尾模块</span><span className='block mt-1 truncate text-slate-600'>{activeMiniTheater?.name || '未启用小剧场'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>完整上下文</span><span className='block mt-1 truncate text-slate-600'>{displayedTokenInfo.count > 0 ? `${sending ? '本轮' : '上轮'}${displayedTokenInfo.exact ? '使用' : '估算'} ${displayedTokenInfo.count.toLocaleString()} tokens` : '推进时统计全部内容'}</span></div>
+                        {requestPreview && <button type='button' onClick={() => setRequestViewer(true)} className='col-span-2 justify-self-start rounded-lg bg-violet-100 px-3 py-2 font-bold text-violet-700'>查看本次发送的提示词</button>}
                         <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
+                        {relationshipsEnabled && <p className='col-span-2 text-[10px] leading-5 text-slate-500'>{entry.writesToCharacterMemory ? '三轴关系与其他真实陪伴剧场共享。' : '三轴关系仅属于本虚构剧场。'}按正文实际发生关系事件的人物对分别记录，其他人保留历史。</p>}
                     </div>
                     <fieldset className='mx-5 mb-3 rounded-xl border border-slate-200 px-3 pb-2'>
                         <legend className='px-1 text-[10px] font-semibold text-slate-600'>本轮出演名单</legend>
@@ -1049,20 +1204,36 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                             {actors.map(actor => <div key={actor.id} className='inline-flex items-center gap-1'>
                                 <label className='inline-flex items-center gap-1'><input type='checkbox' checked={currentCastIds.has(actor.id)} disabled />{actor.name}</label>
                                 {latestReply && currentCastIds.has(actor.id) && <button type='button' aria-label={`查看${actor.name}的私轴`}
-                                    onClick={() => setAxisViewer({ messageId: latestReply.id, actorId: actor.id })}
+                                    onClick={() => openAxis(latestReply, actor.id)}
                                     className='grid h-9 w-9 place-items-center rounded-full bg-violet-100 text-violet-700'>
                                     {actor.avatar ? <TokenImg value={actor.avatar} alt='' className='h-7 w-7 rounded-full object-cover' /> : actor.name.slice(0, 1)}
                                 </button>}
                             </div>)}
                         </div>
                         {currentTendencies.length > 0 && <div className='mt-1 text-[10px] text-slate-500'>交流倾向：{currentTendencies.map((group, index) => `关注 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}</div>}
-                        {latestReply?.metadata?.theaterInteractionGroups && <div className='mt-1 text-[10px] text-slate-500'>实际交流：{currentInteractions.length ? currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；') : '本轮未记录到直接交流'}</div>}
+                        {latestReply && storyTurnActorIds(latestReply).length > 0 && <div className='mt-1 text-[10px] text-slate-500'>{storyReportSummary(latestReply)}{currentInteractions.length > 0 && `；${currentInteractions.map((group, index) => `交流 ${index + 1}：${group.map(id => characters.find(char => char.id === id)?.name ?? '已移除角色').join('、')}`).join('；')}`}</div>}
                         {latestReply?.metadata?.theaterOutOfStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为场外对话</div>}
                         {latestReply?.metadata?.theaterFreeStory && <div className='mt-1 text-[10px] text-slate-500'>本轮为自由续写</div>}
                     </fieldset>
                 </div>
             </details>
         </header>
+        {requestViewer && <div className='fixed inset-0 z-[290] grid place-items-center bg-black/40 p-4' onClick={() => setRequestViewer(false)}>
+            <section role='dialog' aria-modal='true' aria-label='本次发送的提示词' onClick={event => event.stopPropagation()} className='flex h-[80svh] w-full max-w-2xl flex-col gap-3 rounded-2xl bg-white p-4 text-slate-700'>
+                <div className='flex items-center justify-between gap-2'>
+                    <strong className='text-sm'>本次发送的提示词</strong>
+                    <div className='flex items-center gap-3'>
+                        <button type='button' className='text-xs font-bold text-violet-700' onClick={async () => {
+                            try { await navigator.clipboard.writeText(requestPreview); addToast('已复制提示词', 'success'); }
+                            catch { addToast('可在文本框内选中并复制', 'error'); }
+                        }}>复制全部</button>
+                        <button type='button' aria-label='关闭提示词' onClick={() => setRequestViewer(false)}><X size={18} /></button>
+                    </div>
+                </div>
+                <textarea aria-label='发送消息与预设原文' readOnly value={requestPreview} className='min-h-0 flex-1 resize-none rounded-xl bg-slate-50 p-3 font-mono text-xs leading-6' />
+            </section>
+        </div>}
+
 
         <main className='meeting-reading-page story-page-scroll flex-1 overflow-y-auto px-5 py-7'>
             <div className='max-w-2xl mx-auto'>
@@ -1099,12 +1270,13 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                                     {message.role === 'user'
                                         ? <p className='text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p>
                                         : <StoryOutput content={message.content} affinityInputs={affinityInputsFromMessage(message, actors)} />}
+                                    {turnDetails(message)}
                                 </div>}
                             </details>;
                         }
                         if (message.role === 'user') return <section key={message.id} {...pressHandlersFor(message)} className='meeting-user-turn pl-4 border-l-2 border-violet-300'><div className='meeting-user-label text-[9px] tracking-[.16em] font-bold text-violet-500'>{message.metadata?.theaterOutOfStory ? '场外 · 你' : '你写下'}</div><p className='meeting-prose mt-2 text-sm leading-7 text-slate-600 whitespace-pre-wrap'>{message.content}</p></section>;
                         const isLatest = message.id === messages[messages.length - 1]?.id && !cannotRerollStoryReply(message, entry);
-                        return <article key={message.id} {...pressHandlersFor(message)}>{message.metadata?.theaterOutOfStory ? <><div className='text-[10px] font-bold text-violet-500'>场外 · AI</div><p className='meeting-prose mt-2 whitespace-pre-wrap text-sm leading-7'>{message.content}</p></> : <StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} />}{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending || !!memoryStatus} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
+                        return <article key={message.id} {...pressHandlersFor(message)}>{message.metadata?.theaterOutOfStory ? <><div className='text-[10px] font-bold text-violet-500'>场外 · AI</div><p className='meeting-prose mt-2 whitespace-pre-wrap text-sm leading-7'>{message.content}</p></> : <StoryOutput content={message.content} onChoose={choice => setInput(choice)} affinityInputs={affinityInputsFromMessage(message, actors)} />}{turnDetails(message)}{isLatest && <div className='mt-4 flex items-center justify-end gap-2'><span className='w-1.5 h-1.5 rounded-full bg-violet-400' /><button disabled={sending || !!memoryStatus} onClick={() => void send(message)} className='inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 disabled:opacity-40'>{rerollingId === message.id ? <SpinnerGap size={12} className='animate-spin' /> : <ArrowClockwise size={12} />}换一种写法</button></div>}</article>;
                     })}
                 </div>
                 {pageCount > 1 && <StoryPagination className='mt-8' page={messagePage} pageCount={pageCount} onChange={setMessagePage} />}
@@ -1164,15 +1336,63 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 <div className='mt-5 divide-y divide-slate-200 border-y border-slate-200'><button onClick={() => { setEditingMessage(messageMenu); setEditDraft(messageMenu.content); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><PencilSimple size={17} className='text-violet-600' /><span><strong className='block text-xs text-slate-700'>编辑这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>{entry.writesToCharacterMemory ? '同步修改每位角色的陪伴记录' : '仅修改当前剧情内容'}</span></span></button><button onClick={() => { setDeletingMessage(messageMenu); setMessageMenu(null); }} className='w-full py-4 flex items-center gap-3 text-left'><Trash size={17} className='text-rose-500' /><span><strong className='block text-xs text-rose-600'>删除这一层</strong><span className='block mt-0.5 text-[9px] text-slate-400'>不会自动删除相邻的推进或正文</span></span></button></div>
             </div>
         </div>}
-        {axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30' onClick={() => setAxisViewer(null)}>
+        {castEdit && !axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30'
+            onClick={() => !turnEditLock.current && setCastEdit(null)}>
+            <section role='dialog' aria-modal='true' aria-labelledby='story-turn-cast-title' onClick={event => event.stopPropagation()}
+                className='story-safe-sheet w-full max-w-lg max-h-[80%] overflow-y-auto overscroll-contain rounded-t-2xl bg-stone-50 p-5'>
+                <div className='flex items-center justify-between gap-3'>
+                    <h2 id='story-turn-cast-title' className='text-base font-semibold'>本轮出演名单 / 镜像记忆对象</h2>
+                    <button type='button' autoFocus disabled={savingTurn} onClick={() => setCastEdit(null)} aria-label='关闭出演名单' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
+                </div>
+                <p className='text-xs leading-5 text-slate-600'>{entry.writesToCharacterMemory || Object.keys(castEdit.original.metadata?.theaterMirrorIds ?? {}).length
+                    ? '勾选的角色会收到本轮剧情记忆，实际交流以模型记录为准。'
+                    : '本剧场独立保存记忆。实际交流以模型记录为准。'}</p>
+                <div className='my-3 divide-y divide-slate-200'>
+                    {storyTurnActorIds(castEdit.original).map(id => {
+                        const character = characters.find(actor => actor.id === id);
+                        const checked = castEdit.ids.includes(id);
+                        const name = character?.name ?? '已移除角色';
+                        return <div key={id} className='flex items-center justify-between gap-3 py-1'>
+                            <label className='flex min-h-10 flex-1 items-center gap-2 text-sm'>
+                                <input type='checkbox' checked={checked} disabled={savingTurn || (!character && !checked)}
+                                    onChange={() => setCastEdit(current => current && { ...current, ids: checked
+                                        ? current.ids.filter(actorId => actorId !== id) : [...current.ids, id] })} />
+                                {name}
+                            </label>
+                            <button type='button' disabled={savingTurn} onClick={() => openAxis(rowsById.get(castEdit.original.id) ?? castEdit.original, id)}
+                                aria-label={`查看${name}的私轴`} className='min-h-10 px-2 text-xs font-semibold text-violet-700'>私轴</button>
+                        </div>;
+                    })}
+                </div>
+                {turnEditError && <p role='alert' className='mb-3 text-xs text-rose-700'>{turnEditError}</p>}
+                <button type='button' disabled={savingTurn} onClick={saveCast}
+                    className='h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white disabled:opacity-40'>保存出演名单</button>
+            </section>
+        </div>}
+        {axisViewer && <div className='fixed inset-0 z-[75] flex items-end justify-center bg-slate-900/30' onClick={closeAxis}>
             <section role='dialog' aria-modal='true' aria-labelledby='story-axis-title' onClick={event => event.stopPropagation()}
-                className='story-safe-sheet w-full max-w-lg max-h-[80%] overflow-y-auto rounded-t-2xl bg-stone-50 p-5'>
+                className='story-safe-sheet story-keyboard-sheet w-full max-w-lg max-h-[80%] overflow-y-auto overscroll-contain rounded-t-2xl bg-stone-50 p-5'>
                 <div className='flex items-center justify-between gap-3'>
                     <h2 id='story-axis-title' className='text-base font-semibold'>{characters.find(actor => actor.id === axisViewer.actorId)?.name ?? '角色'}的本轮私轴</h2>
-                    <button type='button' autoFocus onClick={() => setAxisViewer(null)} aria-label='关闭私轴' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
+                    <button type='button' autoFocus disabled={savingTurn} onClick={closeAxis} aria-label='关闭私轴' className='grid h-10 w-10 place-items-center'><X size={18} /></button>
                 </div>
-                {displayedAxis ? <p className='whitespace-pre-wrap break-words text-sm leading-6 text-slate-600'>{displayedAxis}</p>
-                    : <p className='text-sm text-slate-500'>本轮没有有效的私轴记录。</p>}
+                {axisEdit ? <>
+                    <textarea autoFocus aria-label='角色私轴' value={axisEdit.draft} disabled={savingTurn}
+                        onChange={event => setAxisEdit({ ...axisEdit, draft: event.target.value })}
+                        className='mt-2 min-h-28 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6' />
+                    <p className='mt-1 text-xs text-slate-500'>留空保存即可清空本轮私轴。</p>
+                    {turnEditError && <p role='alert' className='mt-2 text-xs text-rose-700'>{turnEditError}</p>}
+                    <button type='button' disabled={savingTurn} onClick={() => void saveTurnEdit(
+                        () => DB.updateStoryTheaterPrivateAxis(axisEdit.original, axisViewer.actorId, axisEdit.draft),
+                        () => setAxisEdit(null),
+                    )} className='mt-3 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white disabled:opacity-40'>保存私轴</button>
+                </> : <>
+                    {displayedAxis ? <p className='whitespace-pre-wrap break-words text-sm leading-6 text-slate-600'>{displayedAxis}</p>
+                        : <p className='text-sm text-slate-500'>本轮没有私轴记录。</p>}
+                    {axisMessage && storyTurnActorIds(axisMessage).includes(axisViewer.actorId) &&
+                        <button type='button' onClick={() => setAxisEdit({ original: axisMessage, draft: displayedAxis || '' })}
+                            className='mt-3 min-h-10 rounded-xl border border-violet-200 px-3 text-xs font-semibold text-violet-700'>编辑私轴</button>}
+                </>}
             </section>
         </div>}
         {editingMessage && <div className='fixed inset-0 z-[75] flex items-end overflow-y-auto overscroll-contain bg-slate-900/30' onClick={() => !mutatingMessage && setEditingMessage(null)}>

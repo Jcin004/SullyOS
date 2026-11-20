@@ -28,17 +28,20 @@ import { StoryAppearanceButton, StoryTheaterThemeProvider } from './StoryTheater
 import { deleteStoryTheaterData } from '../../../utils/storyTheaterDeletion';
 import { getStoryFolder, loadStoryLibrary, moveStoryInLibrary, saveStoryLibrary, type StoryLibrary } from '../../../utils/storyTheaterLibrary';
 import StoryLibraryDialog, { type StoryLibraryAction } from './StoryLibraryDialog';
+const RealRelationshipNetwork = React.lazy(() => import('./RealRelationshipNetwork'));
 
 interface Props {
     onSwitchCompanion?: () => void;
     onClose: () => void;
 }
 
-type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors' | 'archives';
+type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors' | 'archives' | 'relationships';
 
 const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig, apiConfig } = useOS();
     const [view, setView] = useState<View>('list');
+    const [relationshipReturn, setRelationshipReturn] = useState<'list' | 'session'>('list');
+    const openRelationships = (from: 'list' | 'session') => { setRelationshipReturn(from); setView('relationships'); };
     const [entries, setEntries] = useState<StoryTheaterEntry[]>([]);
     const [customPresets, setCustomPresets] = useState<StoryTheaterPreset[]>([]);
     const [masks, setMasks] = useState<StoryTheaterMask[]>([]);
@@ -195,10 +198,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                 : current.characterIds;
             const remainingActors = characters.filter(char => characterIds.includes(char.id) || (selection.type === 'character' && selection.id === char.id));
             const validBookIds = new Set(dedupeTheaterWorldbooks(remainingActors).map(book => book.id));
-            const characterContextLimits = { ...current.characterContextLimits };
-            if (selection.type === 'character') {
-                if (characterContextLimits[selection.id] === undefined) characterContextLimits[selection.id] = 100;
-            }
             return {
                 ...current,
                 mask: selection,
@@ -208,7 +207,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                     ...(selection.type === 'character' && (current.mask?.type !== 'character' || current.mask.id !== selection.id)
                         ? (characters.find(char => char.id === selection.id)?.mountedWorldbooks || []).map(book => book.id) : []),
                 ])),
-                characterContextLimits,
                 updatedAt: Date.now(),
             };
         });
@@ -261,13 +259,14 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         onOpenMaskBox={draft => { if (maskLocked || draft.writesToCharacterMemory) return; setActiveEntry(draft); setView('masks'); }}
     />;
 
+    if (view === 'relationships') return <React.Suspense fallback={<div className='grid h-full place-items-center text-sm text-slate-500'>正在打开关系网…</div>}><RealRelationshipNetwork onBack={() => setView(relationshipReturn)} /></React.Suspense>;
     if (view === 'vectors' && activeEntry) return <StoryVectorMemoryPanel entry={activeEntry} onBack={() => setView('session')} />;
     if (view === 'archives' && activeEntry) return <StoryArchivePanel entry={activeEntry} masks={masks} onBack={() => setView('session')} onUpdated={next => {setActiveEntry(next);setEntries(current => current.map(item => item.id === next.id ? next : item));}} />;
 
     if (view === 'session' && activeEntry) {
         const preset = presets.find(item => item.id === activeEntry.presetId) || BUILTIN_NIGHT_SCREENING_PRESET;
         const hasVectorArchive = (!activeEntry.writesToCharacterMemory && activeEntry.archiveStrategy === 'vector') || activeEntry.archives.some(archive => archive.strategy === 'vector');
-        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} />;
+        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onOpenRelationships={activeEntry.writesToCharacterMemory ? () => openRelationships('session') : undefined} onEntryChange={persistEntryInSession} />;
     }
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
@@ -275,7 +274,8 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
             <div className='h-16 px-4 flex items-center gap-3'>
                 <button onClick={() => currentFolder ? openFolder(currentFolder.parentId) : onClose()} aria-label={currentFolder ? '返回上一级' : '返回桌面'} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
                 <h1 className='font-semibold'>{onSwitchCompanion ? '见面' : '剧情'}</h1>
-                <StoryAppearanceButton className='ml-auto bg-white border border-slate-200' />
+                <button onClick={() => openRelationships('list')} aria-label='真实世界人物关系网' className='ml-auto grid h-11 w-11 place-items-center rounded-full bg-violet-100 text-violet-700'><UsersThree size={21} /></button>
+                <StoryAppearanceButton className='bg-white border border-slate-200' />
                 <button onClick={startStory} aria-label='新建剧情' className='w-10 h-10 rounded-full bg-slate-900 text-white grid place-items-center'><Plus size={19} /></button>
             </div>
             {onSwitchCompanion && <div className='mx-5 mb-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'>

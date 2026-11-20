@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DB } from '../db';
-import { MemoryNodeDB } from './db';
+import { EventBoxDB, MemoryNodeDB } from './db';
+import { expandAndFormat } from './formatter';
+import { vectorSearch } from './vectorSearch';
 import type { CharacterProfile, MemoryFragment } from '../../types';
 import type { MemoryNode } from './types';
 import { askLinkedArchiveDeletion, deleteNodeAndLinkedArchive, LINKED_ARCHIVE_DELETED } from './linkedArchiveDeletion';
@@ -19,6 +21,46 @@ async function seed(id: string) {
     return { node, memories };
 }
 describe('palace deletion archive choice', () => {
+    it('removes a deleted archived member from recall without losing the rest of the box', async () => {
+        const { node } = await seed('delete-box-member');
+        const boxId = 'delete-box';
+        const remaining = { ...node, id: 'remaining', content: '保留的经历', eventBoxId: boxId, archived: true };
+        const summary = { ...remaining, id: 'summary', content: '含有已删除经历的旧摘要', isBoxSummary: true, archived: false };
+        await MemoryNodeDB.save({ ...node, eventBoxId: boxId, archived: true });
+        await MemoryNodeDB.save(remaining);
+        await MemoryNodeDB.save(summary);
+        await EventBoxDB.save({
+            id: boxId, charId: node.charId, name: '已删除经历标题', tags: ['已删除经历标签'],
+            summaryNodeId: summary.id, archivedMemoryIds: [node.id, remaining.id], liveMemoryIds: [],
+            compressionCount: 1, createdAt: 1, updatedAt: 1, lastCompressedAt: 1,
+        });
+        await deleteNodeAndLinkedArchive(node, 'delete');
+        const prompt = await expandAndFormat([{
+            node: remaining, finalScore: 1, similarity: 1, bm25Score: 0, roomScore: 1,
+        }], node.charId);
+        expect(prompt).toContain(remaining.content);
+        expect(prompt).not.toContain('已删除经历');
+        expect(await MemoryNodeDB.getById(summary.id)).toMatchObject({ archived: true, content: summary.content });
+        expect(await MemoryNodeDB.getById(remaining.id)).toMatchObject({ archived: false, content: remaining.content });
+    });
+    it('uses only current local nodes when Supabase still returns deleted or archived candidates', async () => {
+        const { node: surviving } = await seed('remote-surviving');
+        const remoteRows = [
+            { memory_id: 'deleted', content: 'deleted candidate', similarity: 0.99 },
+            { memory_id: 'retired', content: 'retired summary', similarity: 0.98 },
+            { memory_id: surviving.id, content: 'stale copy', similarity: 0.97 },
+        ];
+        await MemoryNodeDB.save({ ...surviving, id: 'retired', archived: true });
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(remoteRows))));
+        try {
+            const hits = await vectorSearch([1, 0], surviving.charId, 0.3, 20, {
+                enabled: true, initialized: true, supabaseUrl: 'https://example.test', supabaseAnonKey: 'test',
+            });
+            expect(hits.map(hit => hit.node)).toEqual([surviving]);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
     it('yes deletes only explicit linked archives and the source node', async () => {
         const { node, memories } = await seed('delete-yes');
         const event = vi.fn(); window.addEventListener(LINKED_ARCHIVE_DELETED, event);

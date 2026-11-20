@@ -1,6 +1,7 @@
 import { createLocalId } from './localId';
 import { collectBlobRefs } from './backupBlobs';
 import { isSharedSpaceKey } from './userSpaces';
+import { realRelationshipKey, type RealRelationshipGraph } from './realRelationshipModel';
 
 export const newImportedSpaceId = () => `u_${createLocalId()}`;
 export const newImportedBlobId = () => `b_${Date.now().toString(36)}_${createLocalId().replace(/-/g, '')}`;
@@ -81,6 +82,15 @@ export function remapIndependentUser(
     for (const [store, rows] of Object.entries(tables)) {
         nextTables[store] = rows.filter(row => store !== 'assets' || !/user_spaces_catalog|amsg|active.?msg|pending.*(?:job|result)/i.test(row.id)).map(row => {
             const copy = walk(row);
+            if (store === 'assets' && row.id === 'sully_real_relationship_graph_v1') {
+                const graph = (typeof copy.data === 'string' ? JSON.parse(copy.data) : copy.data) as RealRelationshipGraph;
+                if (graph?.schema === 'sullyos.real-relationships' && graph.version === 1 && graph.directions) {
+                    // JSON pair keys contain quoted IDs; the generic composite-key remapper cannot change them.
+                    graph.directions = Object.fromEntries(Object.values(graph.directions).map(direction =>
+                        [realRelationshipKey(direction.fromId, direction.toId), direction]));
+                    copy.data = typeof copy.data === 'string' ? JSON.stringify(graph) : graph;
+                }
+            }
             if (store === 'characters') {
                 copy.activeMsg2Config = { ...copy.activeMsg2Config, enabled: false, instantChatEnabled: false, tasks: [] };
                 delete copy.activeMsg2Config.lastSyncedAt; delete copy.activeMsg2Config.lastError;

@@ -88,6 +88,8 @@ import { DB } from '../db';
 import { isMessageSemanticallyRelevant, formatMessageForPrompt } from '../messageFormat';
 import { sanitizeQuerySourceMessages } from './querySanitizer';
 import { getLocalDateKey } from '../localDate';
+import { getDailyMemoryDate } from '../dailyMemoryDate';
+import { resolveCharTimeZone } from '../timezone';
 import { extractExternalMemoryText } from './externalMemory';
 import {
     analyzeLocalContext,
@@ -203,7 +205,7 @@ async function loadMemoriesByDateRanges(
  * 返回 null：memories 为空（没有新记忆，不需要归档动作）。
  */
 export function buildAutoArchiveFragments(
-    memories: { id: string; content: string; createdAt: number; experiencedAt?: number }[],
+    memories: Pick<MemoryNode, 'id' | 'content' | 'createdAt' | 'experiencedAt' | 'dailyArchiveDate'>[],
     hideBeforeMessageId: number,
     linkToPalace = false,
 ): NonNullable<PipelineResult['autoArchive']> | null {
@@ -212,7 +214,7 @@ export function buildAutoArchiveFragments(
         hideBeforeMessageId,
         fragments: memories.map(memory => ({
             id: `mp_link_${memory.id}`,
-            date: getLocalDateKey(new Date(memory.experiencedAt ?? memory.createdAt)),
+            date: getDailyMemoryDate(memory) ?? getLocalDateKey(new Date(memory.createdAt)),
             summary: memory.content,
             mood: 'palace',
             palaceMemoryId: memory.id,
@@ -1761,10 +1763,12 @@ async function extractAndStoreMemories(
 ): Promise<ExtractCoreResult> {
         // 5. 构建精简上下文：角色档案 + 用户档案 + 相关已有记忆
         let charContext = '';
+        let timeZone: string | undefined;
         let relatedMemoryRefs: RelatedMemoryRef[] = [];
         try {
             const chars = await DB.getAllCharacters();
             const charProfile = chars.find(c => c.id === charId);
+            timeZone = resolveCharTimeZone(charProfile);
             const userProfile = await DB.getUserProfile();
 
             // 5a. 精简角色档案（姓名、设定、世界观）
@@ -1874,7 +1878,7 @@ async function extractAndStoreMemories(
 
             try {
                 const extractionResult = await extractMemoriesFromBuffer(
-                    chunk, charId, charName, llmConfig, charContext, userName, relatedMemoryRefs, pinnedRefs,
+                    chunk, charId, charName, llmConfig, charContext, userName, relatedMemoryRefs, pinnedRefs, timeZone,
                 );
                 allMemories.push(...extractionResult.memories);
                 allCrossTimeLinks.push(...extractionResult.crossTimeLinks);

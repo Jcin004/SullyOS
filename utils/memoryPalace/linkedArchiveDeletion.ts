@@ -2,7 +2,7 @@ import type { CharacterProfile, MemoryFragment } from '../../types';
 import { openDB } from '../db';
 import { bm25Index } from './bm25Index';
 import { notifyMemoryNodesChanged } from './nodeChanges';
-import type { MemoryNode } from './types';
+import type { EventBox, MemoryNode, RemoteVectorConfig } from './types';
 
 export type LinkedArchiveDeletionChoice = 'delete' | 'keep';
 export const LINKED_ARCHIVE_DELETED = 'sully:linked-archive-deleted';
@@ -19,12 +19,18 @@ export function applyLinkedArchiveDeletion(memories: MemoryFragment[], nodeId: s
 }
 
 /** Commit the source deletion and the explicit archive decision together. */
-export async function deleteNodeAndLinkedArchive(node: MemoryNode, choice?: LinkedArchiveDeletionChoice): Promise<void> {
+export async function deleteNodeAndLinkedArchive(
+    node: MemoryNode, choice?: LinkedArchiveDeletionChoice, remote?: RemoteVectorConfig,
+): Promise<void> {
     const db = await openDB();
     let changed = false;
+    const archivedSummaries: string[] = [];
+    const restoredNodes: MemoryNode[] = [];
     await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(['memory_nodes', 'characters'], 'readwrite');
+        const tx = db.transaction(['memory_nodes', 'memory_vectors', 'memory_links', 'event_boxes', 'characters'], 'readwrite');
         const characters = tx.objectStore('characters');
+        const nodes = tx.objectStore('memory_nodes');
+        const boxes = tx.objectStore('event_boxes');
         let failure: Error | undefined;
         const request = characters.get(node.charId);
         request.onsuccess = () => {
@@ -37,19 +43,89 @@ export async function deleteNodeAndLinkedArchive(node: MemoryNode, choice?: Link
                 characters.put({ ...character, memories: applyLinkedArchiveDeletion(character.memories, node.id, choice) });
                 changed = true;
             }
-            tx.objectStore('memory_nodes').delete(node.id);
+            const readNode = nodes.get(node.id);
+            readNode.onsuccess = () => {
+                const current = readNode.result as MemoryNode | undefined;
+                if (!current) return;
+                if (current.charId !== node.charId) {
+                    failure = new Error('记忆所属角色已变更，请重新删除');
+                    tx.abort();
+                    return;
+                }
+                if (current.eventBoxId) {
+                    const readBox = boxes.get(current.eventBoxId);
+                    readBox.onsuccess = () => {
+                        const box = readBox.result as EventBox | undefined;
+                        if (!box || box.charId !== current.charId) return;
+                        const wasSummarized = box.archivedMemoryIds.includes(current.id);
+                        const deletingSummary = box.summaryNodeId === current.id;
+                        box.liveMemoryIds = box.liveMemoryIds.filter(id => id !== current.id);
+                        box.archivedMemoryIds = box.archivedMemoryIds.filter(id => id !== current.id);
+                        box.updatedAt = Date.now();
+                        box.name = '未命名事件';
+                        box.tags = [];
+                        if (deletingSummary) box.summaryNodeId = null;
+                        if (wasSummarized || deletingSummary) {
+                            box.lastCompressedAt = null;
+                            if (box.summaryNodeId) {
+                                const readSummary = nodes.get(box.summaryNodeId);
+                                readSummary.onsuccess = () => {
+                                    const summary = readSummary.result as MemoryNode | undefined;
+                                    if (summary?.charId !== current.charId || summary.eventBoxId !== box.id) return;
+                                    nodes.put({ ...summary, archived: true });
+                                    archivedSummaries.push(summary.id);
+                                };
+                            }
+                            // Keep the remaining source memories available while the old summary is retired.
+                            for (const id of box.archivedMemoryIds) {
+                                const readMember = nodes.get(id);
+                                readMember.onsuccess = () => {
+                                    const member = readMember.result as MemoryNode | undefined;
+                                    if (member?.charId !== current.charId || member.eventBoxId !== box.id || member.isBoxSummary) return;
+                                    const restored = { ...member, archived: false };
+                                    nodes.put(restored);
+                                    restoredNodes.push(restored);
+                                };
+                            }
+                            box.liveMemoryIds = [...new Set([...box.liveMemoryIds, ...box.archivedMemoryIds])];
+                            box.archivedMemoryIds = [];
+                        }
+                        if (!box.summaryNodeId && !box.liveMemoryIds.length && !box.archivedMemoryIds.length) boxes.delete(box.id);
+                        else boxes.put(box);
+                    };
+                }
+                const links = tx.objectStore('memory_links');
+                for (const index of ['sourceId', 'targetId']) {
+                    const cursor = links.index(index).openKeyCursor(IDBKeyRange.only(current.id));
+                    cursor.onsuccess = () => {
+                        const match = cursor.result;
+                        if (!match) return;
+                        links.delete(match.primaryKey);
+                        match.continue();
+                    };
+                }
+                tx.objectStore('memory_vectors').delete(current.id);
+                nodes.delete(current.id);
+            };
         };
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(failure || tx.error);
         tx.onabort = () => reject(failure || tx.error || new Error('删除未完成'));
     });
     bm25Index.onNodeDeleted(node.id);
+    bm25Index.onNodesSaved(restoredNodes);
     if (changed && choice && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent<LinkedArchiveDeletionDetail>(LINKED_ARCHIVE_DELETED, {
             detail: { charId: node.charId, nodeId: node.id, choice },
         }));
     }
     notifyMemoryNodesChanged(node.charId);
+    if (remote?.enabled && remote.initialized) {
+        const { bulkSetArchived, deleteVector } = await import('./supabaseVector');
+        void deleteVector(remote, node.id).catch(() => {});
+        if (archivedSummaries.length) void bulkSetArchived(remote, archivedSummaries, true).catch(() => {});
+        if (restoredNodes.length) void bulkSetArchived(remote, restoredNodes.map(member => member.id), false).catch(() => {});
+    }
 }
 
 /** A separate cancel action means dismissing the dialog never means “keep and delete”. */

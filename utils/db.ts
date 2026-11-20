@@ -15,6 +15,15 @@ import { buildPhoneEvidenceChatCard } from './phoneEvidence';
 import { mergePhoneGeneration, PHONE_GENERATION_COMMITTED, type PhoneGeneration } from './phoneGeneration';
 import {deleteSecretNotesForIds, announceSecretNotesChanged} from './secretNote';
 import { ensureStoryTimelineRepair, invalidateStoryTimelineRepair } from './storyTheaterTimeline';
+import { storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyTurnActorIds } from './storyTheaterCast';
+import { readStoryRelationshipHistory, checkStoryRelationshipGuard, type StoryRelationshipGuard, type StoryRelationshipHistory } from './storyRelationshipHistory';
+import {
+    loadRealRelationshipGraph, loadRealRelationshipLayout, patchRealRelationshipLayout, editRealRelationship,
+    syncRealRelationshipMessage, removeRealRelationshipEvents, checkRealRelationshipGuard, realRelationshipTransactionError,
+    REAL_RELATIONSHIP_GRAPH_KEY, REAL_RELATIONSHIP_LAYOUT_KEY, validateRealRelationshipGraph, finishRealRelationshipRestore, type ManualRealRelationshipEdit,
+} from './realRelationshipStore';
+import type { RealRelationshipGraph, RealRelationshipLayout } from './realRelationshipModel';
+import { storyTheaterMirrorContent } from './storyTheaterRelationships';
 
 import { orderWorldEpisodes } from './worldHome/episodeOrder';
 
@@ -158,6 +167,21 @@ function clearStaleLocalMemoryWatermark(key: string, newId: number): void {
         if (parseInt(localStorage.getItem(key) || '0', 10) >= newId) localStorage.removeItem(key);
     } catch { /* localStorage unavailable */ }
 }
+
+function sameStoryLayer(current: Message | undefined, original: Message): current is Message {
+    return !!current && current.charId === original.charId && current.role === original.role
+        && current.metadata?.source === 'story_theater' && current.metadata?.theaterId === original.metadata?.theaterId
+        && current.content === original.content && current.metadata?.theaterInputRevision === original.metadata?.theaterInputRevision;
+}
+
+const sameStoryValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+const isStoryReply = (message: Message): boolean => message.role === 'assistant' && message.type === 'text'
+    && !message.groupId && message.metadata?.source === 'story_theater' && !message.metadata?.theaterOutOfStory
+    && typeof message.metadata?.theaterId === 'string' && message.charId === `story-theater:${message.metadata.theaterId}`;
+const storyMirrorFields = new Set([
+    'source', 'theaterId', 'theaterTitle', 'theaterCentralId', 'theaterTimestampVersion',
+    'theaterReceivedAt', 'theaterTimelineTimestamp',
+]);
 
 function makeSpaceOpener(DB_NAME: string) {
  let dbPromise: Promise<IDBDatabase> | null = null;
@@ -1013,12 +1037,15 @@ export const DB = {
   saveMessage: async (msg: Omit<Message, 'id' | 'timestamp'> & { timestamp?: number }): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+        const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
         const store = transaction.objectStore(STORE_MESSAGES);
         const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
         const { timestamp: _ignored, ...payload } = msg;
         const request = store.add({ ...payload, timestamp });
-        request.onsuccess = () => clearStaleMemoryMirror(transaction, msg.charId, request.result as number);
+        request.onsuccess = () => {
+            clearStaleMemoryMirror(transaction, msg.charId, request.result as number);
+            syncRealRelationshipMessage(transaction, { ...payload, timestamp, id: request.result as number });
+        };
         // request 成功后事务仍可能回滚。主动消息通知和定时任务销账都必须等提交。
         transaction.oncomplete = () => {
             const newId = request.result as number;
@@ -1037,20 +1064,50 @@ export const DB = {
     });
   },
 
-  /** Commit the central reply and both sets of text mirrors together. */
+  getRealRelationshipGraph: async () => loadRealRelationshipGraph(await openDB()),
+  getRealRelationshipLayout: async () => loadRealRelationshipLayout(await openDB()),
+  patchRealRelationshipLayout: async (patch: Partial<RealRelationshipLayout>) => patchRealRelationshipLayout(await openDB(), patch),
+  editRealRelationship: async (edit: ManualRealRelationshipEdit, revision: number) => editRealRelationship(await openDB(), edit, revision),
+
+  getStoryRelationshipHistory: async (entry: StoryTheaterEntry): Promise<StoryRelationshipHistory> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_MESSAGES, STORE_STORY_THEATERS], 'readonly');
+        let history: StoryRelationshipHistory;
+        readStoryRelationshipHistory(tx, entry, result => { history = result; });
+        tx.oncomplete = () => resolve(history);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('关系历史读取失败'));
+    });
+  },
+
+  /** Commit the central reply and both sets of text mirrors together, including a changed cast on rewrite. */
   commitStoryTheaterTurn: async (
       reply: Omit<Message, 'id'>,
       pending: Message | undefined,
       castIds: string[],
       makeMirror?: (actorId: string, original: Message) => Omit<Message, 'id'>,
-      mirrorRecipientIds?: readonly string[],
+      replacement?: Message | { castEdit: Message },
+      relationshipGuard?: StoryRelationshipGuard,
   ): Promise<void> => {
     const db = await openDB();
-    const actorIds = [...new Set(mirrorRecipientIds ?? castIds)];
+    const castEdit = replacement && 'castEdit' in replacement ? replacement.castEdit : undefined;
+    const replaceReply = replacement && 'id' in replacement ? replacement : undefined;
+    const recipients = new Set(makeMirror || castEdit ? castIds : []);
+    const useActualCast = Array.isArray(reply.metadata?.theaterCastIds);
+    if (!castEdit && useActualCast) {
+        const stored = storyCastIdsFromMessage({ ...reply, id: 0 });
+        const status = reply.metadata?.theaterCastStatus;
+        if (new Set(castIds).size !== castIds.length || castIds.length !== stored.length || castIds.some(id => !stored.includes(id))
+            || (castIds.length > 0 && ['unreported', 'invalid', 'empty'].includes(status))) {
+            throw new Error('出演名单尚未确认，未写入角色镜像');
+        }
+    }
     return new Promise((resolve, reject) => {
-        const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
+        const tx = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
         const store = tx.objectStore(STORE_MESSAGES);
         const inserted: [string, number][] = [];
+        const addedActors = new Set<string>();
         let failure: unknown;
         const guarded = (action: () => void) => {
             try { action(); } catch (error) { failure = error; tx.abort(); }
@@ -1059,7 +1116,7 @@ export const DB = {
             for (const [id, messageId] of inserted) clearStaleLocalMemoryWatermark(`mp_lastMsgId_${id}`, messageId);
             resolve();
         };
-        tx.onabort = () => reject(failure ?? tx.error ?? new Error('本轮未能保存，请重试'));
+        tx.onabort = () => reject(failure ?? realRelationshipTransactionError(tx) ?? new Error('本轮未能保存，请重试'));
 
         const add = (message: Omit<Message, 'id'>, after: (id: number) => void) => {
             const request = store.add(message);
@@ -1070,41 +1127,239 @@ export const DB = {
                 after(id);
             });
         };
-        const saveOriginal = (original: Message, existing: Record<string, number> = {}) => {
-            const recipients = makeMirror ? actorIds : [];
-            const mirrors = new Map(Object.entries(existing));
-            if (mirrors.size && (mirrors.size !== recipients.length || recipients.some(id => !mirrors.has(id)))) {
-                throw new Error('本轮已有不同的记忆接收者，原记录已保留');
-            }
-            const finish = () => store.put({ ...original, metadata: {
-                ...original.metadata,
-                ...(reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : castIds.length ? {
+        const saveOriginal = (original: Message, done: () => void = () => {}) => {
+            const existing = original.metadata?.theaterMirrorIds as Record<string, number> | undefined;
+            const mirrors = new Map(Object.entries(existing ?? {}));
+            const finish = () => {
+                const castPatch = castEdit ? {
+                    theaterCastIds: castIds,
+                    ...(original.role === 'assistant' ? {
+                        theaterCastStatus: 'manual',
+                        // Retain the identifiable options of old turns that only had cast groups or backlinks.
+                        theaterCandidateIds: original.metadata?.theaterCandidateIds ?? storyTurnActorIds(original),
+                        ...(Array.isArray(original.metadata?.theaterInteractionGroups) ? {
+                            theaterInteractionGroups: storyActualInteractionGroupsFromMessage({
+                                ...original, metadata: { ...original.metadata, theaterCastIds: castIds },
+                            }),
+                        } : {}),
+                    } : {}),
+                } : reply.metadata?.theaterOutOfStory ? { theaterOutOfStory: true } : useActualCast || castIds.length ? {
                     theaterCastIds: reply.metadata?.theaterCastIds ?? castIds,
                     theaterCandidateIds: reply.metadata?.theaterCandidateIds ?? castIds,
                     ...(reply.metadata?.theaterInteractionTendencies ? { theaterInteractionTendencies: reply.metadata.theaterInteractionTendencies } : {}),
-                } : {}),
-                ...(reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
-                ...(makeMirror ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
-            } });
-            const missing = recipients.filter(id => !mirrors.has(id));
-            if (!makeMirror || missing.length === 0) { finish(); return; }
-            for (const actorId of missing) add(makeMirror(actorId, original), id => {
-                mirrors.set(actorId, id);
-                if (mirrors.size === recipients.length) finish();
+                } : {};
+                const updated = { ...original, metadata: {
+                    ...original.metadata,
+                    ...castPatch,
+                    ...(!castEdit && reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
+                    ...(mirrors.size || existing ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
+                } };
+                if (updated.role === 'assistant' && relationshipGuard?.signature.startsWith('real-graph:')) {
+                    syncRealRelationshipMessage(tx, updated, content => {
+                        store.put({ ...updated, content });
+                        done();
+                    }, replaceReply?.content);
+                } else {
+                    store.put(updated).onsuccess = () => syncRealRelationshipMessage(tx, updated);
+                    done();
+                }
+            };
+            const actorIds = new Set([...mirrors.keys(), ...recipients]);
+            let remaining = actorIds.size;
+            if (!remaining) { finish(); return; }
+            const saved = () => { if (--remaining === 0) finish(); };
+            for (const actorId of actorIds) {
+                const id = mirrors.get(actorId);
+                const kept = recipients.has(actorId);
+                const next = makeMirror && kept && (!castEdit || (!id && addedActors.has(actorId)))
+                    ? makeMirror(actorId, original) : undefined;
+                if (!id) {
+                    if (!next) { mirrors.delete(actorId); saved(); continue; }
+                    const insert = () => add(next, newId => { mirrors.set(actorId, newId); saved(); });
+                    if (!castEdit) { insert(); continue; }
+                    const sourceIndex = store.indexNames.contains('charId_source');
+                    const orphan = sourceIndex
+                        ? store.index('charId_source').openCursor(IDBKeyRange.only([actorId, 'story_theater_memory']))
+                        : store.index('charId').openCursor(IDBKeyRange.only(actorId));
+                    orphan.onsuccess = () => guarded(() => {
+                        const cursor = orphan.result;
+                        if (!cursor) { insert(); return; }
+                        const row = cursor.value as Message;
+                        const metadata = row.metadata;
+                        if (metadata?.source === 'story_theater_memory' && (metadata.theaterCentralId === original.id
+                            || (metadata.theaterCentralId == null && metadata.theaterId === original.metadata.theaterId
+                                && row.role === original.role && row.timestamp === original.timestamp && row.content === original.content))) {
+                            throw new Error('发现未链接的本轮角色镜像，原记录已保留');
+                        }
+                        cursor.continue();
+                    });
+                    continue;
+                }
+                const request = store.get(id);
+                request.onsuccess = () => guarded(() => {
+                    const oldMirror = request.result as Message | undefined;
+                    const oldContent = storyTheaterMirrorContent(original.id === replaceReply?.id ? replaceReply : original);
+                    const linkedId = oldMirror?.metadata?.theaterCentralId;
+                    if (oldMirror && (oldMirror.charId !== actorId
+                        || oldMirror.metadata?.source !== 'story_theater_memory'
+                        || (castEdit && (oldMirror.metadata?.theaterId !== original.metadata?.theaterId
+                            || oldMirror.role !== original.role || oldMirror.type !== 'text' || oldMirror.groupId))
+                        || (linkedId == null
+                            ? oldMirror.metadata?.theaterId !== original.metadata?.theaterId || oldMirror.content !== oldContent
+                            : linkedId !== original.id))) {
+                        throw new Error('角色镜像与原文不匹配，原记录已保留');
+                    }
+                    if (castEdit && kept) {
+                        if (!oldMirror) throw new Error('角色镜像链接已失效，原记录已保留');
+                        saved();
+                        return;
+                    }
+                    if (next) {
+                        if (!oldMirror) { add(next, newId => { mirrors.set(actorId, newId); saved(); }); return; }
+                        if (original.id === replaceReply?.id) {
+                            if (oldMirror.content !== oldContent) throw new Error('这条回复已被修改，请刷新后重试');
+                            store.put({ ...oldMirror, content: next.content, metadata: {
+                                ...oldMirror.metadata, theaterTimelineTimestamp: next.metadata?.theaterTimelineTimestamp,
+                            } });
+                        }
+                    } else {
+                        const remove = () => {
+                            if (oldMirror) store.delete(id);
+                            mirrors.delete(actorId);
+                            saved();
+                        };
+                        if (castEdit && oldMirror) {
+                            if (oldMirror.content !== oldContent || oldMirror.replyTo
+                                || Object.keys(oldMirror.metadata).some(key => !storyMirrorFields.has(key))) {
+                                throw new Error('角色镜像已单独修改，原记录已保留');
+                            }
+                            const watermark = tx.objectStore(STORE_ASSETS).get(`mp_hwm_v1_${actorId}`);
+                            watermark.onsuccess = () => guarded(() => {
+                                const data = watermark.result?.data;
+                                let local = 0;
+                                try { local = Number(localStorage.getItem(`mp_lastMsgId_${actorId}`)) || 0; } catch { /* IndexedDB watermark is still available. */ }
+                                if (id <= Math.max(local, Number(data?.msgId ?? data) || 0)) {
+                                    throw new Error('角色镜像已进入记忆归档，原记录已保留');
+                                }
+                                remove();
+                            });
+                            return;
+                        }
+                        remove();
+                        return;
+                    }
+                    saved();
+                });
+            }
+        };
+        if (castEdit) {
+            const read = store.get(castEdit.id);
+            read.onsuccess = () => guarded(() => {
+                const current = read.result as Message | undefined;
+                if (!sameStoryLayer(current, castEdit) || !isStoryReply(current)
+                    || current.metadata?.theaterInputId !== castEdit.metadata?.theaterInputId) {
+                    throw new Error('这条剧情已被修改或删除，请刷新后重试');
+                }
+                const existingCast = storyCastIdsFromMessage(current);
+                if (!sameStoryValue(existingCast, storyCastIdsFromMessage(castEdit)) && !sameStoryValue(existingCast, castIds)) {
+                    throw new Error('出演名单已被修改，请刷新后重试');
+                }
+                const allowed = storyTurnActorIds(current);
+                if (!allowed.length || new Set(castIds).size !== castIds.length || castIds.some(id => !allowed.includes(id))) {
+                    throw new Error('只能选择本轮候选角色');
+                }
+                for (const id of castIds) if (!existingCast.includes(id)) addedActors.add(id);
+                const saveReply = () => saveOriginal(current);
+                const saveInput = (input?: Message) => {
+                    if (!input || input.charId !== current.charId || input.id >= current.id || input.role !== 'user'
+                        || input.metadata?.source !== 'story_theater' || input.metadata.theaterId !== current.metadata.theaterId
+                        || input.metadata.theaterOutOfStory || input.type !== 'text' || input.groupId) {
+                        throw new Error('找不到可核对的本轮推进，原记录已保留');
+                    }
+                    saveOriginal(input, saveReply);
+                };
+                const inputId: unknown = current.metadata.theaterInputId;
+                if (inputId === 0) { saveReply(); return; }
+                if (inputId != null && (typeof inputId !== 'number' || !Number.isSafeInteger(inputId) || inputId < 1)) {
+                    throw new Error('本轮推进链接无效，原记录已保留');
+                }
+                const earlier = store.index('charId').openCursor(IDBKeyRange.only(current.charId), 'prev');
+                earlier.onsuccess = () => guarded(() => {
+                    const cursor = earlier.result;
+                    if (cursor && Number(cursor.primaryKey) > current.id) { cursor.continuePrimaryKey(current.charId, current.id); return; }
+                    if (cursor && (cursor.primaryKey === current.id || cursor.value.metadata?.source !== 'story_theater')) { cursor.continue(); return; }
+                    if (inputId != null && cursor?.primaryKey !== inputId) {
+                        throw new Error('找不到可核对的本轮推进，原记录已保留');
+                    }
+                    if (inputId != null || cursor?.value.role === 'user') saveInput(cursor?.value);
+                    else saveReply();
+                });
+            });
+            return;
+        }
+        const commit = () => {
+            const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
+            latest.onsuccess = () => guarded(() => {
+                const cursor = latest.result;
+                const current = cursor?.value as Message | undefined;
+                if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
+                if (replaceReply) {
+                    if (!current || current.id !== replaceReply.id) throw new Error('剧情已在别处推进，原回复已保留');
+                    if (!sameStoryLayer(current, replaceReply)
+                        || !sameStoryValue(current.metadata?.theaterCastIds, replaceReply.metadata?.theaterCastIds)
+                        || !sameStoryValue(current.metadata?.theaterPrivateAxes, replaceReply.metadata?.theaterPrivateAxes)) {
+                        throw new Error('这条回复已被修改，请刷新后重试');
+                    }
+                    const saveReply = () => saveOriginal({
+                        ...current, content: reply.content, metadata: { ...current.metadata, ...reply.metadata },
+                    });
+                    if (!pending) { saveReply(); return; }
+                    const inputRequest = store.get(pending.id);
+                    inputRequest.onsuccess = () => guarded(() => {
+                        const input = inputRequest.result as Message | undefined;
+                        if (!input || input.charId !== current.charId || input.role !== 'user') {
+                            throw new Error('本轮的用户原文已删除，无法按原输入重写');
+                        }
+                        saveOriginal(input, saveReply);
+                    });
+                    return;
+                }
+                // 输入原地编辑后 ID 不变，镜像使用刚从数据库读出的正文。
+                if (pending ? !current || current.id !== pending.id || current.role !== 'user' : current) {
+                    throw new Error('剧情已在别处推进，请刷新后重试');
+                }
+                const saveReply = () => add(reply, id => saveOriginal({ ...reply, id }));
+                if (current) saveOriginal(current, saveReply);
+                else saveReply();
             });
         };
-        const latest = store.index('charId').openCursor(IDBKeyRange.only(reply.charId), 'prev');
-        latest.onsuccess = () => guarded(() => {
-            const cursor = latest.result;
-            const current = cursor?.value as Message | undefined;
-            if (cursor && current?.metadata?.source !== 'story_theater') { cursor.continue(); return; }
-            if (pending ? !current || current.id !== pending.id || current.role !== 'user' || current.content !== pending.content
-                || current.metadata?.theaterInputRevision !== pending.metadata?.theaterInputRevision : current) {
-                throw new Error('剧情已在别处修改或推进，请刷新后重试');
+        if (relationshipGuard?.signature.startsWith('real-graph:')) {
+            if (reply.metadata?.theaterRelationshipScope !== 'real' || reply.metadata?.theaterId !== relationshipGuard.entry.id) {
+                failure = new Error('真实关系归属不匹配'); tx.abort(); return;
             }
-            if (current) saveOriginal(current, current.metadata?.theaterMirrorIds);
-            add(reply, id => saveOriginal({ ...reply, id }));
-        });
+            checkRealRelationshipGuard(tx, relationshipGuard.entry, relationshipGuard.signature, commit);
+        } else if (relationshipGuard) readStoryRelationshipHistory(tx, relationshipGuard.entry, history => guarded(() => {
+            checkStoryRelationshipGuard(history, relationshipGuard);
+            if (reply.metadata?.theaterId !== relationshipGuard.entry.id
+                || reply.metadata?.theaterRelationshipScope !== history.scope) throw new Error('关系世界归属不匹配，本次未保存');
+            commit();
+        }));
+        else commit();
+    });
+  },
+
+  updateStoryTheaterPrivateAxis: async (original: Message, actorId: string, text: string): Promise<void> => {
+    await DB.updateMessageMetadata(original.id, (metadata, current) => {
+        if (!sameStoryLayer(current, original) || !isStoryReply(current) || !storyTurnActorIds(current).includes(actorId)) {
+            throw new Error('这条剧情或角色已变更，请刷新后重试');
+        }
+        const value = text.trim();
+        const previous = metadata.theaterPrivateAxes;
+        if (!sameStoryValue(previous?.[actorId], original.metadata?.theaterPrivateAxes?.[actorId])
+            && previous?.[actorId] !== value) {
+            throw new Error('这条私轴已被修改，请刷新后重试');
+        }
+        return { ...metadata, theaterPrivateAxes: { ...previous, [actorId]: value } };
     });
   },
 
@@ -1150,7 +1405,7 @@ export const DB = {
 
   updateMessage: async (id: number, content: string): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+    const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
     const store = transaction.objectStore(STORE_MESSAGES);
     
     // 同 saveAsset：等事务落盘再 resolve。put 发完就 resolve 的话，配额不足
@@ -1160,8 +1415,11 @@ export const DB = {
         req.onsuccess = () => {
             const data = req.result as Message;
             if (data) {
+                if (data.metadata?.source === 'story_theater_memory' && data.content !== content) {
+                    data.metadata = { ...data.metadata, theaterMirrorEdited: true };
+                }
                 data.content = content;
-                store.put(data);
+                store.put(data).onsuccess = () => syncRealRelationshipMessage(transaction, data);
             } else {
                 reject(new Error('Message not found'));
             }
@@ -1205,24 +1463,27 @@ export const DB = {
     });
   },
 
-  updateMessageMetadata: async (id: number, updater: (prev: any) => any): Promise<void> => {
+  updateMessageMetadata: async (id: number, updater: (prev: any, message: Message) => any): Promise<void> => {
     const db = await openDB();
-    const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+    const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS, STORE_STORY_THEATERS], 'readwrite');
     const store = transaction.objectStore(STORE_MESSAGES);
 
     return new Promise((resolve, reject) => {
+        let failure: unknown;
         const req = store.get(id);
         req.onsuccess = () => {
             const data = req.result as Message | undefined;
-            if (data) {
-                (data as any).metadata = updater((data as any).metadata);
-                store.put(data);
-                resolve();
-            } else {
-                reject(new Error('Message not found'));
+            try {
+                if (!data) throw new Error('Message not found');
+                data.metadata = updater(data.metadata, data);
+                store.put(data).onsuccess = () => syncRealRelationshipMessage(transaction, data);
+            } catch (error) {
+                failure = error;
+                transaction.abort();
             }
         };
-        req.onerror = () => reject(req.error);
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('消息资料未保存'));
     });
   },
 
@@ -1231,9 +1492,10 @@ export const DB = {
     await preserveContentFavoritesBeforeMessageDeletion({ ids: [id] });
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       deleteSecretNotesForIds(transaction.objectStore(STORE_MESSAGES), [id]);
       transaction.objectStore(STORE_MESSAGES).delete(id);
+      removeRealRelationshipEvents(transaction, [id]);
       transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('deleteMessage aborted'));
@@ -1245,10 +1507,11 @@ export const DB = {
       const { preserveContentFavoritesBeforeMessageDeletion } = await import('./contentFavorites');
       await preserveContentFavoritesBeforeMessageDeletion({ ids });
       const db = await openDB();
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       const store = transaction.objectStore(STORE_MESSAGES);
       deleteSecretNotesForIds(store, ids);
       ids.forEach(id => store.delete(id));
+      removeRealRelationshipEvents(transaction, ids);
       return new Promise((resolve, reject) => {
           transaction.oncomplete = () => {announceSecretNotesChanged(); resolve();};
           transaction.onerror = () => reject(transaction.error);
@@ -1261,8 +1524,9 @@ export const DB = {
     await preserveContentFavoritesBeforeMessageDeletion({ charId });
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_MESSAGES, 'readwrite');
+      const transaction = db.transaction([STORE_MESSAGES, STORE_ASSETS], 'readwrite');
       const store = transaction.objectStore(STORE_MESSAGES);
+      const relationshipIds: number[] = [];
       const index = store.index('charId');
       const request = index.openCursor(IDBKeyRange.only(charId));
 
@@ -1272,9 +1536,10 @@ export const DB = {
             const m = cursor.value as Message;
             if (!m.groupId) {
                 store.delete(cursor.primaryKey);
+                if (m.metadata?.source === 'story_theater') relationshipIds.push(m.id);
             }
             cursor.continue();
-        }
+        } else if (relationshipIds.length) removeRealRelationshipEvents(transaction, relationshipIds);
       };
       request.onerror = () => reject(request.error);
       transaction.oncomplete = () => {announceSecretNotesChanged(charId); resolve();};
@@ -2690,8 +2955,9 @@ export const DB = {
 
   deleteStoryTheater: async (id: string): Promise<void> => {
       const db = await openDB();
-      const transaction = db.transaction(STORE_STORY_THEATERS, 'readwrite');
+      const transaction = db.transaction([STORE_STORY_THEATERS, STORE_ASSETS], 'readwrite');
       transaction.objectStore(STORE_STORY_THEATERS).delete(id);
+      removeRealRelationshipEvents(transaction, undefined, id);
       return new Promise((resolve, reject) => {
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error);
@@ -3839,6 +4105,26 @@ export const DB = {
   ): Promise<void> => {
       const db = await openDB();
       invalidateStoryTimelineRepair(db);
+      const restoringRelationships = data.collaborationBackupMode !== 'media_only' && (data.messages !== undefined || data.storyTheaters !== undefined);
+      const relationshipAssets = restoringRelationships ? [...data.assets || [], ...data.activityTextAssets || []].filter(asset =>
+          asset.id === REAL_RELATIONSHIP_GRAPH_KEY || asset.id === REAL_RELATIONSHIP_LAYOUT_KEY) : [];
+      const graphBackup = relationshipAssets.find(asset => asset.id === REAL_RELATIONSHIP_GRAPH_KEY);
+      const incomingRelationshipGraph = graphBackup ? validateRealRelationshipGraph(graphBackup.data) : undefined;
+      let previousRelationshipGraph: RealRelationshipGraph | undefined;
+      let previousRelationshipLayout: unknown;
+      const partialRelationshipRestore = !Array.isArray(data.characters);
+      if (restoringRelationships) {
+          if (data.assets) data.assets = data.assets.filter(asset => asset.id !== REAL_RELATIONSHIP_GRAPH_KEY && asset.id !== REAL_RELATIONSHIP_LAYOUT_KEY);
+          if (data.activityTextAssets) data.activityTextAssets = data.activityTextAssets.filter(asset => asset.id !== REAL_RELATIONSHIP_GRAPH_KEY && asset.id !== REAL_RELATIONSHIP_LAYOUT_KEY);
+          const snapshot = db.transaction(STORE_ASSETS, 'readonly');
+          const previous = snapshot.objectStore(STORE_ASSETS).get(REAL_RELATIONSHIP_GRAPH_KEY);
+          previous.onsuccess = () => {
+              try { if (previous.result) previousRelationshipGraph = validateRealRelationshipGraph(previous.result.data); } catch { /* A valid restore can replace a damaged projection. */ }
+          };
+          const previousLayout = snapshot.objectStore(STORE_ASSETS).get(REAL_RELATIONSHIP_LAYOUT_KEY);
+          previousLayout.onsuccess = () => { previousRelationshipLayout = previousLayout.result?.data; };
+          await new Promise<void>((resolve, reject) => { snapshot.oncomplete = () => resolve(); snapshot.onabort = () => reject(snapshot.error); });
+      }
       
       const availableStores = [
           STORE_CHARACTERS, STORE_CHAR_GROUPS, STORE_MESSAGES, STORE_THEMES, STORE_EMOJIS, STORE_EMOJI_CATEGORIES,
@@ -4162,8 +4448,21 @@ export const DB = {
           data.emojiCategories = undefined as any;
       }, data.emojiCategories?.length || 0);
       await runSection('系统资源', data.assets !== undefined, async () => {
+          // Keep the previous graph/layout until the final relationship restore transaction commits.
+          // The existing importer writes sections in batches; a failed earlier section must not erase manual history.
           if (mediaOnly) {
               await mergeStore(STORE_ASSETS, (data.assets || []).filter(a => !isActivityTextAsset(a.id)), '系统资源', true);
+          } else if (restoringRelationships) {
+              await withStore(STORE_ASSETS, store => {
+                  const request = store.openKeyCursor();
+                  request.onsuccess = () => {
+                      const cursor = request.result;
+                      if (!cursor) return;
+                      if (cursor.primaryKey !== REAL_RELATIONSHIP_GRAPH_KEY && cursor.primaryKey !== REAL_RELATIONSHIP_LAYOUT_KEY) store.delete(cursor.primaryKey);
+                      cursor.continue();
+                  };
+              });
+              await putItems(STORE_ASSETS, data.assets || [], '系统资源', true);
           } else await clearAndAdd(STORE_ASSETS, data.assets || [], '系统资源', true);
           data.assets = undefined as any;
       }, data.assets?.length || 0);
@@ -4178,7 +4477,8 @@ export const DB = {
           await withStore(STORE_ASSETS, store => {
               const keys = store.getAllKeys();
               keys.onsuccess = () => {
-                  for (const key of keys.result) if (typeof key === 'string' && key !== 'friend_feed_v1' && isActivityTextAsset(key)) store.delete(key);
+                  for (const key of keys.result) if (typeof key === 'string' && key !== 'friend_feed_v1' && isActivityTextAsset(key)
+                      && (!restoringRelationships || key !== REAL_RELATIONSHIP_GRAPH_KEY && key !== REAL_RELATIONSHIP_LAYOUT_KEY)) store.delete(key);
                   for (const item of records) store.put(item);
               };
           });
@@ -4555,6 +4855,11 @@ export const DB = {
           data.bankState = undefined as any;
           data.bankDollhouse = undefined as any;
       }, (data.bankState ? 1 : 0) + (data.bankDollhouse ? 1 : 0));
+      if (restoringRelationships) {
+          await finishRealRelationshipRestore(db, { partial: partialRelationshipRestore, previous: previousRelationshipGraph,
+              incoming: incomingRelationshipGraph, previousLayout: previousRelationshipLayout,
+              incomingLayout: relationshipAssets.find(asset => asset.id === REAL_RELATIONSHIP_LAYOUT_KEY)?.data });
+      }
       // 导入会覆盖相同 ID 的旧记录，不能复用导入前或中途建立的校正缓存。
       invalidateStoryTimelineRepair(db);
       await ensureStoryTimelineRepair(db);

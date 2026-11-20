@@ -4,7 +4,8 @@ import { DB } from '../db';
 import type { MemoryNode } from './types';
 import { buildConservativeRepairFragments, MEMORY_AUTO_ARCHIVE_SYNC_EVENT, persistAutoArchiveResult, processNewMessagesWithAutoArchive, repairMissingAutoArchiveMemories } from './autoArchive';
 import { MemoryNodeDB } from './db';
-import type { PipelineResult } from './pipeline';
+import { buildAutoArchiveFragments, type PipelineResult } from './pipeline';
+import { deleteNodeAndLinkedArchive } from './linkedArchiveDeletion';
 
 const noon = (year: number, month: number, day: number) => new Date(year, month - 1, day, 12).getTime();
 
@@ -131,33 +132,52 @@ describe('全自动记忆双写缺口修复', () => {
         }
     });
 
-    it.each(['chat', 'story'] as const)('真实整理入口保存节点并新增关联档案：%s', async source => {
+    it.each(['chat', 'chat-tz', 'story'] as const)('真实整理入口保存节点并新增关联档案：%s', async source => {
         const charId = `archive-flow-${source}`;
-        await DB.saveCharacter({ id: charId, name: '角色', memories: [], memoryPalaceEnabled: true, autoArchiveEnabled: true } as CharacterProfile);
-        const timestamp = noon(2026, 11, 13);
+        const customTimezoneEnabled = source !== 'chat';
+        await DB.saveCharacter({
+            id: charId, name: '角色', memories: [], memoryPalaceEnabled: true, autoArchiveEnabled: true,
+            customTimezoneEnabled, customTimezone: 'America/New_York',
+        } as unknown as CharacterProfile);
+        const timestamp = customTimezoneEnabled ? Date.parse('2026-11-13T02:30:00Z') : noon(2026, 11, 13);
         await DB.saveMessage({
             charId, role: 'assistant', type: 'text', content: '在钟楼修好了钟表。', timestamp,
             metadata: source === 'story' ? { source: 'story_theater_memory', theaterTimelineTimestamp: noon(2026, 4, 10) } : undefined,
         });
-        const config = { baseUrl: 'https://example.test/v1', apiKey: 'test', model: 'test' };
-        vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        const config = { baseUrl: 'https://example.test/v1', apiKey: 'test', model: 'test', dimensions: 3 };
+        const prompts: string[] = [];
+        const fetch = vi.fn(async (url: string, init: RequestInit) => {
+            if (!url.endsWith('/embeddings')) prompts.push(String(JSON.parse(String(init.body)).messages[1].content));
             const data = url.endsWith('/embeddings')
                 ? { data: [{ index: 0, embedding: [1, 0, 0] }] }
                 : { choices: [{ message: { content: JSON.stringify([{ content: '我修好了钟表。', room: 'living_room', date: '2026-11-13', experienceSource: 'M0' }]) } }] };
             return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
-        }));
+        });
+        vi.stubGlobal('fetch', fetch);
         try {
             const result = await processNewMessagesWithAutoArchive([], charId, '角色', config, config, '用户', true, undefined, {
                 drainBuffer: true, retainRecentMessages: 0, requireAllBatches: true,
             });
             expect(result?.stored).toBe(1);
             const [memory] = await MemoryNodeDB.getByCharId(charId);
-            const expectedDate = source === 'story' ? '2026-04-10' : '2026-11-13';
+            const expectedDate = source === 'story' ? '2026-04-10' : source === 'chat-tz' ? '2026-11-12' : '2026-11-13';
+            if (source === 'chat-tz') expect(prompts[0]).toContain('[2026-11-12 21:30]');
             expect(result?.autoArchive?.fragments).toEqual([expect.objectContaining({ palaceMemoryId: memory.id, date: expectedDate })]);
             expect((await DB.getCharacter(charId))?.memories).toEqual(result?.autoArchive?.fragments);
             expect(await persistAutoArchiveResult(charId, result)).toEqual({ fragments: 0, changed: false });
         } finally {
             vi.unstubAllGlobals();
         }
+    });
+
+    it('rejects a delayed auto archive for a palace node deleted before the write', async () => {
+        const charId = 'archive-after-delete';
+        const source = node('deleted-before-archive', 2026, 11, 13, { charId });
+        await DB.saveCharacter({ id: charId, memoryPalaceEnabled: true, autoArchiveEnabled: true, memories: [] } as unknown as CharacterProfile);
+        await MemoryNodeDB.save(source);
+        const autoArchive = buildAutoArchiveFragments([source], 0, true);
+        await deleteNodeAndLinkedArchive(source);
+        await persistAutoArchiveResult(charId, { stored: 1, skipped: 0, memories: [source], batches: [], autoArchive });
+        expect((await DB.getCharacter(charId))?.memories).toEqual([]);
     });
 });

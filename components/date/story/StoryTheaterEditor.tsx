@@ -5,7 +5,7 @@ import { storyTheaterThreadId } from '../../../utils/storyTheater';
 import { canDrawStoryInteractionPlan, normalizeStoryCastLimits, validStoryCastLimits } from '../../../utils/storyTheaterCast';
 import TokenImg from '../../os/TokenImg';
 import type { CharacterProfile, StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset, UserProfile } from '../../../types';
-import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, getStoryCharacterContextLimit, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
+import { dedupeTheaterWorldbooks, downloadStoryPreset, estimateStoryTokens, getPresetPromptStats, resolveStoryPresetDocument, resolveStoryTheaterMask } from '../../../utils/storyTheater';
 
 interface Props {
     initial: StoryTheaterEntry;
@@ -50,6 +50,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         finally { summaryLock.current = false; setSummarizing(false); }
     };
     const fileInput = useRef<HTMLInputElement>(null);
+    const titleInput = useRef<HTMLInputElement>(null);
     const actors = useMemo(() => characters.filter(char => draft.characterIds.includes(char.id)
         && !(draft.mask?.type === 'character' && draft.mask.id === char.id)), [characters, draft.characterIds, draft.mask]);
     const resolvedMask = useMemo(() => resolveStoryTheaterMask(draft.mask, user, characters, masks), [characters, draft.mask, masks, user]);
@@ -59,10 +60,11 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         return characters.filter(char => participantIds.has(char.id));
     }, [characters, draft.characterIds, draft.mask]);
     const books = useMemo(() => dedupeTheaterWorldbooks(memoryParticipants), [memoryParticipants]);
-    const castLimits = normalizeStoryCastLimits(draft.castLimits, actors.length);
+    const castLimits = normalizeStoryCastLimits({ minGroups: draft.castLimits?.minGroups, maxGroups: draft.castLimits?.maxGroups }, actors.length);
     const validCastLimits = validStoryCastLimits(castLimits);
     const castEnabled = draft.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
+    const interactionEnabled = draft.interactionTendenciesEnabled === true;
+    const canStart = !castEnabled || (actors.length > 0 && (!interactionEnabled || canDrawStoryInteractionPlan(actors.length, castLimits)));
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
@@ -92,32 +94,9 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         setSaving(true);
         const archiveAfter = Math.max(2, Math.min(200, Number(draft.archiveAfter) || 40));
         const archiveKeepRecent = Math.max(1, Math.min(archiveAfter - 1, Number(draft.archiveKeepRecent) || 5));
-        try { await onSave({ ...draft, castLimits: castEnabled ? castLimits : draft.castLimits, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
+        try { await onSave({ ...draft, castLimits: castEnabled || draft.castLimits ? castLimits : undefined, title: draft.title.trim(), premise: draft.premise.trim(), carryCharacterMemory: draft.writesToCharacterMemory || draft.carryCharacterMemory, archiveAfter, archiveKeepRecent, presetId: preset?.id || presets[0]?.id, updatedAt: Date.now() }); }
         finally { setSaving(false); }
     };
-    const recentContextFields = <div className='space-y-2'>
-        {memoryParticipants.map(char => (
-            <label key={char.id} className='flex items-center gap-3 text-xs'>
-                <span className='flex-1 truncate'>{char.name}{draft.mask?.type === 'character' && draft.mask.id === char.id ? '（当前身份）' : ''} 最近原文</span>
-                <input
-                    type='number'
-                    min={0}
-                    max={500}
-                    value={getStoryCharacterContextLimit(draft.characterContextLimits[char.id])}
-                    onChange={event => {
-                        const limit = getStoryCharacterContextLimit(event.currentTarget.valueAsNumber || 0);
-                        setDraft(current => ({
-                            ...current,
-                            characterContextLimits: { ...current.characterContextLimits, [char.id]: limit },
-                            updatedAt: Date.now(),
-                        }));
-                    }}
-                    className='w-20 px-3 py-2 rounded-xl bg-white border border-slate-200 text-right'
-                />
-                <span className='text-slate-400'>条</span>
-            </label>
-        ))}
-    </div>;
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
         <header className='story-safe-header shrink-0 border-b border-slate-200'>
@@ -130,13 +109,13 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
         <main className='story-page-scroll flex-1 overflow-y-auto px-5 py-6 pb-28'><fieldset disabled={summarizing} className='min-w-0 max-w-2xl mx-auto space-y-8'>
             <section>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>01 / Story</div>
-                <label className='block mt-2'><span className='text-[10px] font-bold text-slate-500'>标题 · 必填</span><input value={draft.title} onChange={event => update('title', event.target.value)} placeholder='剧情名称' className='mt-1 w-full bg-transparent text-3xl font-serif font-semibold outline-none placeholder:text-slate-300' /></label>
+                <label className='block mt-2'><span className='text-[10px] font-bold text-slate-500'>标题 · 必填</span><input ref={titleInput} value={draft.title} onChange={event => update('title', event.target.value)} placeholder='剧情名称' className='mt-1 w-full bg-transparent text-3xl font-serif font-semibold outline-none placeholder:text-slate-300' /></label>
                 <label className='block mt-5'><span className='text-[10px] font-bold text-slate-500'>剧情介绍 · 可选</span><textarea value={draft.premise} onChange={event => update('premise', event.target.value)} placeholder='不填写也能直接开场；也可以写地点、冲突或必须守住的设定……' className='mt-2 w-full min-h-28 p-4 rounded-2xl bg-white border border-slate-200 text-sm leading-7 resize-y outline-none' /></label>
                 <div className='mt-5'><div className='text-[10px] font-bold text-slate-500'>谁先落笔</div><div className='mt-2 grid grid-cols-2 p-1 rounded-xl bg-slate-200'><button disabled={maskLocked} onClick={() => update('openingMode', 'user')} className={`py-2.5 rounded-lg text-[11px] font-bold disabled:opacity-60 ${(draft.openingMode || 'user') === 'user' ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>我先写</button><button disabled={maskLocked} onClick={() => update('openingMode', 'assistant')} className={`py-2.5 rounded-lg text-[11px] font-bold disabled:opacity-60 ${draft.openingMode === 'assistant' ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>故事先写</button></div><p className='mt-2 text-[10px] text-slate-400'>{draft.openingMode === 'assistant' ? '进入后可直接让故事根据标题与介绍写出第一幕。' : '进入后由你用当前身份写下第一句话。'}</p></div>
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>02 / Cast</div><h2 className='mt-1 text-lg font-semibold'>让谁参与</h2>
-                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮由代码随机确定出演名单与交流倾向，AI 根据人物状态自然发展互动；你选择的身份始终由你执笔。</p>
+                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮根据正文确认实际出演名单，更新相应私轴与记忆；你选择的身份始终由你执笔。</p>
                 <button disabled={maskLocked || draft.writesToCharacterMemory} onClick={() => onOpenMaskBox(draft)} className='mt-4 w-full p-4 rounded-2xl bg-slate-900 text-white flex items-center gap-3 text-left disabled:cursor-not-allowed'>
                     {resolvedMask.avatar ? <TokenImg value={resolvedMask.avatar} alt='' className='w-11 h-11 rounded-full object-cover' /> : <span className='w-11 h-11 rounded-full bg-white/10 grid place-items-center'><UserCircle size={24} /></span>}
                     <span className='min-w-0 flex-1'><span className='block text-[9px] uppercase tracking-[.18em] text-violet-200'>你</span><strong className='block mt-1 text-sm truncate'>{resolvedMask.selection.type === 'user' ? '本人' : resolvedMask.name}</strong><span className='block mt-1 text-[9px] text-slate-300 truncate'>{resolvedMask.selection.type === 'user' ? '以真实的自己进入剧场' : resolvedMask.selection.type === 'character' ? '扮演已有角色' : '扮演原创人物'}</span></span>
@@ -148,19 +127,23 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <span className='text-sm font-semibold'>出演模式</span>
                     <Toggle label='出演模式' value={castEnabled} onChange={value => update('castModeEnabled', value)} />
                 </div>
-                {castEnabled && <fieldset className='mt-4'>
-                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮出演范围</legend>
+                {castEnabled && <div className='mt-3 flex items-center justify-between gap-3'>
+                    <div className='min-w-0'><span className='text-sm font-semibold'>交流倾向组合</span><p className='mt-1 text-[10px] text-slate-500'>开启时提供交流组合建议；关闭后让当前互动自然延续。</p></div>
+                    <Toggle label='交流倾向组合' value={interactionEnabled} onChange={value => update('interactionTendenciesEnabled', value)} />
+                </div>}
+                {castEnabled && !interactionEnabled && actors.length === 0 && <p role='status' className='mt-2 text-[11px] text-amber-700'>请至少勾选一位候选角色。</p>}
+                {castEnabled && interactionEnabled && <fieldset className='mt-4'>
+                    <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮随机建议组数</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([
                             ['minGroups', '最少交流倾向组数'], ['maxGroups', '最多交流倾向组数'],
-                            ['minPeople', '每轮最少出演人数'], ['maxPeople', '每轮最多出演人数'], 
                         ] as const).map(([key, label]) => <label key={key} className='flex min-w-0 flex-col gap-1 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px]'>
                             {label}<input type='number' min={1} step={1} value={Number.isFinite(castLimits[key]) ? castLimits[key] : ''}
                                 onChange={event => update('castLimits', { ...castLimits, [key]: event.currentTarget.valueAsNumber })}
                                 className='w-full rounded bg-slate-100 px-2 py-1' />
                         </label>)}
                     </div>
-                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。代码先随机抽出演名单，再根据近期互动历史抽取交流倾向。倾向会影响注意力，不强制对话；角色可以独立行动和思考，背景角色仍可自然出场。</p>
+                    <p className='mt-2 text-[11px] text-slate-500'>当前有 {actors.length} 位候选。代码根据近期互动历史抽取交流倾向，正文完成后确认实际出演。倾向会影响注意力，不强制对话；角色可以独立行动和思考，背景角色仍可自然出场。</p>
                     {!canStart && <p role='status' className='mt-2 text-[11px] text-amber-700'>{!validCastLimits
                         ? '请填写正整数，且每项最小值不能超过最大值。'
                         : '当前候选人数不足以构成所设数量的交流倾向组。请调整范围或增加候选。'}</p>}
@@ -170,25 +153,17 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>03 / Memory</div><h2 className='mt-1 text-lg font-semibold'>这段故事是真的吗</h2>
                 <div className='mt-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'><button disabled={maskLocked} onClick={() => setDraft(current => ({ ...current, mask: { type: 'user' }, writesToCharacterMemory: true, carryCharacterMemory: true, updatedAt: Date.now() }))} className={`py-3 rounded-lg text-[11px] font-bold disabled:opacity-35 ${draft.writesToCharacterMemory ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>真实时间陪伴</button><button disabled={maskLocked} onClick={() => setDraft(current => ({ ...current, writesToCharacterMemory: false, carryCharacterMemory: false, updatedAt: Date.now() }))} className={`py-3 rounded-lg text-[11px] font-bold disabled:opacity-35 ${!draft.writesToCharacterMemory ? 'bg-white shadow-sm text-violet-700' : 'text-slate-500'}`}>虚构剧场</button></div>
                 {maskLocked && <p className='mt-2 text-[10px] text-slate-400'>故事开始后，真实/虚构模式也会固定；虚构剧场的记忆输入仍可单独调整。</p>}
+                <p className='mt-3 text-[10px] leading-5 text-slate-500'>{draft.writesToCharacterMemory ? '三轴关系历史：所有真实时间陪伴剧场共享同一真实世界。' : '三轴关系历史：每个虚构剧场独立保存；开启记忆输入或共享档案也不会合并关系分数。'}</p>
                 {draft.writesToCharacterMemory ? <div className='mt-5 space-y-4'>
                     <div className='p-4 rounded-2xl bg-amber-50 border border-amber-200'>
                         <div className='text-xs font-bold text-amber-800'>读取角色既有记忆</div>
                         <p className='mt-1 text-[10px] leading-5 text-amber-700'>{castEnabled ? '本轮用户输入和正文只写入出演角色的记忆。' : '自由续写保存在剧场历史。生成时会优先带入最近的剧情。'}</p>
-                        <p className='mt-2 text-[10px] leading-5 text-amber-700'>聊天记录按实际发送时间排序。剧场内的记忆距离按角色的剧情时间计算，可为每位角色填写初始剧情时间。</p>
+                        <p className='mt-2 text-[10px] leading-5 text-amber-700'>跟随真实时间：你的输入和角色回复会按各自实际发送的时间记录，无需设置日期。正文中的虚构日期不会改变聊天记录的时间与顺序；如果不希望故事成为共同记忆，请在开始前选择「虚构剧场」。</p>
                         <p className='mt-2 pt-2 border-t border-amber-200 text-[10px] leading-5 font-semibold text-amber-800'>内置真实性保护：角色不能捏造和你的共同记忆，也不能给已有记忆添油加醋。</p>
                     </div>
-                    <p className='text-[10px] leading-5 text-slate-500'>最近原文是从角色时间线额外带入的记录。填 0 可关闭该角色的原文。</p>
-                    {recentContextFields}
-                    {actors.map(actor => <label key={actor.id} className='block text-[11px] text-slate-600'>
-                        {actor.name} · 初始剧情时间（可选）
-                        <input type='datetime-local' value={draft.characterMemoryDates[actor.id] ?? ''}
-                            onChange={event => update('characterMemoryDates', { ...draft.characterMemoryDates, [actor.id]: event.currentTarget.value })}
-                            className='mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2' />
-                    </label>)}
                 </div> : <div className='mt-5 space-y-5'>
                     <div className='py-3 border-y border-slate-200 flex items-center justify-between gap-3'><div><div className='text-sm font-semibold'>自动记忆输出</div><p className='mt-1 text-[10px] leading-5 text-slate-500'>虚构时间与经历不会自动写入角色的正常记忆。需要保留时，可在剧情右上角「事件盒」选择摘要、填写日期，手动转为带剧情来源的记忆。</p></div><span className='shrink-0 px-2 py-1 rounded-full bg-slate-200 text-[9px] font-bold text-slate-500'>关闭</span></div>
                     <div className='flex items-start justify-between gap-5'><div><div className='text-sm font-semibold'>记忆输入</div><p className='mt-1 text-[10px] text-slate-500'>默认关闭；打开后角色会带着既有记忆进入虚构故事。关闭时只读取名字、核心指令和世界观。</p></div><Toggle value={draft.carryCharacterMemory} onChange={value => update('carryCharacterMemory', value)} /></div>
-                    {draft.carryCharacterMemory && recentContextFields}
                     <div><div className='text-sm font-semibold'>归档方式</div><div className='mt-2 grid grid-cols-3 p-1 rounded-xl bg-slate-200'>
                         {(['summary', 'vector', 'manual'] as const).map(mode => <button key={mode} disabled={summarizing} onClick={() => setDraft(current => ({ ...current, archiveMode: mode === 'manual' ? 'manual' : 'auto', archiveStrategy: mode === 'vector' ? 'vector' : 'summary' }))} className={`py-2 rounded-lg text-[11px] font-bold ${(draft.archiveMode === 'manual' ? mode === 'manual' : mode === draft.archiveStrategy) ? 'bg-white shadow-sm' : 'text-slate-500'}`}>{mode === 'summary' ? '事件盒' : mode === 'vector' ? '独立向量' : '手动总结'}</button>)}
                     </div></div>
@@ -236,7 +211,13 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                 <div className='mt-2 flex items-end justify-between gap-4'><div><h2 className='text-lg font-semibold'>静态配置预算</h2><p className='mt-1 text-[10px] leading-5 text-slate-500'>这里只比较角色、世界书、预设与归档；剧场内会按续写实际使用的完整上下文统计历史、召回和本轮输入。</p></div><strong className='text-2xl font-serif'>{Object.values(tokenPreview).reduce((sum, value) => sum + value, 0).toLocaleString()}</strong></div>
                 <div className='mt-4 grid grid-cols-4 gap-2'>{Object.entries({ '角色': tokenPreview.actor, '世界书': tokenPreview.book, '预设': tokenPreview.preset, '归档': tokenPreview.archive }).map(([label, value]) => <div key={label} className='py-3 rounded-xl bg-white border border-slate-200 text-center'><div className='text-[9px] text-slate-400'>{label}</div><div className='mt-1 text-xs font-bold'>{value.toLocaleString()}</div></div>)}</div>
             </section>
-            <button onClick={save} disabled={saving || !draft.title.trim() || !canStart} className='w-full py-4 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-30'>{saving ? '正在保存……' : '保存并进入剧情'}</button>
+            <div className='space-y-3'>
+                {!draft.title.trim() && <button type='button' onClick={() => {
+                    titleInput.current?.focus({ preventScroll: true });
+                    titleInput.current?.scrollIntoView({ block: 'center' });
+                }} className='block w-full py-2 text-center text-xs font-semibold text-violet-600 underline underline-offset-4'>还没有起名字哦，点这里给剧情起个名字</button>}
+                <button onClick={save} disabled={saving || !draft.title.trim() || !canStart} className='w-full py-4 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-30'>{saving ? '正在保存……' : '保存并进入剧情'}</button>
+            </div>
         </fieldset></main>
     </div>;
 };

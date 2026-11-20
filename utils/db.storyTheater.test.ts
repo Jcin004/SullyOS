@@ -1,8 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import type { StoryTheaterEntry, StoryTheaterMask, StoryTheaterPreset } from '../types';
 import { DB } from './db';
+import { createStoryTheaterDraft, normalizeStoryTheater } from './storyTheater';
 
 describe('剧情剧场数据与糯米机原生预设备份', () => {
+    it('旧人数限制在内存中忽略，数据库读取和备份不改旧字段、原文或消息 ID', async () => {
+        const legacy = { ...createStoryTheaterDraft(), id: 'obsolete-story-settings',
+            castLimits: { minGroups: 1, maxGroups: 3, minPeople: 99, maxPeople: 0 },
+            characterContextLimits: { actor: 0 }, characterMemoryDates: { actor: '2020-01-02T03:04' } };
+        await DB.saveStoryTheater(legacy);
+        const messageId = await DB.saveMessage({ charId: `story-theater:${legacy.id}`, role: 'assistant', type: 'text', content: '旧存档正文' });
+        const stored = (await DB.getStoryTheaters()).find(row => row.id === legacy.id)!;
+        expect(stored).toEqual(legacy);
+        const normalized = normalizeStoryTheater(stored);
+        expect(normalized.castLimits).toEqual({ minGroups: 1, maxGroups: 3 });
+        expect(stored.castLimits).toEqual(legacy.castLimits);
+        expect((await DB.exportFullData()).storyTheaters).toContainEqual(legacy);
+        await DB.saveStoryTheater(normalized);
+        const saved = (await DB.getStoryTheaters()).find(row => row.id === legacy.id)!;
+        expect(saved.castLimits).toEqual({ minGroups: 1, maxGroups: 3 });
+        expect(saved.characterMemoryDates).toEqual(legacy.characterMemoryDates);
+        expect(saved.characterContextLimits).toEqual(legacy.characterContextLimits);
+        expect(await DB.getMessageById(messageId)).toMatchObject({ id: messageId, content: '旧存档正文' });
+    });
     it('完整备份 round-trip 后条目与自定义预设仍存在', async () => {
         const entry: StoryTheaterEntry = {
             id: 'story-backup-entry',

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import { expandAndFormat } from './formatter';
+import { MemoryNodeDB } from './db';
 import type { MemoryNode, ScoredMemory } from './types';
 
 it('详情仅在有经历时间时展示 zh-CN 日期，仍保留创建和最后访问日期', () => {
@@ -22,6 +23,7 @@ it('剧场和普通聊天用各自的现在格式化同一条记忆，旧节点�
         ({ node: memory, finalScore: 1, similarity: 1, bm25Score: 0, roomScore: 1 });
     const legacy = { ...node, id: 'old-experience-test', content: '旧记录', createdAt: experience, experiencedAt: undefined };
     try {
+        await MemoryNodeDB.saveMany([node, legacy]);
         const recall = [scored(node), scored(legacy)];
         const theater = await expandAndFormat(recall, node.charId, [], undefined, undefined, { referenceTime: scene });
         expect(theater.match(/2026年4月10日（距今约3天）/g)).toHaveLength(2);
