@@ -22,9 +22,11 @@ const generate = (rows: unknown[], history: Message[] = []) => reconcileStoryRel
 describe('按实际人物对的三轴关系', () => {
     it('首次 FL 依据角色卡、既有关系和共同经历，两个方向独立初始化', () => {
         expect(STORY_RELATIONSHIP_PROMPT).toContain('首次记录依据双方各自的角色卡、既有关系和共同经历确定初值');
-        const guide = buildStoryRelationshipGuide(baseline());
-        expect(guide).toContain('FL 初值依据角色卡、既有关系和共同经历评估');
-        expect(guide).toContain('trigger 写本次评分依据的关系事实或事件，evidence 写人物的具体表现');
+        const guide = buildStoryRelationshipGuide(baseline(), '虚构剧场 test');
+        expect(guide).toContain('关系历史归属：虚构剧场 test');
+        expect(guide).toContain('"actors":[{"id":"a"');
+        expect(guide).not.toContain('trigger');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('附 trigger（触发事件）和 evidence（具体事实）');
         const first = generate([pair(a.id, b.id, { FL: { score: 74, ...fact } }), pair(b.id, a.id, { FL: { score: 63, ...fact } })]);
         expect(direction(snapshot(first))?.axes.FL).toMatchObject({ score: 74, initial: true });
         expect(direction(snapshot(first), b.id, a.id)?.axes.FL?.score).toBe(63);

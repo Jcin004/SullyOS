@@ -1,5 +1,6 @@
 import type { Message, StoryTheaterEntry } from '../types';
 import { readStoryRelationshipHistory } from './storyRelationshipHistory';
+import { serializeStoryThreeAxisPanel, type StoryRelationshipDirection } from './storyTheaterRelationships';
 import {
     emptyRealRelationshipGraph, legacyRealRelationshipPayload, rebuildRealRelationshipGraph, upsertRealRelationshipEvent,
     type RealRelationshipGraph, type RealRelationshipLayout, type RealRelationshipPayload,
@@ -37,39 +38,46 @@ export const validateRealRelationshipGraph = (data: unknown) => decode(data);
 
 function payloadOf(row: Message): RealRelationshipPayload | undefined {
     const payload = row.metadata?.theaterRealRelationshipEvent as RealRelationshipPayload | undefined;
-    if (row.metadata?.theaterRealRelationshipProtocol === 1) {
-        if (!payload || payload.version !== 1 || !Array.isArray(payload.updates) || !payload.stateNotes) return;
-        if (payload.updates.some(update => !update?.direction?.fromId || !update.direction.toId
-            || !update.direction.axes || !['proposal', 'snapshot', 'canonical', 'manual'].includes(update.mode))) return;
-        return payload;
-    }
-    return legacyRealRelationshipPayload(row);
+    if (row.metadata?.theaterRealRelationshipProtocol === 1 && payload?.version === 1
+        && Array.isArray(payload.updates) && payload.stateNotes
+        && payload.updates.every(update => update?.direction?.fromId && update.direction.toId
+            && update.direction.axes && ['proposal', 'snapshot', 'canonical'].includes(update.mode))) return payload;
+    return /<(?:affinity_panel|relationship_panel)\b/i.test(row.content) ? legacyRealRelationshipPayload(row) : undefined;
 }
 const centralReply = (row: Message) => row.role === 'assistant' && row.type === 'text' && typeof row.content === 'string' && !row.groupId
     && !row.metadata?.theaterOutOfStory && row.metadata?.source === 'story_theater'
     && typeof row.metadata.theaterId === 'string' && row.charId === `story-theater:${row.metadata.theaterId}`
     && (row.metadata.theaterRelationshipScope === undefined || row.metadata.theaterRelationshipScope === 'real');
 
-/** A missing projection is migrated once. Later reads never scan messages. */
+/** Check pre-existing graphs once for omitted central events. Normal reads use the projection. */
 export function readRealRelationshipGraph(tx: IDBTransaction, done: (graph: RealRelationshipGraph) => void, initialize = true): void {
     const request = tx.objectStore('assets').get(REAL_RELATIONSHIP_GRAPH_KEY);
     request.onsuccess = () => safely(tx, () => {
-        if (request.result) { done(decode(request.result.data)); return; }
+        const graph = request.result ? decode(request.result.data) : emptyRealRelationshipGraph();
+        if (graph.historyReconciled || (!initialize && request.result)) { done(graph); return; }
         if (!initialize) return;
         const stories = tx.objectStore('story_theaters').getAll();
         stories.onsuccess = () => safely(tx, () => {
             const titles = new Map((stories.result as StoryTheaterEntry[]).map(entry => [entry.id, entry.title]));
             readStoryRelationshipHistory(tx, { id: '__real_relationship_bootstrap__', writesToCharacterMemory: true }, history => safely(tx, () => {
-                const graph = emptyRealRelationshipGraph();
+                const known = new Set(graph.events.map(event => event.id));
+                const before = graph.events.length;
                 for (const row of history.messages) {
+                    const id = `story:${row.id}`;
+                    if (known.has(id)) continue;
                     const payload = payloadOf(row);
-                    if (!payload) continue;
-                    upsertRealRelationshipEvent(graph, `story:${row.id}`, {
-                        kind: row.metadata?.theaterRealRelationshipProtocol === 1 ? 'story' : 'legacy',
+                    if (!payload || (!payload.updates.length && !Object.keys(payload.stateNotes).length)) continue;
+                    graph.events.push({ ...payload, id, sequence: graph.nextSequence++, source: {
+                        kind: row.metadata?.theaterRealRelationshipEvent ? 'story' : 'legacy',
                         theaterId: row.metadata.theaterId, title: titles.get(row.metadata.theaterId) || '真实剧情',
                         messageId: row.id, timestamp: row.timestamp,
-                    }, payload);
+                    } });
                 }
+                if (graph.events.length !== before) {
+                    rebuildRealRelationshipGraph(graph);
+                    graph.revision++;
+                }
+                graph.historyReconciled = true;
                 write(tx, graph);
                 done(graph);
             }));
@@ -77,21 +85,31 @@ export function readRealRelationshipGraph(tx: IDBTransaction, done: (graph: Real
     });
 }
 
-/** Schedule this after the central put/add in the SAME message write transaction. */
-export function syncRealRelationshipMessage(tx: IDBTransaction, row: Message): void {
-    if (!centralReply(row)) return;
+/** Save the event and, for generated replies, reuse its calculated values in the reader's panel. */
+export function syncRealRelationshipMessage(tx: IDBTransaction, row: Message, display?: (content: string) => void, previousContent?: string): void {
+    if (!centralReply(row)) { display?.(row.content); return; }
     const payload = payloadOf(row);
     // A missing/broken relation report preserves existing state, including on a rewrite.
-    if (!payload) return;
+    if (!payload) { display?.(row.content); return; }
     const owner = tx.objectStore('story_theaters').get(row.metadata.theaterId);
     owner.onsuccess = () => safely(tx, () => {
         const entry = owner.result as StoryTheaterEntry | undefined;
-        if (!entry?.writesToCharacterMemory) return;
+        if (!entry?.writesToCharacterMemory) { display?.(row.content); return; }
         readRealRelationshipGraph(tx, graph => {
-            if (upsertRealRelationshipEvent(graph, `story:${row.id}`, {
+            const relationships: StoryRelationshipDirection[] | undefined = display ? [] : undefined;
+            const changed = upsertRealRelationshipEvent(graph, `story:${row.id}`, {
                 kind: row.metadata?.theaterRealRelationshipProtocol === 1 ? 'story' : 'legacy', theaterId: entry.id,
                 title: entry.title, messageId: row.id, timestamp: row.timestamp,
-            }, payload)) write(tx, graph);
+            }, payload, relationships);
+            if (changed) write(tx, graph);
+            if (display) {
+                const previousPanel = !changed && previousContent
+                    ? previousContent.match(/<affinity_panel\b[^>]*\bmode="three_axes"[^>]*>[\s\S]*?<\/affinity_panel\s*>/i)?.[0] : undefined;
+                const panel = previousPanel ?? (relationships?.length || Object.keys(payload.stateNotes).length ? serializeStoryThreeAxisPanel({
+                    primaryId: '', primaryName: '', historyVersion: 2, relationships: relationships ?? [], state_notes: payload.stateNotes,
+                }) : '');
+                display(panel ? row.content + '\n\n' + panel : row.content);
+            }
         }, false);
     });
 }

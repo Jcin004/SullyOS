@@ -73,18 +73,25 @@ export const LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT = [
     '自我记录用 <self_record><character_id>角色 ID</character_id><state_note>新理解、内在拉扯或选择代价</state_note></self_record>，仅在该人物有新事实时填写。各方向可用 relation_note 记录当前的关系质地。',
 ].join('\n');
 
-export const STORY_RELATIONSHIP_PROMPT = LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT + '\n' + [
+export const LEGACY_REAL_STORY_RELATIONSHIP_PROMPT = LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT + '\n' + [
     '真实陪伴剧场共用一张真实世界关系网，虚构剧场使用自己的独立关系历史。真实关系变化、出演名单和私轴在本轮同一次回复中分别记录；名单格式问题不影响已经成立的关系事件。',
     '真实世界每个方向还可分别更新关系认同 relation_identity（我认为对方是我的什么人）与第一视角关系认知 relation_cognition，附 relation_trigger 和 relation_evidence；它们是该人物的私有认知，不能泄露给未获知此事的其他人物。',
     '真实关系的称谓、认知与三轴独立更新。没有变化的轴省略并维持原值；DI 只有明确记录本轴事件时才计算，包括 ended 回落。数值 0 已初始化，缺少该轴才是尚未初始化。',
 ].join('\n');
 
+export const STORY_RELATIONSHIP_PROMPT = LEGACY_REAL_STORY_RELATIONSHIP_PROMPT
+    .replace('没有扰动事件则省略 phase 和 strength，由程序回落。', '虚构剧场没有扰动事件时由程序按既有规则回落。')
+    + '\n' + [
+        '剧情结束后输出一份 <affinity_panel mode="three_axes">，场外省略。按已给的人物 ID 更新有新事实的方向与轴。虚构出演模式的双方也须列入出演名单。',
+        '每轴首次评估填 score，已有值填 delta，附 trigger（触发事件）和 evidence（具体事实）。没有变化时省略该轴。DI 可用 active / ended 和 mild / moderate / strong。',
+        '<affinity_panel mode="three_axes"><affinity_person><from_id>起点ID</from_id><to_id>终点ID</to_id><FL><delta>5</delta><trigger>触发事件</trigger><evidence>具体事实</evidence></FL></affinity_person></affinity_panel>',
+    ].join('\n');
+
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
 
 const legacyPanelPattern = /<affinity_panel\b[^>]*>([\s\S]*?)<\/affinity_panel\s*>/gi;
 const legacyPersonPattern = /<affinity_person\b[^>]*>([\s\S]*?)<\/affinity_person\s*>/gi;
-const axesPanelPattern = /<affinity_panel\b[^>]*\bmode\s*=\s*["']three_axes["'][^>]*>([\s\S]*?)<\/affinity_panel\s*>/gi;
-export const isStoryThreeAxisPanel = (opening: string) => /\bmode\s*=\s*["']three_axes["']/i.test(opening);
+export const isStoryThreeAxisPanel = (opening: string) => /\bmode\s*=\s*(?:"three_axes"|'three_axes'|three_axes(?=\s|>))/i.test(opening);
 
 const shortText = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 400) : '';
 const integer = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined;
@@ -110,23 +117,32 @@ const tag = (key: string, value: string | number | undefined) =>
 const strengthOf = (value: unknown): Strength | undefined =>
     value === 'mild' || value === 'moderate' || value === 'strong' ? value : undefined;
 
-function readThreeAxisPanel(body: string): StoryRelationshipPanel | undefined {
+type RelationshipIssue = (reason: string) => void;
+
+function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRelationshipPanel {
     const primaryId = field(body, 'primary_id');
     const state_notes: NonNullable<StoryRelationshipPanel['state_notes']> = {};
     for (const record of rawFields(body, 'self_record')) {
         const id = field(record, 'character_id'), note = shortText(field(record, 'state_note'));
         if (id && note) state_notes[id] = { name: field(record, 'character_name') || id, note };
     }
-    const relationships = [...body.matchAll(legacyPersonPattern)].flatMap(([, person]): Relationship[] => {
+    const people = [...body.matchAll(legacyPersonPattern)];
+    const relationships = people.flatMap(([, person]): Relationship[] => {
         const fromId = field(person, 'from_id');
         const toId = field(person, 'to_id');
-        if (!fromId || !toId || fromId === toId) return [];
+        if (!fromId || !toId || fromId === toId) {
+            report?.('方向缺少角色 ID 或起点和终点相同');
+            return [];
+        }
         const axes: Relationship['axes'] = {};
         for (const axis of STORY_RELATIONSHIP_AXES) {
             const source = rawFields(person, axis)[0] || '';
             const score = fieldInt(source, 'score');
             const delta = fieldInt(source, 'delta');
-            if (score === undefined && delta === undefined) continue;
+            if (score === undefined && delta === undefined) {
+                if (source) report?.(axis + ' 缺少有效的 score 或 delta');
+                continue;
+            }
             const phase = field(source, 'phase');
             axes[axis] = {
                 score: clamp(score ?? 0), delta,
@@ -147,9 +163,11 @@ function readThreeAxisPanel(body: string): StoryRelationshipPanel | undefined {
         }];
     });
     const primaryNote = body.replace(legacyPersonPattern, '').replace(/<self_record\b[^>]*>[\s\S]*?<\/self_record\s*>/gi, '');
+    const hadRelationshipEntries = /<affinity_person\b/i.test(body);
+    if (hadRelationshipEntries && !people.length) report?.('人物方向标签未闭合');
     return { primaryId, primaryName: field(body, 'primary_name') || primaryId, state_note: shortText(field(primaryNote, 'state_note')),
         state_notes, historyVersion: field(body, 'history_version') === '2' ? 2 : undefined, relationships,
-        hadRelationshipEntries: /<affinity_person\b/i.test(body) };
+        hadRelationshipEntries };
 }
 
 export function serializeStoryThreeAxisPanel(panel: StoryRelationshipPanel): string {
@@ -189,8 +207,8 @@ function readPanel(body: string): StoryRelationshipPanel | undefined {
     return value;
 }
 
-export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json' = 'json'): StoryRelationshipPanel | undefined {
-    if (format === 'xml') return readThreeAxisPanel(body);
+export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json' = 'json', report?: RelationshipIssue): StoryRelationshipPanel | undefined {
+    if (format === 'xml') return readThreeAxisPanel(body, report);
     const value = readPanel(body);
     if (!value) return undefined;
     return {
@@ -205,13 +223,20 @@ export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json'
         ) : {},
         relationships: value.relationships.flatMap(row => {
             if (typeof row?.fromId !== 'string' || typeof row?.toId !== 'string'
-                || !row.fromId || !row.toId || row.fromId === row.toId) return [];
+                || !row.fromId || !row.toId || row.fromId === row.toId) {
+                report?.('方向缺少角色 ID 或起点和终点相同');
+                return [];
+            }
             const axes: Relationship['axes'] = {};
             for (const axis of STORY_RELATIONSHIP_AXES) {
                 const item = row.axes?.[axis];
                 const score = integer(item?.score);
                 const delta = integer(item?.delta);
-                if (!item || (score === undefined && delta === undefined)) continue;
+                if (!item) continue;
+                if (score === undefined && delta === undefined) {
+                    report?.(axis + ' 缺少有效的 score 或 delta');
+                    continue;
+                }
                 const strength = item.strength;
                 axes[axis] = {
                     score: clamp(score ?? 0),
@@ -277,17 +302,35 @@ const decayDI = (score: number, strength?: Strength) => {
     return clamp(score - 5);
 };
 
-export function parseStoryRelationshipContent(content: string): StoryRelationshipPanel | undefined {
-    const panels = [...content.matchAll(axesPanelPattern)], old = [...content.matchAll(panelPattern)];
-    const parsed = panels.length === 1 && old.length === 0 ? parseStoryRelationshipPanel(panels[0][1], 'xml')
-        : panels.length === 0 && old.length === 1 ? parseStoryRelationshipPanel(old[0][1]) : undefined;
-    if (!parsed) return;
+export function parseStoryRelationshipContent(content: string, report?: RelationshipIssue): StoryRelationshipPanel | undefined {
+    const panels = Array.from(content.matchAll(legacyPanelPattern)).filter(match => isStoryThreeAxisPanel(match[0].slice(0, match[0].indexOf('>') + 1)));
+    const old = Array.from(content.matchAll(panelPattern));
+    const openings = Array.from(content.matchAll(/<(?:affinity_panel|relationship_panel)\b[^>]*>/gi))
+        .filter(([tag]) => /^<relationship_panel/i.test(tag) || isStoryThreeAxisPanel(tag));
+    if (openings.length > 1) { report?.('本轮输出了多份三轴关系面板'); return; }
+    if (openings.length > panels.length + old.length) { report?.('三轴关系面板未闭合'); return; }
+    const parsed = panels.length ? parseStoryRelationshipPanel(panels[0][1], 'xml', report)
+        : old.length ? parseStoryRelationshipPanel(old[0][1], 'json', report) : undefined;
+    if (!parsed) {
+        if (old.length) report?.('关系面板 JSON 无效或缺少 relationships 数组');
+        else if (/<affinity_panel\b/i.test(content)) report?.('未找到三轴模式的关系面板');
+        return;
+    }
+    if (panels.length && !parsed.hadRelationshipEntries && !parsed.state_note && !Object.keys(parsed.state_notes ?? {}).length
+        && panels[0][1].replace(/<(primary_id|primary_name|history_version)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '').trim()) {
+        report?.('三轴关系面板中缺少有效的人物方向或自我记录');
+        return;
+    }
     const counts = new Map<string, number>();
     for (const row of parsed.relationships) {
         const key = pairKey(row.fromId, row.toId);
         counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    return { ...parsed, relationships: parsed.relationships.filter(row => counts.get(pairKey(row.fromId, row.toId)) === 1) };
+    return { ...parsed, relationships: parsed.relationships.filter(row => {
+        if (counts.get(pairKey(row.fromId, row.toId)) === 1) return true;
+        report?.('面板重复报告了同一人物方向');
+        return false;
+    }) };
 }
 
 /** Replay central originals in commit order. Callers select the world and reroll boundary first. */
@@ -339,20 +382,12 @@ export function restrictStoryRelationshipsToCast(baseline: StoryRelationshipPane
         relationships: baseline.relationships.filter(row => actors.has(row.fromId) && actors.has(row.toId)) };
 }
 
-export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, useActualCast = false): string {
+export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, scope = ''): string {
     if (!baseline) return '';
-    const example = baseline.relationships[0];
-    return [
-        '剧情收尾使用一份三轴关系面板；场外省略。',
-        useActualCast ? '人物对的双方均须列入 <turn_cast>。' : '人物对的双方均须实际出现在本轮正文中。',
-        '按正文实际发生关系事件的人物对输出两个方向，不限任一中心人物；同场、旁观、被提及、交流倾向和非正篇小剧场均不算依据。不要为了面板安排事件，没有新事实的人物对省略并保留历史。',
-        '沿用下方各方向基线：已有轴填 delta；首次填 score。FL 初值依据角色卡、既有关系和共同经历评估。trigger 写本次评分依据的关系事实或事件，evidence 写人物的具体表现；缺少依据填 0。DI 有扰动时写 phase（active / ended）和 strength（mild / moderate / strong）。',
-        '格式：<affinity_panel mode="three_axes">',
-        '<self_record><character_id>实际有新理解的人物 ID</character_id><state_note>新理解或选择代价（可选）</state_note></self_record>',
-        ...(example ? ['<affinity_person><from_id>' + xml(example.fromId) + '</from_id><to_id>' + xml(example.toId) + '</to_id><FL><score>0</score><trigger>关系事实</trigger><evidence>人物具体表现</evidence></FL><RI><delta>0</delta></RI><DI><delta>0</delta></DI><relation_note>关系天气</relation_note><relation_fragment>本轮事实碎片（可选）</relation_fragment></affinity_person>'] : []),
-        '</affinity_panel>',
-        '方向基线：' + encodePanel(baseline),
-    ].join('\n');
+    const { actors, state_notes, relationships } = baseline;
+    return '关系历史归属：' + scope + '\n方向基线：' + encodePanel({ actors, state_notes,
+        relationships: relationships.filter(row => Object.keys(row.axes).length || row.identity !== undefined
+            || row.cognition !== undefined || row.relation_note) });
 }
 
 export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, proposed?: AxisValue): AxisValue | undefined {
@@ -392,8 +427,8 @@ export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | un
 }
 
 /** Store a canonical panel with the reply, so reroll and archive use the same immutable turn boundary. */
-export function reconcileStoryRelationships(content: string, baseline?: StoryRelationshipPanel): string {
-    const parsed = parseStoryRelationshipContent(content);
+export function reconcileStoryRelationships(content: string, baseline?: StoryRelationshipPanel, report?: RelationshipIssue): string {
+    const parsed = parseStoryRelationshipContent(content, report);
     const prose = stripStoryRelationshipPanels(content);
     if (!baseline) return prose;
     const proposal = parsed;

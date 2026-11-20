@@ -539,7 +539,7 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
 }
 
 /** Names and old IDs share one exact lookup. Collisions across the two namespaces are ambiguous too. */
-function storyCandidateResolver(candidates: readonly (string | StoryCandidate)[]): (value: unknown) => string {
+export function storyCandidateResolver(candidates: readonly (string | StoryCandidate)[]): (value: unknown) => string {
     const lookup = new Map<string, Set<string>>();
     for (const candidate of candidates) {
         const { id, name } = typeof candidate === 'string' ? { id: candidate, name: '' } : candidate;

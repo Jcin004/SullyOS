@@ -7,6 +7,7 @@ import type { CharacterProfile, StoryTheaterEntry } from '../types';
 import { DB } from './db';
 import { createBlankStoryPreset, createStoryTheaterDraft, storyTheaterThreadId } from './storyTheater';
 import { STORY_RELATIONSHIP_PROMPT_ID } from './storyTheaterRelationships';
+import * as relationshipRules from './storyTheaterRelationships';
 import { moveStoryInLibrary, saveStoryLibrary, STORY_LIBRARY_STORAGE_KEY, type StoryLibrary } from './storyTheaterLibrary';
 
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, archive: vi.fn(), toast: vi.fn() }));
@@ -44,7 +45,10 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
     const cast = actors.map(actor => actor.id);
     const fetch = vi.fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(response(relation({ axes: { FL: { score: 5, ...evidence } } }), cast))
-        .mockResolvedValueOnce(response(relation({ axes: {}, identity: '可信的朋友', cognition: '我知道她愿意守约', ...evidence }), ['错误人物']))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content:
+            '<story_text>我知道她愿意守约。</story_text><turn_cast>["未闭合的名单"]' +
+            relation({ identity: '可信的朋友', cognition: '我知道她愿意守约', ...evidence }),
+        } }] })))
         .mockResolvedValueOnce(response(relation({ axes: { FL: { delta: 5, ...evidence } } }), cast))
         .mockResolvedValueOnce(response('<relationship_panel>{bad', cast));
     vi.stubGlobal('fetch', fetch);
@@ -60,6 +64,8 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
         await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(count); expect(container.querySelector('button.story-send-button .animate-spin')).toBeNull(); });
     };
     const current = async () => Object.values((await DB.getRealRelationshipGraph()).directions).find(row => row.fromId === actors[0].id && row.toId === actors[1].id)!;
+    const parse = vi.spyOn(relationshipRules, 'parseStoryRelationshipContent');
+    const calculate = vi.spyOn(relationshipRules, 'calculateStoryRelationshipAxis');
     try {
         await DB.saveStoryTheater(entry);
         await act(async () => root.render(createElement(StoryTheaterSession, { entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {} })));
@@ -67,11 +73,19 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
         await send(2); expect((await current()).axes.FL?.score).toBe(5); expect((await current()).identity).toBe('可信的朋友');
         const second = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(second.metadata?.theaterCastStatus).toBe('invalid'); expect(second.metadata?.theaterCastIds).toEqual([]);
+        parse.mockClear(); calculate.mockClear();
         await send(3); expect((await current()).axes.FL?.score).toBe(10);
+        expect(parse).toHaveBeenCalledTimes(1);
+        expect(calculate).toHaveBeenCalledTimes(1);
         const third = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(third.metadata?.theaterPrivateAxes).toEqual({ [actors[0].id]: '我整理自己的信件' });
         expect(third.metadata?.theaterMirrorIds[actors[0].id]).toBeGreaterThan(0);
+        expect(third.content).toContain('<score>10</score><delta>5</delta>');
         await send(4); expect((await current()).axes.FL?.score).toBe(10);
+        const fourth = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
+        expect(fourth.metadata.theaterRelationshipIssue).toBe('三轴关系面板未闭合');
+        expect(mocks.toast).toHaveBeenCalledWith('关系记录：三轴关系面板未闭合', 'error');
+        expect(container.textContent).toContain('关系记录：三轴关系面板未闭合');
         const payload = JSON.parse(String(fetch.mock.calls[2][1]?.body));
         const guide = payload.messages.find((message: any) => message.content.includes('方向基线：')).content;
         const baseline = JSON.parse(guide.slice(guide.lastIndexOf('方向基线：') + '方向基线：'.length));
@@ -80,7 +94,7 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
     } finally {
         await act(async () => root.unmount()); container.remove();
         if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll); else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
-        vi.unstubAllGlobals();
+        parse.mockRestore(); calculate.mockRestore(); vi.unstubAllGlobals();
     }
 });
 
@@ -142,7 +156,7 @@ it('会话按世界读取和保存实际人物对，自由续写与出演模式�
         const guide = payload.messages.find((row: any) => row.content.includes('方向基线：')).content;
         return JSON.parse(guide.slice(guide.lastIndexOf('方向基线：') + '方向基线：'.length));
     };
-    const fl = (panel: any) => panel.relationships.find((row: any) => row.fromId === a.id && row.toId === b.id).axes.FL?.score;
+    const fl = (panel: any) => panel.relationships.find((row: any) => row.fromId === a.id && row.toId === b.id)?.axes.FL?.score;
     const savedFL = async (entry: StoryTheaterEntry) => {
         const { getStoryRelationshipBaseline } = await import('./storyTheaterRelationships');
         return fl(getStoryRelationshipBaseline((await DB.getStoryRelationshipHistory(entry)).messages, actors));
@@ -238,6 +252,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
     const root = createRoot(container);
     let entry: StoryTheaterEntry = {
         ...createStoryTheaterDraft(), id: 'cast-session', title: '剧情选角验证',
+        interactionTendenciesEnabled: true,
         characterIds: actors.map(actor => actor.id), castLimits: { minGroups: 1, maxGroups: 1 }, writesToCharacterMemory: true, carryCharacterMemory: true,
         characterContextLimits: Object.fromEntries(actors.map(actor => [actor.id, 0])),
         selectedWorldbookIds: ['test-worldbook'],
@@ -560,7 +575,8 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         expect(mocks.toast.mock.calls.at(-1)?.[0]).toContain('未生成有效剧情正文');
         fetch.mockImplementationOnce(async () => reply('<story_text>他伸手接下纸条。</story_text>' + serializedPanel, [[a.id, b.id]]));
         await send(advance(), 21);
-        expect(promptText(20)).toContain('关系更新与 <turn_cast> 分别记录');
+        expect(promptText(20)).toContain('关系历史归属：真实世界');
+        expect(promptText(20)).not.toContain('关系更新与 <turn_cast> 分别记录');
         expect(promptText(20)).toContain('"id":"' + b.id + '"');
         expect(container.textContent).toContain('关系记录 · 实际人物对');
         expect(container.textContent).toContain('信任刚刚回暖');

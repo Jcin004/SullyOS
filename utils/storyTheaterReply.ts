@@ -76,7 +76,10 @@ export async function replaceStoryTheaterReply(
                             : current.metadata;
                     const nextContent = id === original.id ? content : storyTheaterMirrorContent({ ...original, content, metadata: { ...original.metadata, ...metadata } });
                     const updated = { ...current, content: nextContent, metadata: nextMetadata };
-                    store.put(updated).onsuccess = () => syncRealRelationshipMessage(transaction, updated);
+                    if (id === original.id && relationshipGuard?.signature.startsWith('real-graph:')) {
+                        syncRealRelationshipMessage(transaction, updated,
+                            content => store.put({ ...updated, content }), original.content);
+                    } else store.put(updated).onsuccess = () => syncRealRelationshipMessage(transaction, updated);
                 };
             }
         };
@@ -95,7 +98,9 @@ export async function replaceStoryTheaterReply(
             };
         };
         if (relationshipGuard?.signature.startsWith('real-graph:')) {
-            if (metadata.theaterRelationshipScope !== 'real') { failure = new Error('真实关系归属不匹配'); transaction.abort(); return; }
+            if (metadata.theaterRelationshipScope !== 'real' || original.metadata?.theaterId !== relationshipGuard.entry.id) {
+                failure = new Error('真实关系归属不匹配'); transaction.abort(); return;
+            }
             checkRealRelationshipGuard(transaction, relationshipGuard.entry, relationshipGuard.signature, commit);
         } else if (relationshipGuard) readStoryRelationshipHistory(transaction, relationshipGuard.entry, history => {
             try {

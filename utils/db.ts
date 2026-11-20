@@ -1154,8 +1154,15 @@ export const DB = {
                     ...(!castEdit && reply.metadata?.theaterFreeStory ? { theaterFreeStory: true } : {}),
                     ...(mirrors.size || existing ? { theaterMirrorIds: Object.fromEntries(mirrors) } : {}),
                 } };
-                store.put(updated).onsuccess = () => syncRealRelationshipMessage(tx, updated);
-                done();
+                if (updated.role === 'assistant' && relationshipGuard?.signature.startsWith('real-graph:')) {
+                    syncRealRelationshipMessage(tx, updated, content => {
+                        store.put({ ...updated, content });
+                        done();
+                    }, replaceReply?.content);
+                } else {
+                    store.put(updated).onsuccess = () => syncRealRelationshipMessage(tx, updated);
+                    done();
+                }
             };
             const actorIds = new Set([...mirrors.keys(), ...recipients]);
             let remaining = actorIds.size;
@@ -1327,7 +1334,9 @@ export const DB = {
             });
         };
         if (relationshipGuard?.signature.startsWith('real-graph:')) {
-            if (reply.metadata?.theaterRelationshipScope !== 'real') { failure = new Error('真实关系归属不匹配'); tx.abort(); return; }
+            if (reply.metadata?.theaterRelationshipScope !== 'real' || reply.metadata?.theaterId !== relationshipGuard.entry.id) {
+                failure = new Error('真实关系归属不匹配'); tx.abort(); return;
+            }
             checkRealRelationshipGuard(tx, relationshipGuard.entry, relationshipGuard.signature, commit);
         } else if (relationshipGuard) readStoryRelationshipHistory(tx, relationshipGuard.entry, history => guarded(() => {
             checkStoryRelationshipGuard(history, relationshipGuard);

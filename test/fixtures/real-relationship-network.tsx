@@ -4,7 +4,8 @@ import RealRelationshipNetwork from '../../components/date/story/RealRelationshi
 import { relationshipFixtureState } from './real-relationship-network-state';
 import { DB } from '../../utils/db';
 import { createStoryTheaterDraft, storyTheaterThreadId } from '../../utils/storyTheater';
-import { prepareRealRelationshipReply } from '../../utils/realRelationshipModel';
+import { realRelationshipBaseline, realRelationshipPayload } from '../../utils/realRelationshipModel';
+import { parseStoryRelationshipContent, stripStoryRelationshipPanels } from '../../utils/storyTheaterRelationships';
 
 async function start() {
     const actors = relationshipFixtureState.characters;
@@ -12,7 +13,7 @@ async function start() {
     const story = { ...createStoryTheaterDraft(), id: 'mobile-relation-story', title: '归还旧信 · 验证剧情',
         characterIds: actors.map(actor => actor.id), writesToCharacterMemory: true };
     await DB.saveStoryTheater(story);
-    let graph = await DB.getRealRelationshipGraph();
+    const graph = await DB.getRealRelationshipGraph();
     if (!graph.events.length) {
         const response = '<story_text>旧信如约归还。</story_text><relationship_panel>' + JSON.stringify({ relationships: [
             { fromId: actors[0].id, toId: actors[1].id, identity: '可信赖的朋友', cognition: '我知道她会认真守住约定。',
@@ -22,10 +23,10 @@ async function start() {
                 trigger: '他向我道谢', evidence: '我注意到他接信时松了口气',
                 axes: { FL: { score: 42, trigger: '他认真收好信', evidence: '我注意到了他的珍惜' }, RI: { score: 0, trigger: '我的认识仍是友谊', evidence: '我没有产生恋爱性注意' } } },
         ] }) + '</relationship_panel>';
-        const prepared = prepareRealRelationshipReply(response, graph, actors);
-        await DB.saveMessage({ charId: storyTheaterThreadId(story.id), role: 'assistant', type: 'text', content: prepared.content,
+        const panel = parseStoryRelationshipContent(response)!;
+        await DB.saveMessage({ charId: storyTheaterThreadId(story.id), role: 'assistant', type: 'text', content: stripStoryRelationshipPanels(response),
             metadata: { source: 'story_theater', theaterId: story.id, theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
-                theaterRealRelationshipEvent: prepared.payload } });
+                theaterRealRelationshipEvent: realRelationshipPayload(panel, actors, realRelationshipBaseline(graph, actors), reason => { throw new Error(reason); }) } });
     }
     const layout = await DB.getRealRelationshipLayout();
     if (!Object.keys(layout.positions).length) await DB.patchRealRelationshipLayout({ positions: {

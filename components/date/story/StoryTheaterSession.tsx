@@ -55,7 +55,7 @@ import {
 import {
     buildStoryRelationshipGuide, getStoryRelationshipBaseline, reconcileStoryRelationships, restrictStoryRelationshipsToCast,
     STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
-    stripStoryRelationshipPanels,
+    parseStoryRelationshipContent, stripStoryRelationshipPanels,
 } from '../../../utils/storyTheaterRelationships';
 import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryInteractionPlan, drawStoryInteractionPlan, latestStoryPrivateAxes, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyInteractionTendenciesFromMessage, storyPrivateAxesFromMessage, storyReportSummary, storyTurnActorIds, type StoryInteractionHistoryEntry } from '../../../utils/storyTheaterCast';
 import {
@@ -67,7 +67,7 @@ import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/a
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton } from './StoryTheaterTheme';
-import { buildRealRelationshipGuide, realRelationshipBaseline, realRelationshipGraphBefore, prepareRealRelationshipReply } from '../../../utils/realRelationshipModel';
+import { realRelationshipBaseline, realRelationshipGraphBefore, realRelationshipPayload } from '../../../utils/realRelationshipModel';
 import { realRelationshipSignature } from '../../../utils/realRelationshipStore';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
@@ -566,9 +566,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
         }, () => setCastEdit(null));
     };
     const turnDetails = (message: Message) => {
-        if (!storyTurnActorIds(message).length) return null;
+        const issue = message.metadata?.theaterRelationshipIssue;
+        const relationshipNotice = typeof issue === 'string' && issue
+            ? <p className='mt-3 text-xs text-amber-700'>关系记录：{issue}</p> : null;
+        if (!storyTurnActorIds(message).length) return relationshipNotice;
         const names = storyCastIdsFromMessage(message).map(id => characters.find(actor => actor.id === id)?.name ?? '已移除角色');
-        return <div className='mt-3 text-xs text-violet-700'><div>{storyReportSummary(message)}</div><button type='button' aria-label='编辑本轮出演名单及私轴'
+        return <div className='mt-3 text-xs text-violet-700'><div>{storyReportSummary(message)}</div>{relationshipNotice}<button type='button' aria-label='编辑本轮出演名单及私轴'
             onClick={() => { setTurnEditError(''); setCastEdit({ original: message, ids: storyCastIdsFromMessage(message) }); }}
             className='mt-3 inline-flex max-w-full items-center gap-2 rounded-lg border border-violet-200 px-3 py-2 text-left text-xs text-violet-700'>
             <PencilSimple size={14} className='shrink-0' />
@@ -980,9 +983,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     ...(affinityEnabled ? [{ role: 'system' as const, content: RELATIONSHIP_TEXTURE_GUIDE }] : []),
                     ...(affinityAwarenessReminder ? [{ role: 'system' as const, content: affinityAwarenessReminder }] : []),
                     ...(relationshipBaseline && !rerollOutOfStory ? [{ role: 'system' as const, content:
-                        (promptEntry.writesToCharacterMemory ? '关系历史归属：真实世界，所有真实时间陪伴剧场共享。'
-                            : '关系历史归属：本虚构剧场独立世界；角色携带记忆和共享档案不改变本世界分数。')
-                        + '\n' + (realGraph ? buildRealRelationshipGuide(realGraph, requestActors) : buildStoryRelationshipGuide(relationshipBaseline, castTurn)) }] : []),
+                        buildStoryRelationshipGuide(relationshipBaseline, realGraph ? '真实世界' : `虚构剧场 ${promptEntry.id}`) }] : []),
                     { role: 'system' as const, content: identityGuard },
                     ...(isReroll && !rerollOutOfStory ? [{ role: 'system' as const, content: STORY_REROLL_INSTRUCTION }] : []),
                     ];
@@ -1049,30 +1050,38 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const actualCast = new Set(castIds);
             const mirrorActors = actors.filter(actor => actualCast.has(actor.id));
             const turnInput = isReroll ? previousUser : current.find(message => message.id === userMessageId);
-            const prose = relationshipsEnabled && !outOfStory ? stripStoryRelationshipPanels(body) : body;
+            const prose = (castTurn || relationshipsEnabled) && !outOfStory ? stripStoryRelationshipPanels(body) : body;
             if ((castTurn || relationshipsEnabled) && !prose.replace(/<[^>]*>/g, '').trim()) {
                 throw new Error('本轮未生成有效剧情正文，已保留用户输入，可重试。');
             }
             const prefill = outOfStory ? '' : compiled.assistantPrefill?.content || '';
-            const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(body);
+            const storyBody = realGraph ? prose : body;
+            const hasNativeOpening = /^\s*<(?:scene_header|story_text)\b/i.test(storyBody);
             // 自由续写按官方原版补回预填；出演模式才做防止重复场景标签的处理。
-            const needsPrefill = prefill && !body.startsWith(prefill)
+            const needsPrefill = prefill && !storyBody.startsWith(prefill)
                 && (!castTurn || !hasNativeOpening);
-            const rawContent = needsPrefill ? `${prefill}${body}` : body;
-            const turnRelationships = castTurn ? restrictStoryRelationshipsToCast(relationshipBaseline, actualCast) : relationshipBaseline;
-            const realRelationshipReply = realGraph && !outOfStory ? prepareRealRelationshipReply(rawContent, realGraph, requestActors) : undefined;
-            const content = realRelationshipReply ? realRelationshipReply.content : relationshipsEnabled && !outOfStory
-                ? reconcileStoryRelationships(rawContent, turnRelationships)
+            const rawContent = needsPrefill ? `${prefill}${storyBody}` : storyBody;
+            const relationshipIssues = new Set<string>();
+            const reportRelationshipIssue = (reason: string) => relationshipIssues.add(reason);
+            // Read the model response before optional cast/axis tags can discard the report.
+            const panel = realGraph && !outOfStory ? parseStoryRelationshipContent(generated, reportRelationshipIssue) : undefined;
+            const relationshipEvent = panel && relationshipBaseline
+                ? realRelationshipPayload(panel, requestActors, relationshipBaseline, reportRelationshipIssue) : undefined;
+            const content = relationshipHistory && !outOfStory
+                ? reconcileStoryRelationships(rawContent, castTurn ? restrictStoryRelationshipsToCast(relationshipBaseline, actualCast) : relationshipBaseline, reportRelationshipIssue)
                 : rawContent;
+            const previousEvent = storedRealGraph?.events.find(event => event.id === `story:${rerollTarget?.id}`);
+            const relationshipIssue = [...relationshipIssues].slice(0, 3).join('；');
             const privateAxes = axes && Object.keys(axes).length ? axes : undefined;
             const replyMetadata = {
                 theaterPromptTokens: promptTokenCount,
                 theaterPromptTokensExact: promptTokenCountExact,
+                ...(relationshipsEnabled && !outOfStory ? { theaterRelationshipIssue: relationshipIssue || undefined } : {}),
                 ...(relationshipHistory && !outOfStory ? { theaterRelationshipScope: relationshipHistory.scope } : {}),
                 ...(storedRealGraph && !outOfStory ? {
                     theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
-                    theaterRealRelationshipEvent: realRelationshipReply?.payload
-                        ?? storedRealGraph.events.find(event => event.id === `story:${rerollTarget?.id}`),
+                    theaterRealRelationshipEvent: relationshipEvent
+                        ?? (previousEvent && { version: previousEvent.version, updates: previousEvent.updates, stateNotes: previousEvent.stateNotes }),
                 } : {}),
                 ...(outOfStory ? { theaterOutOfStory: true } : affinityInputs.length > 0 ? { theaterAffinityInputs: affinityInputs } : {}),
                 ...(castTurn && !outOfStory ? {
@@ -1110,6 +1119,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setAffinityDrafts({});
             setShowAffinityInput(false);
             await loadMessages();
+            if (relationshipIssue) addToast('关系记录：' + relationshipIssue, 'error');
             if (outOfStory) return;
             if (entry.writesToCharacterMemory) {
                 if (!isReroll && castTurn && mirrorActors.length) void applyActorMemoryPipeline(mirrorActors);
