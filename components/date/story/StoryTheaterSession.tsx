@@ -855,9 +855,14 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 const draft = affinityDrafts[actor.id] || EMPTY_AFFINITY_DRAFT;
                 return normalizeAffinityInput({ ...draft, characterId: actor.id, characterName: actor.name }, actor);
             }).filter((value): value is StoryAffinityInput => Boolean(value)) : [];
-            const savedAffinityInputs = affinityInputsFromMessage(isReroll ? previousUser : retry ? latest : undefined, requestActors);
-            const rerollAffinityInputs = isReroll ? affinityInputsFromMessage(rerollTarget, requestActors) : [];
-            const affinityInputs = savedAffinityInputs.length > 0 ? savedAffinityInputs : rerollAffinityInputs.length > 0 ? rerollAffinityInputs : draftAffinityInputs;
+            // Legacy U→C snapshots remain readable in archives, but the retired slider must
+            // never inject relationship/awareness instructions into a three-axis turn.
+            const savedAffinityInputs = affinityEnabled
+                ? affinityInputsFromMessage(isReroll ? previousUser : retry ? latest : undefined, requestActors) : [];
+            const rerollAffinityInputs = affinityEnabled && isReroll
+                ? affinityInputsFromMessage(rerollTarget, requestActors) : [];
+            const affinityInputs = savedAffinityInputs.length > 0 ? savedAffinityInputs
+                : rerollAffinityInputs.length > 0 ? rerollAffinityInputs : draftAffinityInputs;
             const userMessageId = isReroll
                 ? (previousUser?.id || 0)
                 : assistantOpening
@@ -930,9 +935,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const miniTheaterReminder = skipStoryModules ? '' : buildStoryMiniTheaterReminder(effectivePreset.document, promptIdentityName, requestActorNames);
             const backstageAftermathReminder = skipStoryModules ? '' : buildStoryBackstageAftermathReminder(effectivePreset.document);
             const multiAffinityGuide = affinityEnabled ? buildStoryMultiAffinityGuide(requestActors.map(actor => ({ id: actor.id, name: actor.name })), castTurn) : '';
-            const affinityAwarenessReminder = affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n');
+            const affinityAwarenessReminder = affinityEnabled && !relationshipsEnabled
+                ? affinityInputs.map(item => buildStoryAffinityAwarenessReminder(item, item.characterName || '当前角色')).filter(Boolean).join('\n\n')
+                : '';
             const identityGuard = buildStoryIdentityGuard(effectivePreset.document, promptIdentityName, requestActorNames, relationshipsEnabled);
-            const modelInput = relationshipsEnabled || rerollOutOfStory ? modelText : appendStoryAffinityInputs(modelText, affinityInputs);
+            const modelInput = !affinityEnabled || relationshipsEnabled || rerollOutOfStory
+                ? modelText : appendStoryAffinityInputs(modelText, affinityInputs);
             const hasPresetHistory = effectivePreset.document.prompts.some(prompt => prompt.enabled && prompt.marker === 'history');
             const historyRows = hasPresetHistory ? visibleHistory
                 : visibleHistory.slice(visibleHistory.map(message => message.metadata?.theaterOutOfStory === true).lastIndexOf(false) + 1);
@@ -1191,7 +1199,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                         {requestPreview && <button type='button' onClick={() => setRequestViewer(true)} className='col-span-2 justify-self-start rounded-lg bg-violet-100 px-3 py-2 font-bold text-violet-700'>查看本次发送的提示词</button>}
                         <div><span className='block text-[8px] font-bold text-slate-400'>重写预填</span><span className={`block mt-1 truncate ${entry.forceUserLastMessage ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.forceUserLastMessage ? '400 兼容模式' : '原生预填'}</span></div>
                         <div><span className='block text-[8px] font-bold text-slate-400'>采样参数</span><span className={`block mt-1 truncate ${entry.omitSamplingParams ? 'font-semibold text-amber-700' : 'text-slate-600'}`}>{entry.omitSamplingParams ? '不发送高级参数' : '完整发送预设参数'}</span></div>
-                        {relationshipsEnabled && <p className='col-span-2 text-[10px] leading-5 text-slate-500'>{entry.writesToCharacterMemory ? '三轴关系与其他真实陪伴剧场共享。' : '三轴关系仅属于本虚构剧场。'}按正文实际发生关系事件的人物对分别记录，其他人保留历史。</p>}
+                        {relationshipsEnabled && <p className='col-span-2 text-[10px] leading-5 text-slate-500'>{entry.writesToCharacterMemory ? '三轴关系与其他真实陪伴剧场共享。' : '三轴关系仅属于本虚构剧场。'}关系面板由预设生成，程序承接本轮人物关系；未提到的人物保持已有状态。</p>}
                     </div>
                     <fieldset className='mx-5 mb-3 rounded-xl border border-slate-200 px-3 pb-2'>
                         <legend className='px-1 text-[10px] font-semibold text-slate-600'>本轮出演名单</legend>
