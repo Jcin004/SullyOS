@@ -481,7 +481,7 @@ export async function extractMemoriesFromBuffer(
     const conversationText = buildConversationText(messages, charName, userLabel, timeZone);
     const hasTheaterRecords = messages.some(message => message.metadata?.source === 'story_theater_memory');
     const theaterMemoryRule = hasTheaterRecords
-        ? `\n\n## 剧场记录识读\n[剧场记录] 是第三人称叙事原文，不代表记忆主体或用户亲口讲述。直接引语按剧情中的实际说话者理解。\n提取 ${charName} 实际参与、观察、听见或后来获知的经历。其他地点或分组发生的事，须有感知或获知依据才能写入其个人认知。\n根据事实与经历的重要性提取；剧场记录中原本由谁输入，不决定事件的关注优先级。`
+        ? `\n\n你是 ${charName}。回想这段时间发生的事，记下自己经历、知道和在意的事情。记清楚是谁说了什么、做了什么。`
         : '';
     const sarMemoryBoundary = buildSARMemoryBoundaryInstruction(conversationText);
 
