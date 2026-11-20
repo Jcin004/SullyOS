@@ -166,7 +166,7 @@ async function callCompressionLLM(
     const sarMemoryBoundary = buildSARMemoryBoundaryInstruction(`${oldSummaryContent || ''}\n${livesText}`);
 
     const systemPrompt = `你是 ${charName}。下面这些记忆都属于一件事：「${box.name}」。
-请把它们整合成一段连贯的、第一人称（「我」）的回忆。
+回想这件事，把大家的言行记清楚，以自己的第一人称整理成连贯的回忆。
 
 **要求（严格遵守）**：
 1. **第一人称**（用「我」），从 ${charName} 的视角写。${userLabel} 用名字直接称呼。
