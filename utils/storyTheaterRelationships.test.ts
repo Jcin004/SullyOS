@@ -4,8 +4,7 @@ import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks
 import { buildStoryRelationshipGuide, buildStoryRelationshipPayload, getStoryRelationshipBaseline, parseStoryRelationshipContent,
     reconcileStoryRelationships, restrictStoryRelationshipsToCast,
     stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID,
-    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
-    PREVIOUS_STORY_RELATIONSHIP_PROMPT, LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 
 const a = { id: 'a', name: '狛治' }, b = { id: 'b', name: '香奈乎' }, c = { id: 'c', name: '狛治' };
 const actors = [a, b, c];
@@ -82,7 +81,7 @@ describe('按实际人物对的三轴关系', () => {
     });
 
     it('首次 FL 依据角色卡、既有关系和共同经历，两个方向独立初始化', () => {
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('首次参考角色卡、既有关系与共同经历');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('既有经历、关系状态和当下情境');
         const guide = buildStoryRelationshipGuide(baseline(), '虚构剧场 test');
         expect(guide).toContain('关系历史归属：虚构剧场 test');
         expect(guide).toContain('"actors":[{"id":"a"');
@@ -200,8 +199,6 @@ describe('按实际人物对的三轴关系', () => {
         ['中心式', LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT],
         ['人物对', LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT],
         ['真实关系网', LEGACY_REAL_STORY_RELATIONSHIP_PROMPT],
-        ['单个示例', PREVIOUS_STORY_RELATIONSHIP_PROMPT],
-        ['四个示例', LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT],
     ])('内置与导入预设都只升级未改写的%s默认三轴正文', (_version, content) => {
         const document = BUILTIN_NIGHT_SCREENING_PRESET.document;
         const relation = { ...document.prompts.find(p => p.id === STORY_RELATIONSHIP_PROMPT_ID)!,

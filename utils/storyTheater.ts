@@ -15,7 +15,7 @@ import {
     formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel,
     stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT,
     LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
-    PREVIOUS_STORY_RELATIONSHIP_PROMPT, LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel,
+    type StoryRelationshipPanel,
 } from './storyTheaterRelationships';
 import {
     type WorldbookScanMessage,
@@ -631,9 +631,26 @@ const legacyRelationshipDefaults = new Set([
     LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT,
     LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT,
     LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
-    PREVIOUS_STORY_RELATIONSHIP_PROMPT,
-    LEGACY_EXAMPLE_STORY_RELATIONSHIP_PROMPT,
 ]);
+// UTF-16 length and two 32-bit fingerprints from shipped defaults: 29ec34f7, f5c4b76f, a5c7c30d.
+const legacyRelationshipFingerprints = new Map([
+    [1621, '2b3d0df3:7e1934ff'],
+    [2288, 'a10a8412:39f3e926'],
+    [1981, 'cd119ec3:d72f4bef'],
+]);
+
+function isLegacyRelationshipDefault(content: string): boolean {
+    if (legacyRelationshipDefaults.has(content)) return true;
+    const expected = legacyRelationshipFingerprints.get(content.length);
+    if (!expected) return false;
+    let first = 0x811c9dc5, second = 0x9e3779b9;
+    for (let index = 0; index < content.length; index++) {
+        const code = content.charCodeAt(index);
+        first = Math.imul(first ^ code, 0x01000193);
+        second = Math.imul(second ^ code, 0x85ebca6b);
+    }
+    return expected === `${(first >>> 0).toString(16).padStart(8, '0')}:${(second >>> 0).toString(16).padStart(8, '0')}`;
+}
 
 /** Only recognize untouched defaults; saved prompt text and order are user data. */
 export const resolveStoryPresetDocument = (
@@ -650,7 +667,7 @@ export const resolveStoryPresetDocument = (
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
                 || prompt.content !== oldDefaults.get(prompt.id)?.content)
             .map(prompt => {
-                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && legacyRelationshipDefaults.has(prompt.content)) {
+                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && isLegacyRelationshipDefault(prompt.content)) {
                     return { ...prompt, content: STORY_RELATIONSHIP_PROMPT };
                 }
                 const oldDefault = oldDefaults.get(prompt.id);
