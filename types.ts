@@ -2327,6 +2327,8 @@ export interface StoryTheaterEntry {
     primaryCharacterId?: string;
     castLimits?: StoryCastLimits;
     castModeEnabled?: boolean;
+    /** 每轮是否抽取并注入交流倾向组合；旧剧场默认为关闭。 */
+    interactionTendenciesEnabled?: boolean;
     /** true=像【陪伴】一样，把第三人称正文分别写入每个角色的正常记忆流。 */
     writesToCharacterMemory: boolean;
     /** 旧存档的剧情时间锚点，仅用于续接既有时间线，不再提供设置入口。 */

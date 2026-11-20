@@ -63,7 +63,8 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
     const castLimits = normalizeStoryCastLimits({ minGroups: draft.castLimits?.minGroups, maxGroups: draft.castLimits?.maxGroups }, actors.length);
     const validCastLimits = validStoryCastLimits(castLimits);
     const castEnabled = draft.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
+    const interactionEnabled = draft.interactionTendenciesEnabled === true;
+    const canStart = !castEnabled || (actors.length > 0 && (!interactionEnabled || canDrawStoryInteractionPlan(actors.length, castLimits)));
     const preset = presets.find(item => item.id === draft.presetId) || presets[0] || null;
     const effectivePreset = preset ? { ...preset, document: resolveStoryPresetDocument(preset, draft.presetOverride) } : null;
     const presetStats = getPresetPromptStats(effectivePreset);
@@ -114,7 +115,7 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
             </section>
             <section className='pt-6 border-t border-slate-200'>
                 <div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>02 / Cast</div><h2 className='mt-1 text-lg font-semibold'>让谁参与</h2>
-                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮由代码随机确定出演名单与交流倾向，AI 根据人物状态自然发展互动；你选择的身份始终由你执笔。</p>
+                <p className='text-[11px] text-slate-500'>勾选整部剧情的候选角色。每轮根据正文确认实际出演名单，更新相应私轴与记忆；你选择的身份始终由你执笔。</p>
                 <button disabled={maskLocked || draft.writesToCharacterMemory} onClick={() => onOpenMaskBox(draft)} className='mt-4 w-full p-4 rounded-2xl bg-slate-900 text-white flex items-center gap-3 text-left disabled:cursor-not-allowed'>
                     {resolvedMask.avatar ? <TokenImg value={resolvedMask.avatar} alt='' className='w-11 h-11 rounded-full object-cover' /> : <span className='w-11 h-11 rounded-full bg-white/10 grid place-items-center'><UserCircle size={24} /></span>}
                     <span className='min-w-0 flex-1'><span className='block text-[9px] uppercase tracking-[.18em] text-violet-200'>你</span><strong className='block mt-1 text-sm truncate'>{resolvedMask.selection.type === 'user' ? '本人' : resolvedMask.name}</strong><span className='block mt-1 text-[9px] text-slate-300 truncate'>{resolvedMask.selection.type === 'user' ? '以真实的自己进入剧场' : resolvedMask.selection.type === 'character' ? '扮演已有角色' : '扮演原创人物'}</span></span>
@@ -126,7 +127,12 @@ const StoryTheaterEditor: React.FC<Props> = ({ initial, characters, user, masks,
                     <span className='text-sm font-semibold'>出演模式</span>
                     <Toggle label='出演模式' value={castEnabled} onChange={value => update('castModeEnabled', value)} />
                 </div>
-                {castEnabled && <fieldset className='mt-4'>
+                {castEnabled && <div className='mt-3 flex items-center justify-between gap-3'>
+                    <div className='min-w-0'><span className='text-sm font-semibold'>交流倾向组合</span><p className='mt-1 text-[10px] text-slate-500'>开启时提供交流组合建议；关闭后让当前互动自然延续。</p></div>
+                    <Toggle label='交流倾向组合' value={interactionEnabled} onChange={value => update('interactionTendenciesEnabled', value)} />
+                </div>}
+                {castEnabled && !interactionEnabled && actors.length === 0 && <p role='status' className='mt-2 text-[11px] text-amber-700'>请至少勾选一位候选角色。</p>}
+                {castEnabled && interactionEnabled && <fieldset className='mt-4'>
                     <legend className='mb-2 text-[10px] font-bold text-slate-600'>每轮随机建议组数</legend>
                     <div className='grid grid-cols-2 gap-2'>
                         {([

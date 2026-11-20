@@ -367,7 +367,8 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
     const selectedBooks = useMemo(() => dedupeTheaterWorldbooks(worldbookActors).filter(book => entry.selectedWorldbookIds.includes(book.id)), [worldbookActors, entry.selectedWorldbookIds]);
     const castLimits = useMemo(() => normalizeStoryCastLimits({ minGroups: entry.castLimits?.minGroups, maxGroups: entry.castLimits?.maxGroups }, actors.length), [entry.castLimits, actors.length]);
     const castEnabled = entry.castModeEnabled !== false;
-    const canStart = !castEnabled || canDrawStoryInteractionPlan(actors.length, castLimits);
+    const interactionEnabled = entry.interactionTendenciesEnabled === true;
+    const canStart = !castEnabled || (actors.length > 0 && (!interactionEnabled || canDrawStoryInteractionPlan(actors.length, castLimits)));
     const [messages, setMessages] = useState<Message[]>([]);
     const latestReply = [...messages].reverse().find(message => message.role === 'assistant');
     const currentCastIds = new Set(storyCastIdsFromMessage(latestReply));
@@ -837,7 +838,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 .filter(message => message.role === 'assistant' && message.id !== rerollTarget?.id && !message.metadata?.theaterOutOfStory)
                 .map(storyInteractionHistoryFromMessage)
                 .filter((value): value is StoryInteractionHistoryEntry => Boolean(value));
-            const interactionTendencies = !castTurn ? [] : savedTendencies.length ? savedTendencies
+            const interactionTendencies = !castTurn || !interactionEnabled ? [] : savedTendencies.length ? savedTendencies
                 : drawStoryInteractionPlan(candidateIds, castLimits, interactionHistory, Math.random)
                     .tendencies;
             const requestActors = rerollOutOfStory ? [] : actors;
@@ -957,6 +958,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                     compiled = compileStoryPreset({
                         preset: effectivePreset, userName: promptIdentityName, characterNames: requestActorNames,
                         historyMessages, storyTheaterMode, storyTheaterValues,
+                        interactionTendenciesEnabled: interactionEnabled,
                         relationshipMode: relationshipsEnabled ? (rerollOutOfStory ? 'skip' : 'axes') : undefined,
                         slots: {
                             actors: actorContext,
@@ -1130,7 +1132,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             setSending(false);
             setRerollingId(null);
         }
-    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
+    }, [apiConfig.apiKey, memoryPalaceConfig.embedding?.apiKey, memoryPalaceConfig.lightLLM?.apiKey, canStart, castEnabled, interactionEnabled, actors, addToast, affinityDrafts, affinityEnabled, relationshipsEnabled, applyActorMemoryPipeline, archiveIfNeeded, buildActorContexts, buildMaskMemoryContext, callCompletion, castLimits, characters, effectivePreset, entry, independentRecall, input, loadMessages, mask, promptIdentityName, selectedBooks, threadId]);
     const archivedCount = messages.filter(message => mirrorArchived(message, entry)).length;
     const pendingRetryInput = getPendingStoryRetryInput(messages);
     const canWriteOpening = canStart && messages.length === 0 && entry.openingMode === 'assistant';

@@ -76,6 +76,13 @@ describe('共通剧场原文预算', () => {
     });
 });
 
+it('交流倾向组合默认关闭，并保留已有剧场的显式选择', () => {
+    const draft = createStoryTheaterDraft();
+    expect(draft.interactionTendenciesEnabled).toBe(false);
+    expect(normalizeStoryTheater({ ...draft, interactionTendenciesEnabled: undefined }).interactionTendenciesEnabled).toBe(false);
+    expect(normalizeStoryTheater({ ...draft, interactionTendenciesEnabled: true }).interactionTendenciesEnabled).toBe(true);
+});
+
 it('旧剧场默认沿用自动出演，显式关闭的设置在读取时保留', () => {
     const legacy = createStoryTheaterDraft();
     expect(normalizeStoryTheater(legacy).castModeEnabled).toBe(true);
@@ -212,6 +219,29 @@ describe('糯米机原生剧情预设边界', () => {
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
         expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI'))).toBe(true);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
+    });
+
+    it('关闭交流倾向组合只移除引导提示，保留出演、事后互动与私轴协议', () => {
+        const args = {
+            preset: BUILTIN_NIGHT_SCREENING_PRESET,
+            storyTheaterMode: 'story' as const,
+            userName: '用户', characterNames: ['阿遥'],
+            slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' },
+            storyTheaterValues: {
+                theater_candidate_data: '[]', theater_interaction_tendencies: '[]',
+                theater_previous_interactions: '[]', theater_unrealized_tendencies: '[]',
+                theater_previous_axes: '', theater_prefill: '', theater_mode_state: '剧情续写', theater_cast_data: '[]',
+            },
+        };
+        const on = compileStoryPreset({ ...args, interactionTendenciesEnabled: true });
+        const off = compileStoryPreset({ ...args, interactionTendenciesEnabled: false });
+        const onText = on.messages.map(message => message.content).join('\n');
+        const offText = off.messages.map(message => message.content).join('\n');
+        expect(onText).toContain('本轮交流倾向：');
+        expect(offText).not.toContain('本轮交流倾向：');
+        expect(offText).toContain('<turn_cast>');
+        expect(offText).toContain('<interaction_result>');
+        expect(offText).toContain('<private_axes>');
     });
 
     it('不再按旧预设原文临时替换提示词，场外仍不发送三轴面板', () => {

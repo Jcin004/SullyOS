@@ -186,6 +186,7 @@ export const createStoryTheaterDraft = (now: number = Date.now()): StoryTheaterE
     openingMode: 'user',
     mask: { type: 'user' },
     characterIds: [],
+    interactionTendenciesEnabled: false,
     writesToCharacterMemory: false,
     characterMemoryDates: {},
     carryCharacterMemory: false,
@@ -219,6 +220,7 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
         primaryCharacterId: entry.primaryCharacterId && entry.characterIds?.includes(entry.primaryCharacterId) ? entry.primaryCharacterId : undefined,
         writesToCharacterMemory: entry.writesToCharacterMemory === true,
         castModeEnabled: entry.castModeEnabled !== false,
+        interactionTendenciesEnabled: entry.interactionTendenciesEnabled === true,
         castLimits: entry.castLimits ? normalizeStoryCastLimits(entry.castLimits, entry.characterIds?.length ?? 0) : undefined,
         characterMemoryDates: entry.characterMemoryDates || {},
         carryCharacterMemory: entry.writesToCharacterMemory ? true : entry.carryCharacterMemory === true,
@@ -1150,6 +1152,8 @@ export const compileStoryPreset = (input: {
     userName: string;
     characterNames: string[];
     storyTheaterMode?: 'story' | 'out_of_story';
+    /** false 时不注入交流倾向提示词；不影响出演、互动记录与私轴。 */
+    interactionTendenciesEnabled?: boolean;
     storyTheaterValues?: Record<string, string>;
     relationshipMode?: 'axes' | 'skip';
 }): { messages: StoryApiMessage[]; origins: Map<StoryApiMessage, StoryPromptOrigin>; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage; scenarioMessage?: StoryApiMessage } => {
@@ -1189,6 +1193,7 @@ export const compileStoryPreset = (input: {
         if (!prompt.enabled || prompt.section) continue;
         if (prompt.scope === 'story_theater' && !input.storyTheaterMode) continue;
         if (prompt.scope === 'story_theater_story' && input.storyTheaterMode !== 'story') continue;
+        if (input.interactionTendenciesEnabled === false && prompt.id === 'nmj-v67-theater-interaction-bias') continue;
         // Relationship rules are authored in the preset; out-of-story turns only skip their panel.
         if (input.relationshipMode === 'skip' && prompt.id === STORY_RELATIONSHIP_PROMPT_ID) continue;
         const defaultOutOfStory = input.storyTheaterMode === 'out_of_story' && prompt.id === 'nmj-v67-theater-output'
