@@ -1,0 +1,92 @@
+name: Build Unified Story Test APK
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/build-unified-story-test-apk.yml
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source branch or commit to package"
+        required: false
+        default: "feat/unified-story-theater-20261117"
+
+permissions:
+  contents: read
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout current SullyOS story branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || 'feat/unified-story-theater-20261117' }}
+
+      - name: Record exact app source revision
+        run: |
+          git rev-parse HEAD
+          echo "App source branch / SHA:"
+          git log -1 --format='%h %s'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run targeted story/relationship checks
+        continue-on-error: true
+        run: pnpm exec vitest run utils/storyTheaterRelationships.test.ts utils/storyTheater.test.ts utils/storyTheaterSessionCast.test.ts utils/realRelationshipStore.test.ts
+
+      - name: Build web assets for Capacitor
+        run: |
+          node scripts/build-chat-preview-css.mjs
+          pnpm exec vite build --mode capacitor
+
+      - name: Set separate debug app ID
+        run: |
+          node -e "const fs=require('fs');const p='capacitor.config.json';const x=JSON.parse(fs.readFileSync(p,'utf8'));x.appId='com.aetheros.simulator.unifiedstorytest';x.appName='SullyOS Story Test';fs.writeFileSync(p,JSON.stringify(x,null,2)+'\\n')"
+
+      - name: Generate Android project
+        run: |
+          pnpm exec cap add android
+          pnpm exec cap sync android
+
+      - name: Build unsigned debug-key APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Collect APK and source revision
+        run: |
+          mkdir -p apk-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-ThreeAxis-20261121-debug.apk
+          git rev-parse HEAD > apk-output/SOURCE-COMMIT.txt
+          sha256sum apk-output/SullyOS-ThreeAxis-20261121-debug.apk > apk-output/SHA256.txt
+          ls -lh apk-output/
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SullyOS-ThreeAxis-Test-APK
+          path: apk-output/*
+          if-no-files-found: error
+          retention-days: 14
