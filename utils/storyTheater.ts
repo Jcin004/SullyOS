@@ -11,7 +11,7 @@ import type {
     UserProfile,
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
-import { formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel, stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel } from './storyTheaterRelationships';
+import { formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel, stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT, LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT, PREVIOUS_STORY_RELATIONSHIP_PROMPT, type StoryRelationshipPanel } from './storyTheaterRelationships';
 import {
     type WorldbookScanMessage,
 } from './worldbook';
@@ -638,11 +638,19 @@ export const resolveStoryPresetDocument = (
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
                 || prompt.content !== oldDefaults.get(prompt.id)?.content)
             .map(prompt => {
-                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && [LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT].includes(prompt.content)) {
+                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && [LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT, PREVIOUS_STORY_RELATIONSHIP_PROMPT].includes(prompt.content)) {
                     return { ...prompt, content: STORY_RELATIONSHIP_PROMPT };
                 }
                 const oldDefault = oldDefaults.get(prompt.id);
                 const nextDefault = threeAxisDefaults.get(prompt.id);
+                if (prompt.id === 'nmj-v6-gemini-format-lock' && nextDefault && prompt.content === nextDefault.content.replace(
+                    '本轮要求输出关系面板时，<affinity_panel mode="three_axes"> 必须完整且只出现一次；',
+                    '本轮要求输出关系面板时，<relationship_panel> 必须完整且只出现一次；',
+                )) return { ...prompt, content: nextDefault.content };
+                if (prompt.id === 'nmj-v616-silent-preflight' && nextDefault && prompt.content === nextDefault.content.replace(
+                    '6. 关系侧表：启用双向关系时，按三轴关系规则检查本轮关系报告。',
+                    '6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。',
+                )) return { ...prompt, content: nextDefault.content };
                 return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content
                     ? { ...prompt, content: nextDefault.content, name: prompt.name === oldDefault.name ? nextDefault.name : prompt.name }
                     : prompt;

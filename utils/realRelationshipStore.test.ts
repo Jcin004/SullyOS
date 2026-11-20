@@ -168,7 +168,7 @@ describe('真实世界关系网独立状态', () => {
             expect(mirrors.some(value => value.content.includes(selfNote) || value.content.includes('<affinity_panel'))).toBe(false);
             expect(mirrors.some(value => value.metadata?.theaterRealRelationshipEvent)).toBe(false);
         }
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('它们是该人物的私有认知');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('其他人物不能知道未表达的内心');
     });
 
     it('人工修改真实出演名单继续维护正文镜像，独立关系和私有认知不随名单丢失', async () => {

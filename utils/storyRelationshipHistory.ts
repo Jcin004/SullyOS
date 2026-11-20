@@ -35,7 +35,8 @@ export function selectStoryRelationshipHistory(
     }).sort((a, b) => a.id - b.id);
     // Archive flags, summaries and timestamps don't change a relationship event or its commit order.
     const signature = JSON.stringify([scope, exists, messages.map(row => [row.id, row.content,
-        row.metadata.theaterId, row.metadata.theaterRelationshipScope, row.metadata.theaterCastIds])]);
+        row.metadata.theaterId, row.metadata.theaterRelationshipScope, row.metadata.theaterCastIds,
+        row.metadata.theaterStoryRelationshipEvent, row.metadata.theaterRealRelationshipEvent])]);
     return { scope, messages, signature, exists };
 }
 
@@ -70,6 +71,7 @@ export function readStoryRelationshipHistory(
 }
 
 const hasRelationshipPanel = (row: Message) => /<(?:affinity_panel|relationship_panel)\b/i.test(row.content)
+    || Boolean(row.metadata?.theaterStoryRelationshipEvent)
     || (row.metadata?.theaterRealRelationshipProtocol === 1 && Boolean(row.metadata.theaterRealRelationshipEvent));
 
 export function checkStoryRelationshipGuard(history: StoryRelationshipHistory, guard: StoryRelationshipGuard): void {

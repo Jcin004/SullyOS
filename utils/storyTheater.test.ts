@@ -217,7 +217,8 @@ describe('糯米机原生剧情预设边界', () => {
         expect(exit.content).not.toContain('单一“当前 C”');
         expect(exit.content).not.toContain('幕后暗格 → 世界线 → 镜头债');
         const preflight = document.prompts.find(prompt => prompt.id === 'nmj-v616-silent-preflight')!;
-        expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('按三轴关系规则检查本轮关系报告'))).toBe(true);
+        expect(sent.messages.some(message => message.content.includes('以出演角色 ID 确认双方'))).toBe(false);
         expect(preflight.content).not.toContain('由酒馆折叠显示');
     });
 

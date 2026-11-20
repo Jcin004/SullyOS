@@ -1,6 +1,6 @@
 import type { Message, StoryTheaterEntry } from '../types';
 import { readStoryRelationshipHistory } from './storyRelationshipHistory';
-import { serializeStoryThreeAxisPanel, type StoryRelationshipDirection } from './storyTheaterRelationships';
+import { appendStoryRelationshipPanel, readStoryRelationshipPayload, type StoryRelationshipDirection } from './storyTheaterRelationships';
 import {
     emptyRealRelationshipGraph, legacyRealRelationshipPayload, rebuildRealRelationshipGraph, upsertRealRelationshipEvent,
     type RealRelationshipGraph, type RealRelationshipLayout, type RealRelationshipPayload,
@@ -37,11 +37,8 @@ function decode(data: unknown): RealRelationshipGraph {
 export const validateRealRelationshipGraph = (data: unknown) => decode(data);
 
 function payloadOf(row: Message): RealRelationshipPayload | undefined {
-    const payload = row.metadata?.theaterRealRelationshipEvent as RealRelationshipPayload | undefined;
-    if (row.metadata?.theaterRealRelationshipProtocol === 1 && payload?.version === 1
-        && Array.isArray(payload.updates) && payload.stateNotes
-        && payload.updates.every(update => update?.direction?.fromId && update.direction.toId
-            && update.direction.axes && ['proposal', 'snapshot', 'canonical'].includes(update.mode))) return payload;
+    const payload = readStoryRelationshipPayload(row.metadata?.theaterRealRelationshipEvent);
+    if (row.metadata?.theaterRealRelationshipProtocol === 1 && payload) return payload;
     return /<(?:affinity_panel|relationship_panel)\b/i.test(row.content) ? legacyRealRelationshipPayload(row) : undefined;
 }
 const centralReply = (row: Message) => row.role === 'assistant' && row.type === 'text' && typeof row.content === 'string' && !row.groupId
@@ -105,10 +102,8 @@ export function syncRealRelationshipMessage(tx: IDBTransaction, row: Message, di
             if (display) {
                 const previousPanel = !changed && previousContent
                     ? previousContent.match(/<affinity_panel\b[^>]*\bmode="three_axes"[^>]*>[\s\S]*?<\/affinity_panel\s*>/i)?.[0] : undefined;
-                const panel = previousPanel ?? (relationships?.length || Object.keys(payload.stateNotes).length ? serializeStoryThreeAxisPanel({
-                    primaryId: '', primaryName: '', historyVersion: 2, relationships: relationships ?? [], state_notes: payload.stateNotes,
-                }) : '');
-                display(panel ? row.content + '\n\n' + panel : row.content);
+                display(previousPanel ? row.content + '\n\n' + previousPanel
+                    : appendStoryRelationshipPanel(row.content, relationships ?? [], payload.stateNotes));
             }
         }, false);
     });

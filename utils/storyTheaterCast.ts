@@ -634,7 +634,7 @@ export function parseStoryTheaterReply(text: string, candidateActors: readonly (
     return { castIds, castStatus, interactions, interactionStatus, axes, body };
 }
 
-export function assertStoryRerollBody(text: string): string {
-    if (castTag.test(text) || outOfStoryTag.test(text) || axesTag.test(text) || interactionResultTag.test(text)) throw new Error('本轮只需返回正文。原记录已保留。');
+export function assertStoryRerollBody(text: string, allowRelationshipCast = false): string {
+    if ((!allowRelationshipCast && castTag.test(text)) || outOfStoryTag.test(text) || axesTag.test(text) || interactionResultTag.test(text)) throw new Error('本轮只需返回正文。原记录已保留。');
     return text;
 }

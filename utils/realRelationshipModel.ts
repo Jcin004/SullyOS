@@ -1,11 +1,11 @@
 import type { Message } from '../types';
 import {
-    STORY_RELATIONSHIP_AXES, calculateStoryRelationshipAxis, replayStoryRelationshipAxis,
+    STORY_RELATIONSHIP_AXES, applyStoryRelationshipUpdate,
     parseStoryRelationshipContent, legacyStoryRelationshipSelfNotes,
     type StoryRelationshipActor, type StoryRelationshipAxis,
-    type StoryRelationshipDirection, type StoryRelationshipPanel,
+    type StoryRelationshipDirection, type StoryRelationshipPanel, type StoryRelationshipPayload,
 } from './storyTheaterRelationships';
-import { storyCandidateResolver } from './storyTheaterCast';
+export { buildStoryRelationshipPayload as realRelationshipPayload } from './storyTheaterRelationships';
 
 export interface RealRelationshipSource {
     kind: 'story' | 'legacy' | 'manual';
@@ -20,16 +20,7 @@ export interface RealRelationshipDirection extends StoryRelationshipDirection {
     lastSource: RealRelationshipSource;
     lastStorySource?: RealRelationshipSource;
 }
-export interface RealRelationshipUpdate {
-    direction: StoryRelationshipDirection;
-    mode: 'proposal' | 'snapshot' | 'canonical' | 'manual';
-    clearAxes?: StoryRelationshipAxis[];
-}
-export interface RealRelationshipPayload {
-    version: 1;
-    updates: RealRelationshipUpdate[];
-    stateNotes: NonNullable<StoryRelationshipPanel['state_notes']>;
-}
+export type RealRelationshipPayload = StoryRelationshipPayload;
 export interface RealRelationshipEvent extends RealRelationshipPayload {
     id: string;
     sequence: number;
@@ -60,45 +51,23 @@ const eventOrder = (event: RealRelationshipEvent) => event.source.kind === 'manu
 const compareEvents = (a: RealRelationshipEvent, b: RealRelationshipEvent) => eventOrder(a) - eventOrder(b)
     || Number(a.source.kind === 'manual') - Number(b.source.kind === 'manual') || a.sequence - b.sequence;
 
-/** The calculator is shared with fictional theater; only explicit, evidenced axes are proposed. */
 function applyRealRelationshipEvent(graph: RealRelationshipGraph, event: RealRelationshipEvent, display?: StoryRelationshipDirection[]): void {
     event.changes = [];
     for (const update of event.updates) {
-        const row = update.direction;
-        if (!row.fromId || !row.toId || row.fromId === row.toId) continue;
-        const key = realRelationshipKey(row.fromId, row.toId);
+        const { fromId, toId } = update.direction;
+        if (!fromId || !toId || fromId === toId) continue;
+        const key = realRelationshipKey(fromId, toId);
         const prior = graph.directions[key];
-        const next: RealRelationshipDirection = {
-            ...prior, fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName,
-            axes: { ...prior?.axes }, lastSource: event.source,
+        const applied = applyStoryRelationshipUpdate(update, prior, Boolean(display));
+        graph.directions[key] = {
+            ...applied.next, lastSource: event.source,
             lastStorySource: event.source.kind === 'manual' ? prior?.lastStorySource : event.source,
         };
-        const displayedAxes: StoryRelationshipDirection['axes'] | undefined = display ? {} : undefined;
         for (const axis of STORY_RELATIONSHIP_AXES) {
-            const value = row.axes[axis], previous = next.axes[axis], before = previous?.score;
-            if (update.clearAxes?.includes(axis)) delete next.axes[axis];
-            else if (value) {
-                let after;
-                if (update.mode === 'canonical') after = replayStoryRelationshipAxis(axis, previous, value, 2);
-                else if (update.mode === 'proposal') after = calculateStoryRelationshipAxis(axis, previous, value);
-                else if (value.hasScore !== false) after = { ...value };
-                // Some old source panels hold only the proposed delta. Use it only against a known score.
-                else if (previous && value.trigger && value.evidence) after = calculateStoryRelationshipAxis(axis, previous, value);
-                if (after) {
-                    next.axes[axis] = after;
-                    if (displayedAxes) displayedAxes[axis] = { ...after, initial: !previous,
-                        eventDelta: previous ? value.delta ?? 0 : value.score };
-                }
-            }
-            if (before !== next.axes[axis]?.score) event.changes.push({ fromId: row.fromId, toId: row.toId, axis, before, after: next.axes[axis]?.score });
+            const before = prior?.axes[axis]?.score, after = applied.next.axes[axis]?.score;
+            if (before !== after) event.changes.push({ fromId, toId, axis, before, after });
         }
-        // Identification, private cognition and scores change independently.
-        for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note'] as const) {
-            if (row[field] !== undefined) next[field] = row[field];
-        }
-        if (row.relation_fragments?.length) next.relation_fragments = [...row.relation_fragments];
-        graph.directions[key] = next;
-        if (display && displayedAxes && Object.keys(displayedAxes).length) display.push({ ...row, axes: displayedAxes });
+        if (applied.display) display?.push(applied.display);
     }
     Object.assign(graph.stateNotes, event.stateNotes);
 }
@@ -168,50 +137,7 @@ export function realRelationshipBaseline(graph: RealRelationshipGraph, actors: r
         relationships: Object.values(graph.directions).filter(row => ids.has(row.fromId) && ids.has(row.toId)).map(row => ({
             fromId: row.fromId, toId: row.toId, fromName: names.get(row.fromId)!, toName: names.get(row.toId)!,
             identity: row.identity, cognition: row.cognition, relation_note: row.relation_note,
-            axes: Object.fromEntries(Object.entries(row.axes).map(([axis, value]) =>
-                [axis, { score: value.score, ...(value.strength ? { strength: value.strength } : {}) }])),
+            axes: row.axes,
         })),
     };
-}
-
-/** Cast parsing is deliberately absent here. Candidate IDs still bound all accepted directions. */
-export function realRelationshipPayload(panel: StoryRelationshipPanel, actors: readonly StoryRelationshipActor[],
-    baseline: StoryRelationshipPanel, report: (reason: string) => void): RealRelationshipPayload | undefined {
-    const names = new Map(actors.map(actor => [actor.id, actor.name]));
-    const resolve = storyCandidateResolver(actors);
-    const previous = new Map(baseline.relationships.map(row => [realRelationshipKey(row.fromId, row.toId), row.axes]));
-    const updates: RealRelationshipUpdate[] = [];
-    const used = new Set<string>();
-    for (const row of panel.relationships) {
-        let fromId: string, toId: string;
-        try { fromId = resolve(row.fromId); toId = resolve(row.toId); }
-        catch { report('关系方向包含未知或无法唯一匹配的角色'); continue; }
-        if (fromId === toId) { report('关系方向的起点和终点相同'); continue; }
-        const key = realRelationshipKey(fromId, toId);
-        if (used.has(key)) { report('面板重复报告了同一人物方向'); return undefined; }
-        used.add(key);
-        const axes = Object.fromEntries(STORY_RELATIONSHIP_AXES.flatMap(axis => {
-            const value = row.axes[axis];
-            if (!value) return [];
-            const label = names.get(fromId) + ' → ' + names.get(toId) + ' ' + axis;
-            if (!value.trigger || !value.evidence) { report(label + ' 缺少触发事件或证据'); return []; }
-            const prior = previous.get(key)?.[axis];
-            if (axis === 'FL' && !prior && value.hasScore === false) report(label + ' 尚未初始化，需要首次评分');
-            if (prior && value.delta === undefined && axis !== 'DI') report(label + ' 缺少 delta，分数保持原值');
-            return [[axis, value]];
-        }));
-        const privateEvidence = Boolean(row.trigger && row.evidence);
-        const identity = privateEvidence ? row.identity : undefined;
-        const cognition = privateEvidence ? row.cognition : undefined;
-        if (!privateEvidence && (row.identity !== undefined || row.cognition !== undefined)) report('关系认同或认知缺少触发事件或证据');
-        if (!Object.keys(axes).length && identity === undefined && cognition === undefined) continue;
-        updates.push({ mode: 'proposal', direction: { fromId, toId, fromName: names.get(fromId)!, toName: names.get(toId)!, axes,
-            identity, cognition, ...(privateEvidence ? { trigger: row.trigger, evidence: row.evidence } : {}),
-            relation_note: row.relation_note, relation_fragments: row.relation_fragments } });
-    }
-    const notes = { ...panel.state_notes };
-    if (panel.primaryId && panel.state_note) notes[panel.primaryId] = { name: panel.primaryName, note: panel.state_note };
-    const stateNotes = Object.fromEntries(Object.entries(notes).filter(([id]) => names.has(id)));
-    if (!updates.length && panel.hadRelationshipEntries) { report('没有可写入的关系方向'); return undefined; }
-    return { version: 1, updates, stateNotes };
 }

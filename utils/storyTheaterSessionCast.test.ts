@@ -22,18 +22,19 @@ vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
 
-it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 + 5 = 10，关系损坏也保留状态', async () => {
+it.each([true, false])('真实=%s：统一上下文、独立解析、单次计算与在场 DI 回落', async isReal => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
-    const actors = [{ id: 'independent-a', name: '狛治', avatar: '', systemPrompt: '人物卡' },
-        { id: 'independent-b', name: '香奈乎', avatar: '', systemPrompt: '人物卡' }] as CharacterProfile[];
+    const actors = [{ id: `independent-a-${isReal}`, name: '狛治', avatar: '', systemPrompt: '人物卡' },
+        { id: `independent-b-${isReal}`, name: '香奈乎', avatar: '', systemPrompt: '人物卡' }] as CharacterProfile[];
     Object.assign(mocks.state, { characters: actors, userProfile: { name: '本人' }, theme: {},
         apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' }, memoryPalaceConfig: {}, addToast: mocks.toast });
     const preset = createBlankStoryPreset('独立解析');
     preset.document.prompts.push({ id: STORY_RELATIONSHIP_PROMPT_ID, name: '关系', enabled: true, role: 'system', content: 'FL/RI/DI' });
-    const entry = { ...createStoryTheaterDraft(), id: 'independent-session', characterIds: actors.map(actor => actor.id),
-        writesToCharacterMemory: true, carryCharacterMemory: true, archiveMode: 'manual' as const, castLimits: { minGroups: 1, maxGroups: 1 } };
+    const entry = { ...createStoryTheaterDraft(), id: `independent-session-${isReal}`, characterIds: actors.map(actor => actor.id),
+        writesToCharacterMemory: isReal, carryCharacterMemory: true, archiveMode: 'manual' as const, castLimits: { minGroups: 1, maxGroups: 1 },
+        archives: [{ id: 'old-box', strategy: 'summary' as const, summary: '早年的承诺保存在事件盒。', fromMessageId: 0, toMessageId: 0, messageCount: 1, createdAt: 1 }] };
     const relation = (value: object) => '<relationship_panel>' + JSON.stringify({ relationships: [{
         fromId: actors[0].id, toId: actors[1].id, ...value,
     }] }) + '</relationship_panel>';
@@ -44,13 +45,21 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
     } }] }));
     const cast = actors.map(actor => actor.id);
     const fetch = vi.fn<typeof globalThis.fetch>()
-        .mockResolvedValueOnce(response(relation({ axes: { FL: { score: 5, ...evidence } } }), cast))
+        .mockResolvedValueOnce(response(relation({ axes: { FL: { score: 5, ...evidence },
+            RI: { score: 3, trigger: '一句轻声道谢', evidence: '我第一次有些想和她约会' },
+            DI: { score: 20, trigger: '不解的印记', evidence: '我反复盯着信封，忘了手头的事' } } }), cast))
         .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content:
             '<story_text>我知道她愿意守约。</story_text><turn_cast>["未闭合的名单"]' +
             relation({ identity: '可信的朋友', cognition: '我知道她愿意守约', ...evidence }),
         } }] })))
         .mockResolvedValueOnce(response(relation({ axes: { FL: { delta: 5, ...evidence } } }), cast))
-        .mockResolvedValueOnce(response('<relationship_panel>{bad', cast));
+        .mockResolvedValueOnce(response('<relationship_panel>{bad', cast))
+        .mockResolvedValueOnce(response('', [actors[0].id]))
+        .mockResolvedValueOnce(response('', cast))
+        .mockResolvedValueOnce(response(relation({ axes: { DI: { phase: 'active', ...evidence } } }), cast))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content:
+            '<story_text>两人照常等车。</story_text><turn_cast>' + JSON.stringify(cast) + '</turn_cast>',
+        } }] })));
     vi.stubGlobal('fetch', fetch);
     const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
     const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
@@ -63,34 +72,63 @@ it('真实会话一次请求分别解析名单和关系，名单损坏后 FL 5 +
         await act(async () => container.querySelector<HTMLButtonElement>('button.story-send-button')!.click());
         await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(count); expect(container.querySelector('button.story-send-button .animate-spin')).toBeNull(); });
     };
-    const current = async () => Object.values((await DB.getRealRelationshipGraph()).directions).find(row => row.fromId === actors[0].id && row.toId === actors[1].id)!;
+    const storedState = async () => isReal ? Object.values((await DB.getRealRelationshipGraph()).directions)
+        : relationshipRules.getStoryRelationshipBaseline((await DB.getStoryRelationshipHistory(entry)).messages, actors).relationships;
+    const current = async () => (await storedState()).find(row => row.fromId === actors[0].id && row.toId === actors[1].id)!;
     const parse = vi.spyOn(relationshipRules, 'parseStoryRelationshipContent');
-    const calculate = vi.spyOn(relationshipRules, 'calculateStoryRelationshipAxis');
+    const calculate = vi.spyOn(relationshipRules, 'applyStoryRelationshipUpdate');
     try {
+        const render = (story: StoryTheaterEntry) => act(async () => root.render(createElement(StoryTheaterSession,
+            { entry: story, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {} })));
         await DB.saveStoryTheater(entry);
-        await act(async () => root.render(createElement(StoryTheaterSession, { entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {} })));
-        await send(1); expect((await current()).axes.FL?.score).toBe(5);
-        await send(2); expect((await current()).axes.FL?.score).toBe(5); expect((await current()).identity).toBe('可信的朋友');
+        await render(entry);
+        await send(1); expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20, phase: 'active', strength: 'mild' } });
+        await send(2); expect((await current()).axes.DI?.score).toBe(20); expect((await current()).identity).toBe('可信的朋友');
         const second = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(second.metadata?.theaterCastStatus).toBe('invalid'); expect(second.metadata?.theaterCastIds).toEqual([]);
         parse.mockClear(); calculate.mockClear();
-        await send(3); expect((await current()).axes.FL?.score).toBe(10);
+        await send(3);
         expect(parse).toHaveBeenCalledTimes(1);
-        expect(calculate).toHaveBeenCalledTimes(1);
+        if (isReal) expect(calculate).toHaveBeenCalledTimes(1);
+        expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 15 } });
         const third = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(third.metadata?.theaterPrivateAxes).toEqual({ [actors[0].id]: '我整理自己的信件' });
-        expect(third.metadata?.theaterMirrorIds[actors[0].id]).toBeGreaterThan(0);
+        if (isReal) expect(third.metadata?.theaterMirrorIds[actors[0].id]).toBeGreaterThan(0);
+        expect(third.metadata[isReal ? 'theaterRealRelationshipEvent' : 'theaterStoryRelationshipEvent'].updates[0].decayDI).toBe(true);
         expect(third.content).toContain('<score>10</score><delta>5</delta>');
-        await send(4); expect((await current()).axes.FL?.score).toBe(10);
+        await send(4); expect((await current()).axes.DI?.score).toBe(15);
         const fourth = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(fourth.metadata.theaterRelationshipIssue).toBe('三轴关系面板未闭合');
         expect(mocks.toast).toHaveBeenCalledWith('关系记录：三轴关系面板未闭合', 'error');
         expect(container.textContent).toContain('关系记录：三轴关系面板未闭合');
         const payload = JSON.parse(String(fetch.mock.calls[2][1]?.body));
-        const guide = payload.messages.find((message: any) => message.content.includes('方向基线：')).content;
+        const guides = payload.messages.filter((message: any) => message.content.includes('方向基线：'));
+        expect(guides).toHaveLength(1);
+        const guide = guides[0].content;
+        expect(guide).not.toContain('忘了手头的事');
+        expect(guide).not.toContain('eventDelta');
+        expect(payload.messages.some((message: any) => message.role === 'assistant' && message.content.includes('我接过她归还的旧信') && !message.content.includes('affinity_panel'))).toBe(true);
+        expect(payload.messages.some((message: any) => message.role === 'system' && message.content.includes('早年的承诺保存在事件盒。'))).toBe(true);
         const baseline = JSON.parse(guide.slice(guide.lastIndexOf('方向基线：') + '方向基线：'.length));
-        expect(baseline.relationships.find((row: any) => row.fromId === actors[0].id).axes.FL.score).toBe(5);
+        expect(baseline.relationships.find((row: any) => row.fromId === actors[0].id).axes)
+            .toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
+        await send(5); expect((await current()).axes.DI?.score).toBe(15);
+        await send(6); expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 10 } });
+        await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!.click());
+        await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(15); });
+        // The replaced floor no longer subtracts five, and the later free turn has its own confirmed participation.
+        const free = { ...entry, castModeEnabled: false };
+        await DB.saveStoryTheater(free);
+        await render(free);
+        await send(8);
+        const latest = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
+        expect(latest.metadata.theaterCastIds).toBeUndefined();
+        expect((await current()).axes.DI?.score).toBe(10);
+        // Deleting the earlier FL + natural-decay event replays the later free turn from the surviving score.
+        await act(async () => DB.deleteMessage(third.id));
+        expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 15 } });
         expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[1].id, actors[0].id])]).toBeUndefined();
+        if (!isReal) expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[0].id, actors[1].id])]).toBeUndefined();
     } finally {
         await act(async () => root.unmount()); container.remove();
         if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll); else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');

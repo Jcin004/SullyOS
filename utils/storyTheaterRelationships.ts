@@ -1,4 +1,5 @@
 import type { Message, StoryTheaterPresetDocument } from '../types';
+import { storyCandidateResolver } from './storyTheaterCast';
 
 export const STORY_RELATIONSHIP_PROMPT_ID = 'nmj-v65-affinity-control';
 export const STORY_RELATIONSHIP_AXES = ['FL', 'RI', 'DI'] as const;
@@ -14,7 +15,7 @@ interface Actor {
 
 interface AxisValue {
     score: number;
-    /** Parser-only: delta-only input must not become an invented first FL score. */
+    /** A delta-only report cannot initialize an axis. */
     hasScore?: boolean;
     delta?: number;
     trigger?: string;
@@ -58,6 +59,24 @@ export interface StoryRelationshipPanel {
     hadRelationshipEntries?: boolean;
 }
 
+export interface StoryRelationshipUpdate {
+    direction: Relationship;
+    mode: 'proposal' | 'snapshot' | 'canonical' | 'manual';
+    clearAxes?: Axis[];
+    decayDI?: true;
+}
+
+export interface StoryRelationshipPayload {
+    version: 1;
+    updates: StoryRelationshipUpdate[];
+    stateNotes: NonNullable<StoryRelationshipPanel['state_notes']>;
+}
+
+export interface StoryRelationshipParticipation {
+    cast: ReadonlySet<string>;
+    interactions: readonly (readonly string[])[];
+}
+
 export const LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT = "主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。\nFL 关系联结：信任、默契、熟悉、共同经历。首次记录依据双方各自的角色卡、既有关系和共同经历确定初值。后续依据陪伴、理解、合作、失信、排斥等具体相处事实缓慢变化。\nRI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。\nDI 失序扰动：具体事件让情绪、注意力或行动节奏偏移，如冒犯、挑衅、胜负、尴尬、惊讶或社交压力。普通好奇不计入。事件仍造成扰动时记 active，结束当轮记 ended；没有扰动事件则省略 phase 和 strength，由程序回落。\n结合双方各自的人格七维、认知和亲历事实判断吸引来源是否影响注意和具体轴：\n身体/审美（外貌、声音、气味、体态、触碰与距离）；能力/人格（才华、专注、判断力、价值观与底线）；被看见/安全（理解、记住细节、接住情绪、尊重边界与可靠）；\n互惠偏爱（被选择、主动、好感暗示与熟悉曝光）；情绪/经历（快乐、日常陪伴、共患难、遗憾与未完成）；反差/未知/社会（神秘、探索、他人认可、竞争与投射）；成长激励（想成为更好的自己、想配得上或并肩）。\n从每个方向的出发人物独立判断。人物只拥有自己能够知道的故事内事实。面板供读者回看。三轴各为 0–100，分别更新，同一事件影响多轴时逐轴写触发事件与证据。\n沿用主要角色自身的 state_note，记录其内在拉扯、选择代价或已形成的新理解。只在有新事实时更新。各方向可用 relation_note 记录当前的关系质地。";
 
 export const LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT = [
@@ -79,13 +98,36 @@ export const LEGACY_REAL_STORY_RELATIONSHIP_PROMPT = LEGACY_PAIR_STORY_RELATIONS
     '真实关系的称谓、认知与三轴独立更新。没有变化的轴省略并维持原值；DI 只有明确记录本轴事件时才计算，包括 ended 回落。数值 0 已初始化，缺少该轴才是尚未初始化。',
 ].join('\n');
 
-export const STORY_RELATIONSHIP_PROMPT = LEGACY_REAL_STORY_RELATIONSHIP_PROMPT
+export const PREVIOUS_STORY_RELATIONSHIP_PROMPT = LEGACY_REAL_STORY_RELATIONSHIP_PROMPT
     .replace('没有扰动事件则省略 phase 和 strength，由程序回落。', '虚构剧场没有扰动事件时由程序按既有规则回落。')
     + '\n' + [
         '剧情结束后输出一份 <affinity_panel mode="three_axes">，场外省略。按已给的人物 ID 更新有新事实的方向与轴。虚构出演模式的双方也须列入出演名单。',
         '每轴首次评估填 score，已有值填 delta，附 trigger（触发事件）和 evidence（具体事实）。没有变化时省略该轴。DI 可用 active / ended 和 mild / moderate / strong。',
         '<affinity_panel mode="three_axes"><affinity_person><from_id>起点ID</from_id><to_id>终点ID</to_id><FL><delta>5</delta><trigger>触发事件</trigger><evidence>具体事实</evidence></FL></affinity_person></affinity_panel>',
     ].join('\n');
+
+export const STORY_RELATIONSHIP_PROMPT = [
+    "从本轮正篇的亲历或明确获知的事实评估人物关系。用候选人物 ID 标识起点和终点，各方向独立。只同场、被提及、交流倾向和非正篇小剧场不能作为加减分的证据。三个轴独立，范围均为 0–100。",
+    "FL 关系联结（Friendship Level）：衡量信任、熟悉、默契和陪伴。首次参考角色卡、既有关系与共同经历。理解、陪伴、合作、可靠、安心和主动支持可增加，失信、反感、排斥、失落、冲突和具体经历造成的疏离可减少，通常缓慢变化。",
+    "RI 恋爱性心动（Romance Index）：原生审美受触动、对外貌或声音等产生恋爱性注意、回味某个瞬间、想靠近或想念、渴望亲密、恋爱性排他和亲密占有，都可能增加。心动消退、吸引减弱、自我消化、重新认识、反感或实际冷却可减少。时间和距离只有造成可辨认的心动变化才扣分。轻微心动也要记录，区分恋爱性排他与竞争性占有。RI 不自动衰减。",
+    "DI 失序扰动（Disorder Index）：衡量对方使自己的注意力、情绪或行动节奏发生即时偏移。额外观察、追问、反复琢磨的好奇或探究，被气、冒犯、受挫、挑衅、斗嘴、胜负欲、竞争性占有，尴尬、惊讶、社交压力、领地与面子被触动，审美刺激、亲密接触导致失措，以及被打断注意或耽误原定行动，均可触发。按实际注意偏移、强度、持续和行为后果判断 mild / moderate / strong。扰动仍持续（即使没有新增量）用 active，已结束用 ended。没有持续扰动时省略 DI，程序只对确认参与本轮相关情节的人物方向执行回落。",
+    "结合人格、经历、认知和情境，从七类来源独立判断 FL、RI、DI 或注意倾向：",
+    "1. 身体/审美：外貌、声音、气味、体态、触碰、距离、近距离紧张唤醒。",
+    "2. 能力／人格：才华、专注、判断力、价值观、原则、底线。",
+    "3. 被看见／安全：理解、记住细节、接住情绪、尊重边界、可靠、保护、可放松。",
+    "4. 互惠／偏爱：被选择、被主动、被偏爱、好感暗示、熟悉曝光。",
+    "5. 情绪／经历：快乐、松弛、被逗笑、分享日常、陪伴、共患难、遗憾、未完成。",
+    "6. 反差／未知／社会：反差、神秘、探索、他人认可、稀缺竞争、理想化投射。",
+    "7. 成长激励：被对方人格或存在影响，想成为更好的自己、想配得上、想并肩。",
+    "剧情结束后输出一份 <affinity_panel mode=\"three_axes\">。仅输出变化，一事影响多轴时各自写 trigger 和 evidence。每轴首次填 score，已有值填 delta，0 分已初始化。可用很小的分值表示轻微变化。场外对话省略关系报告。",
+    "以下是四个方向记录示例，替换为本轮真实发生的事实和候选 ID：",
+    "<affinity_person><from_id>A</from_id><to_id>B</to_id><FL><delta>2</delta><trigger>守约</trigger><evidence>她按约带来了答应借我的书</evidence></FL></affinity_person>",
+    "<affinity_person><from_id>A</from_id><to_id>B</to_id><RI><score>3</score><trigger>初次心动</trigger><evidence>听她轻声念书名时，我第一次想以恋人的身份靠近她</evidence></RI></affinity_person>",
+    "<affinity_person><from_id>A</from_id><to_id>B</to_id><DI><delta>6</delta><phase>active</phase><strength>mild</strength><trigger>好奇</trigger><evidence>我反复琢磨他为什么认识这本书，漏听了报站</evidence></DI></affinity_person>",
+    "<affinity_person><from_id>A</from_id><to_id>B</to_id><RI><delta>2</delta><trigger>近距离说话</trigger><evidence>我想以后还和她这样亲近</evidence></RI><DI><delta>4</delta><phase>active</phase><strength>mild</strength><trigger>突然靠近</trigger><evidence>我一时慌乱，把原本要问的话忘了</evidence></DI></affinity_person>",
+    "关系认同 relation_identity、第一视角认知 relation_cognition、稳定关系质地 relation_note、本轮事实 relation_fragment 可独立更新。用 relation_trigger 和 relation_evidence 给方向事实作证；轴的事实也可作为关系质地和片段的依据。自我记录用 <self_record><character_id>人物ID</character_id><state_note>亲历后的新理解</state_note></self_record>。认同、认知和自我记录为人物私有，其他人物不能知道未表达的内心。",
+    "关系与 <turn_cast> 分别报告。自由续写也可在面板外用 <turn_cast> 填写实际交集清楚的候选人物 ID 数组，供程序判定安静楼层的 DI 回落。",
+].join('\n');
 
 const panelPattern = /<relationship_panel\b[^>]*>([\s\S]*?)<\/relationship_panel\s*>/gi;
 
@@ -139,11 +181,11 @@ function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRela
             const source = rawFields(person, axis)[0] || '';
             const score = fieldInt(source, 'score');
             const delta = fieldInt(source, 'delta');
-            if (score === undefined && delta === undefined) {
+            const phase = field(source, 'phase');
+            if (score === undefined && delta === undefined && !(axis === 'DI' && (phase === 'active' || phase === 'ended'))) {
                 if (source) report?.(axis + ' 缺少有效的 score 或 delta');
                 continue;
             }
-            const phase = field(source, 'phase');
             axes[axis] = {
                 score: clamp(score ?? 0), delta,
                 hasScore: score !== undefined,
@@ -155,7 +197,7 @@ function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRela
         }
         return [{
             fromId, toId, fromName: field(person, 'from_name') || fromId, toName: field(person, 'to_name') || toId,
-            axes, relation_note: shortText(field(person, 'relation_note')),
+            axes, relation_note: rawFields(person, 'relation_note').length ? shortText(field(person, 'relation_note')) : undefined,
             identity: rawFields(person, 'relation_identity').length ? field(person, 'relation_identity').slice(0, 200) : undefined,
             cognition: rawFields(person, 'relation_cognition').length ? field(person, 'relation_cognition').slice(0, 2000) : undefined,
             trigger: shortText(field(person, 'relation_trigger')), evidence: shortText(field(person, 'relation_evidence')),
@@ -233,7 +275,7 @@ export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json'
                 const score = integer(item?.score);
                 const delta = integer(item?.delta);
                 if (!item) continue;
-                if (score === undefined && delta === undefined) {
+                if (score === undefined && delta === undefined && !(axis === 'DI' && (item.phase === 'active' || item.phase === 'ended'))) {
                     report?.(axis + ' 缺少有效的 score 或 delta');
                     continue;
                 }
@@ -254,7 +296,7 @@ export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json'
                 fromId: row.fromId, toId: row.toId,
                 fromName: shortText(row.fromName) || row.fromId,
                 toName: shortText(row.toName) || row.toId,
-                axes, relation_note: shortText(row.relation_note),
+                axes, relation_note: typeof row.relation_note === 'string' ? shortText(row.relation_note) : undefined,
                 identity: typeof row.identity === 'string' ? row.identity.trim().slice(0, 200) : undefined,
                 cognition: typeof row.cognition === 'string' ? row.cognition.trim().slice(0, 2000) : undefined,
                 trigger: shortText(row.trigger), evidence: shortText(row.evidence),
@@ -342,6 +384,18 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
     const state_notes: NonNullable<StoryRelationshipPanel['state_notes']> = {};
     for (const message of [...messages].sort((a, b) => a.id - b.id)) {
         if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
+        const saved = readStoryRelationshipPayload(message.metadata?.theaterStoryRelationshipEvent)
+            ?? readStoryRelationshipPayload(message.metadata?.theaterRealRelationshipEvent);
+        if (saved) {
+            for (const [id, note] of Object.entries(saved.stateNotes)) if (actors.some(actor => actor.id === id)) state_notes[id] = note;
+            for (const update of saved.updates) {
+                const { fromId, toId } = update.direction;
+                const key = pairKey(fromId, toId);
+                const row = byPair.get(key);
+                if (row) byPair.set(key, applyStoryRelationshipUpdate(update, row).next);
+            }
+            continue;
+        }
         const panel = parseStoryRelationshipContent(message.content);
         const cast = Array.isArray(message.metadata?.theaterCastIds) ? new Set<string>(message.metadata.theaterCastIds) : undefined;
         const allowed = (id: string) => actors.some(actor => actor.id === id) && (!cast || cast.has(id));
@@ -355,6 +409,8 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
                 const row = byPair.get(pairKey(previous.fromId, previous.toId));
                 if (!row || !allowed(row.fromId) || !allowed(row.toId)) continue;
                 if (previous.relation_note) row.relation_note = previous.relation_note;
+                if (previous.identity !== undefined) row.identity = previous.identity;
+                if (previous.cognition !== undefined) row.cognition = previous.cognition;
                 for (const axis of STORY_RELATIONSHIP_AXES) {
                     const item = previous.axes[axis];
                     if (!item) continue;
@@ -372,7 +428,8 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
             }
         }
     }
-    return { primaryId: '', primaryName: '', actors: actors.map(({ id, name }) => ({ id, name })), state_notes, relationships };
+    return { primaryId: '', primaryName: '', actors: actors.map(({ id, name }) => ({ id, name })), state_notes,
+        relationships: [...byPair.values()] };
 }
 
 export function restrictStoryRelationshipsToCast(baseline: StoryRelationshipPanel | undefined, actors: ReadonlySet<string>): StoryRelationshipPanel | undefined {
@@ -387,23 +444,27 @@ export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, s
     const { actors, state_notes, relationships } = baseline;
     return '关系历史归属：' + scope + '\n方向基线：' + encodePanel({ actors, state_notes,
         relationships: relationships.filter(row => Object.keys(row.axes).length || row.identity !== undefined
-            || row.cognition !== undefined || row.relation_note) });
+            || row.cognition !== undefined || row.relation_note).map(row => ({
+            fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName,
+            identity: row.identity, cognition: row.cognition, relation_note: row.relation_note,
+            axes: Object.fromEntries(Object.entries(row.axes).map(([axis, value]) => [axis, axis === 'DI'
+                ? { score: value.score, strength: value.strength, phase: value.phase } : { score: value.score }])),
+        })) });
 }
 
 export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, proposed?: AxisValue): AxisValue | undefined {
     const score = integer(proposed?.score);
-    if (!previous && score === undefined) return undefined;
     const prior = previous?.score ?? 0;
     const trigger = shortText(proposed?.trigger);
     const evidence = shortText(proposed?.evidence);
-    const strength = proposed?.strength;
     const supported = Boolean(trigger && evidence);
-    if (axis === 'FL' && !previous && (!supported || proposed?.hasScore === false)) return undefined;
+    if (!previous && (score === undefined || !supported || proposed?.hasScore === false)) return undefined;
     const change = previous ? integer(proposed?.delta) ?? 0 : score ?? 0;
     if (axis === 'DI') {
-        const phase = proposed?.phase;
-        if (supported && (phase === 'active' || phase === 'ended')
-            && (strength === 'mild' || strength === 'moderate' || strength === 'strong')) {
+        if (proposed) {
+            if (!supported) return undefined;
+            const phase = proposed.phase ?? 'active';
+            const strength = proposed.strength ?? previous?.strength ?? 'mild';
             const peak = clamp(prior + change);
             const next = phase === 'active' ? peak : decayDI(peak, strength);
             return { score: next, delta: next - prior, trigger, evidence, strength, phase };
@@ -422,48 +483,140 @@ export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue |
 export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, item: AxisValue, historyVersion?: 2): AxisValue | undefined {
     if (historyVersion !== 2 || item.initial === true) return { score: item.score, strength: item.strength };
     if (!previous) return undefined;
-    return axis === 'DI' ? calculateStoryRelationshipAxis(axis, previous, { ...item, delta: item.eventDelta })
+    // Old canonical DI without a phase represented a passive decay, including older invalid reports.
+    return axis === 'DI' ? calculateStoryRelationshipAxis(axis, previous,
+        item.phase && item.strength && item.trigger && item.evidence ? { ...item, delta: item.eventDelta } : undefined)
         : { score: clamp(previous.score + (item.trigger && item.evidence ? item.eventDelta ?? item.delta ?? 0 : 0)), strength: item.strength };
 }
 
-/** Store a canonical panel with the reply, so reroll and archive use the same immutable turn boundary. */
-export function reconcileStoryRelationships(content: string, baseline?: StoryRelationshipPanel, report?: RelationshipIssue): string {
-    const parsed = parseStoryRelationshipContent(content, report);
-    const prose = stripStoryRelationshipPanels(content);
-    if (!baseline) return prose;
-    const proposal = parsed;
-    if (!proposal) return prose;
-    const changes = new Map(proposal.relationships
-        .filter(row => typeof row?.fromId === 'string' && typeof row.toId === 'string')
-        .map(row => [pairKey(row.fromId, row.toId), row]));
-    const relationships = baseline.relationships.flatMap(row => {
-        const proposed = changes.get(pairKey(row.fromId, row.toId));
-        if (!proposed || !STORY_RELATIONSHIP_AXES.some(axis => proposed.axes[axis]?.trigger && proposed.axes[axis]?.evidence)) return [];
+/** Validate one already-parsed report and record the participation-based DI decision. */
+export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | undefined, actors: readonly Actor[],
+    baseline: StoryRelationshipPanel, report: RelationshipIssue, participation?: StoryRelationshipParticipation): StoryRelationshipPayload | undefined {
+    const names = new Map(actors.map(actor => [actor.id, actor.name]));
+    const resolve = storyCandidateResolver(actors);
+    const previous = new Map(baseline.relationships.map(row => [pairKey(row.fromId, row.toId), row]));
+    const updates = new Map<string, StoryRelationshipUpdate>();
+    const seen = new Set<string>();
+    const explicitDI = new Set<string>();
+    for (const row of panel?.relationships ?? []) {
+        let fromId: string, toId: string;
+        try { fromId = resolve(row.fromId); toId = resolve(row.toId); }
+        catch { report('关系方向包含未知或无法唯一匹配的角色'); continue; }
+        if (fromId === toId) { report('关系方向的起点和终点相同'); continue; }
+        const key = pairKey(fromId, toId);
+        if (seen.has(key)) { report('面板重复报告了同一人物方向'); return; }
+        seen.add(key);
+        if (row.axes.DI) explicitDI.add(key);
         const axes: Relationship['axes'] = {};
         for (const axis of STORY_RELATIONSHIP_AXES) {
-            const value = calculateStoryRelationshipAxis(axis, row.axes[axis], proposed?.axes?.[axis]);
-            if (value) {
-                const item = proposed.axes[axis];
-                const supported = Boolean(item?.trigger && item?.evidence);
-                axes[axis] = { ...value, initial: !row.axes[axis],
-                    eventDelta: supported && (axis !== 'DI' || value.phase)
-                        ? (row.axes[axis] ? item?.delta ?? 0 : item?.score ?? 0) : 0 };
-            }
+            const value = row.axes[axis];
+            if (!value) continue;
+            const label = names.get(fromId) + ' → ' + names.get(toId) + ' ' + axis;
+            if (!value.trigger || !value.evidence) { report(label + ' 缺少触发事件或证据'); continue; }
+            const prior = previous.get(key)?.axes[axis];
+            if (!prior && value.hasScore === false) report(label + ' 尚未初始化，需要首次评分');
+            if (prior && value.delta === undefined && axis !== 'DI') report(label + ' 缺少 delta，分数保持原值');
+            axes[axis] = value;
         }
-        const relation_fragments = Array.isArray(proposed.relation_fragments)
-            ? proposed.relation_fragments.map(shortText).filter(Boolean).slice(0, 3) : undefined;
-        return [{ ...row, axes, relation_note: shortText(proposed.relation_note), relation_fragments }];
-    }).filter(row => Object.keys(row.axes).length || row.relation_note || row.relation_fragments?.length);
-    const allowed = new Map<string, string>();
-    for (const actor of baseline.actors ?? []) allowed.set(actor.id, actor.name);
-    for (const row of baseline.relationships) { allowed.set(row.fromId, row.fromName); allowed.set(row.toId, row.toName); }
-    for (const [id, note] of Object.entries(baseline.state_notes ?? {})) allowed.set(id, note.name);
-    const proposedNotes = { ...proposal.state_notes };
-    if (proposal.primaryId && proposal.state_note) proposedNotes[proposal.primaryId] = { name: proposal.primaryName, note: proposal.state_note };
-    const state_notes = Object.fromEntries(Object.entries(proposedNotes).filter(([id, value]) => allowed.has(id) && value.note)
-        .map(([id, value]) => [id, { name: allowed.get(id)!, note: value.note }]));
-    if (!Object.keys(state_notes).length && relationships.length === 0) return prose;
-    return prose + '\n\n' + serializeStoryThreeAxisPanel({ primaryId: '', primaryName: '', historyVersion: 2, state_notes, relationships });
+        const privateEvidence = Boolean(row.trigger && row.evidence);
+        const axisEvidence = Object.keys(axes).length > 0;
+        const identity = privateEvidence ? row.identity : undefined;
+        const cognition = privateEvidence ? row.cognition : undefined;
+        const relation_note = privateEvidence || axisEvidence ? row.relation_note : undefined;
+        const relation_fragments = (privateEvidence || axisEvidence) && row.relation_fragments?.length ? row.relation_fragments : undefined;
+        if (!privateEvidence && (row.identity !== undefined || row.cognition !== undefined
+            || (!axisEvidence && (row.relation_note || row.relation_fragments?.length)))) {
+            report('关系文字缺少触发事件或证据');
+        }
+        if (!axisEvidence && identity === undefined && cognition === undefined && relation_note === undefined && !relation_fragments) continue;
+        updates.set(key, { mode: 'proposal', direction: {
+            fromId, toId, fromName: names.get(fromId)!, toName: names.get(toId)!, axes, identity, cognition,
+            ...(privateEvidence ? { trigger: row.trigger, evidence: row.evidence } : {}),
+            relation_note, relation_fragments,
+        } });
+    }
+
+    const notes = { ...panel?.state_notes };
+    if (panel?.primaryId && panel.state_note) notes[panel.primaryId] = { name: panel.primaryName, note: panel.state_note };
+    const stateNotes = Object.fromEntries(Object.entries(notes).flatMap(([id, value]) =>
+        names.has(id) && value.note ? [[id, { name: names.get(id)!, note: value.note }]] : []));
+    if (!updates.size && !Object.keys(stateNotes).length && panel?.hadRelationshipEntries) {
+        report('没有可写入的关系方向');
+        return;
+    }
+    if (participation) for (const [key, row] of previous) {
+        if (!row.axes.DI || explicitDI.has(key)) continue;
+        const { cast, interactions } = participation;
+        if (!cast.has(row.fromId) || !cast.has(row.toId)) continue;
+        const sameScene = cast.size === 2 || updates.has(key)
+            || interactions.some(group => group.includes(row.fromId) && group.includes(row.toId));
+        if (!sameScene) continue;
+        const update = updates.get(key) ?? { mode: 'proposal', direction: {
+            fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName, axes: {},
+        } };
+        updates.set(key, { ...update, decayDI: true });
+    }
+    if (!panel && !updates.size) return;
+    return { version: 1, updates: [...updates.values()], stateNotes };
+}
+
+export function readStoryRelationshipPayload(value: unknown): StoryRelationshipPayload | undefined {
+    const payload = value as StoryRelationshipPayload | undefined;
+    if (payload?.version === 1 && payload.stateNotes && Array.isArray(payload.updates) && payload.updates.every(update =>
+        update?.direction?.fromId && update.direction.toId && update.direction.axes
+        && ['proposal', 'snapshot', 'canonical'].includes(update.mode))) return payload;
+}
+
+/** Shared direction reducer for the two world scopes, ledger replay and the reader's panel. */
+export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, previous?: Relationship, render = false) {
+    const row = update.direction;
+    const next: Relationship = { ...previous, fromId: row.fromId, toId: row.toId,
+        fromName: row.fromName, toName: row.toName, axes: { ...previous?.axes } };
+    const displayed: Relationship['axes'] = {};
+    for (const axis of STORY_RELATIONSHIP_AXES) {
+        const value = row.axes[axis], prior = next.axes[axis];
+        if (update.clearAxes?.includes(axis)) { delete next.axes[axis]; continue; }
+        let after: AxisValue | undefined;
+        if (value) {
+            if (update.mode === 'canonical') after = replayStoryRelationshipAxis(axis, prior, value, 2);
+            else if (update.mode === 'proposal') after = calculateStoryRelationshipAxis(axis, prior, value);
+            else if (value.hasScore !== false) after = { ...value };
+            else if (prior && value.trigger && value.evidence) after = calculateStoryRelationshipAxis(axis, prior, value);
+        } else if (axis === 'DI' && update.decayDI && prior) {
+            after = calculateStoryRelationshipAxis(axis, prior);
+        }
+        if (!after) continue;
+        next.axes[axis] = after;
+        if (render && (value || after.score !== prior?.score)) displayed[axis] = { ...after, initial: !prior,
+            eventDelta: prior ? value?.eventDelta ?? value?.delta ?? 0 : value?.score };
+    }
+    for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note', 'relation_fragments'] as const) {
+        if (row[field] !== undefined) Object.assign(next, { [field]: row[field] });
+    }
+    return { next, display: render && (Object.keys(displayed).length || row.relation_note || row.relation_fragments?.length)
+        ? { ...row, axes: displayed } : undefined };
+}
+
+export function appendStoryRelationshipPanel(prose: string, relationships: Relationship[], state_notes: StoryRelationshipPayload['stateNotes']): string {
+    if (!relationships.length && !Object.keys(state_notes).length) return prose;
+    return prose + '\n\n' + serializeStoryThreeAxisPanel({ primaryId: '', primaryName: '', historyVersion: 2, relationships, state_notes });
+}
+
+/** Legacy string callers use the same parser and reducer. The session passes its validated event. */
+export function reconcileStoryRelationships(content: string, baseline?: StoryRelationshipPanel,
+    prepared?: { payload: StoryRelationshipPayload | undefined }): string {
+    const prose = prepared ? content : stripStoryRelationshipPanels(content);
+    if (!baseline) return prose;
+    const payload = prepared ? prepared.payload : buildStoryRelationshipPayload(parseStoryRelationshipContent(content),
+        baseline.actors ?? [], baseline, () => {});
+    if (!payload) return prose;
+    const previous = new Map(baseline.relationships.map(row => [pairKey(row.fromId, row.toId), row]));
+    const relationships = payload.updates.flatMap(update => {
+        const { fromId, toId } = update.direction;
+        const { display } = applyStoryRelationshipUpdate(update, previous.get(pairKey(fromId, toId)), true);
+        return display ? [display] : [];
+    });
+    return appendStoryRelationshipPanel(prose, relationships, payload.stateNotes);
 }
 
 export function formatStoryRelationshipPanel(panel: StoryRelationshipPanel): string {
@@ -502,7 +655,7 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
                     content = content
                         .replace(/；<u_affinity> 属于执笔灯号；/, '；')
                         .replace(/，最新 U→C 与 reason 又反馈了怎样的阅读体验；/, '；')
-                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。')
+                        .replace(/^6\. 关系侧表：.*(?:五根推子|五维).*$/gm, '6. 关系侧表：启用双向关系时，按三轴关系规则检查本轮关系报告。')
                         .replace(/^.*(?:理解|读取)执笔灯号.*$/gm, '').trimEnd();
                 }
                 if (prompt.id === 'nmj-v3-exit-check') {
@@ -513,7 +666,7 @@ export function getPreviousStoryRelationshipDocument(document: StoryTheaterPrese
                 }
                 if (prompt.id === 'nmj-v6-gemini-format-lock') {
                     content = content.replace(/启用(?:多角色双向关系温度|双向好感)时，<affinity_panel> 必须完整且只出现一次；/g,
-                        '本轮要求输出关系面板时，<relationship_panel> 必须完整且只出现一次；');
+                        '本轮要求输出关系面板时，<affinity_panel mode="three_axes"> 必须完整且只出现一次；');
                 }
                 if (['nmj-v3-scene-header', 'nmj-v3-exit-check'].includes(prompt.id)) {
                     content = content.replace(/多角色双向关系温度|双向好感|双向温度/g, '双向关系三轴');
