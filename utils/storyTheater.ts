@@ -815,12 +815,25 @@ export const getStoryPresetPromptGroups = (document: StoryTheaterPresetDocument)
     return groups.sort((a, b) => a.startIndex - b.startIndex);
 };
 
-export const addStoryPresetGroup = (document: StoryTheaterPresetDocument, name: string): StoryTheaterPresetDocument => {
-    const id = makeStoryTheaterId();
-    return { ...document, prompts: [...document.prompts, ...(['start', 'end'] as const).map(edge => ({
-        id: makeStoryTheaterId(), name: name.trim() || '自定义分组', enabled: false, role: 'system' as const, content: '',
-        section: { id, name: name.trim() || '自定义分组', edge },
-    }))] };
+export const makeStoryPresetGroupBoundaries = (
+    name: string, makeId = makeStoryTheaterId,
+): [StoryTheaterPresetPrompt, StoryTheaterPresetPrompt] => {
+    const sectionId = makeId();
+    const label = name.trim() || '自定义分组';
+    const boundary = (edge: 'start' | 'end'): StoryTheaterPresetPrompt => ({
+        id: makeId(), name: label, enabled: false, role: 'system', content: '',
+        section: { id: sectionId, name: label, edge },
+    });
+    return [boundary('start'), boundary('end')];
+};
+
+export const addStoryPresetGroup = (document: StoryTheaterPresetDocument, name: string): StoryTheaterPresetDocument => ({
+    ...document, prompts: [...document.prompts, ...makeStoryPresetGroupBoundaries(name)],
+});
+
+export const storyPresetGroupInsertIndex = (document: StoryTheaterPresetDocument, group: StoryPresetPromptGroup): number => {
+    const end = document.prompts[group.endIndex];
+    return group.key === 'exit' || (end && isStoryPresetSectionMarker(end)) ? group.endIndex : group.endIndex + 1;
 };
 
 export const renameStoryPresetGroup = (document: StoryTheaterPresetDocument, sectionId: string, name: string): StoryTheaterPresetDocument => ({
@@ -841,8 +854,7 @@ export const moveStoryPresetPromptToGroup = (document: StoryTheaterPresetDocumen
     const next = { ...document, prompts: document.prompts.filter(item => item.id !== promptId) };
     const destination = getStoryPresetPromptGroups(next).find(group => group.key === groupKey);
     if (!destination) return document;
-    const last = next.prompts[destination.endIndex];
-    next.prompts.splice(isStoryPresetSectionMarker(last) ? destination.endIndex : destination.endIndex + 1, 0, prompt);
+    next.prompts.splice(storyPresetGroupInsertIndex(next, destination), 0, prompt);
     return next;
 };
 

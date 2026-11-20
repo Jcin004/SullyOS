@@ -19,6 +19,7 @@ import {
 } from '../../../utils/storyTheater';
 import StoryMaskBox from './StoryMaskBox';
 import StoryPresetMaker from './StoryPresetMaker';
+import type { StoryPresetClipboard } from '../../../utils/storyPresetClipboard';
 import StoryPresetConverter from './StoryPresetConverter';
 import { archiveStoryManually } from '../../../utils/storyTheaterArchive';
 import StoryTheaterEditor from './StoryTheaterEditor';
@@ -48,6 +49,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
     const [masks, setMasks] = useState<StoryTheaterMask[]>([]);
     const [activeEntry, setActiveEntry] = useState<StoryTheaterEntry | null>(null);
     const [editingPreset, setEditingPreset] = useState<StoryTheaterPreset | null>(null);
+    const [presetClipboard, setPresetClipboard] = useState<StoryPresetClipboard | null>(null);
     const [maskLocked, setMaskLocked] = useState(false);
     const [deletingEntry, setDeletingEntry] = useState<StoryTheaterEntry | null>(null);
     const [deletingStory, setDeletingStory] = useState(false);
@@ -221,6 +223,8 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
 
     if (view === 'preset' && editingPreset) return <StoryPresetMaker key={editingPreset.id}
         preset={editingPreset}
+        clipboard={presetClipboard}
+        onCopy={setPresetClipboard}
         onBack={() => setView(activeEntry ? 'editor' : 'list')}
         onSave={savePreset}
         onOpenCopy={copyPreset}
