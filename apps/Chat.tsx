@@ -31,6 +31,8 @@ import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/sche
 import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
 import { resolveCharTimeZone } from '../utils/timezone';
+import { getLocalDateKey } from '../utils/localDate';
+import { formatMemoryArchiveTime, getMemoryMessageClock } from '../utils/dailyMemoryDate';
 import { generateSlotTheater } from '../utils/theaterGenerator';
 import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { buildSARMemoryBoundaryInstruction, formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
@@ -1434,10 +1436,6 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
         // 基线只增不减：翻旧历史让末尾 ID 变小时不下调，返回底部也不会重复触发。
         sync.maxId = sync.maxId == null ? lastId : Math.max(sync.maxId, lastId);
     }, [messages, activeCharacterId, osTheme.chatChromeCustomCss, osTheme.chatSound, char?.chromeCustomCss, char?.chatSound]);
-
-    const formatTime = (ts: number) => {
-        return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    };
 
     // --- Actions ---
 
@@ -2858,12 +2856,12 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
             return;
         }
         const allMessages = await DB.getMessagesByCharId(char.id, true);
+        const timeZone = resolveCharTimeZone(char);
         const msgsByDate: Record<string, Message[]> = {};
         allMessages
         .filter(m => !char.hideBeforeMessageId || m.id >= char.hideBeforeMessageId)
         .forEach(m => {
-            const d = new Date(m.timestamp);
-            const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const dateStr = getLocalDateKey(getMemoryMessageClock(m, timeZone));
             if (!msgsByDate[dateStr]) msgsByDate[dateStr] = [];
             msgsByDate[dateStr].push(m);
         });
@@ -2891,7 +2889,8 @@ const Chat: React.FC<{homePhone?:HomePhoneChatProps}> = ({homePhone}) => {
                 setArchiveProgress(`归档中 ${dateStr} (${idx + 1}/${datesToProcess.length})`);
                 const dayMsgs = msgsByDate[dateStr];
                 const rawLog = dayMsgs
-                    .map(m => formatMessageWithTime(m, char.name, userProfile.name, formatTime))
+                    .map(m => formatMessageWithTime(m, char.name, userProfile.name,
+                        () => formatMemoryArchiveTime(getMemoryMessageClock(m, timeZone))))
                     .join('\n');
                 
                 let prompt = template;

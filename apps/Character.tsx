@@ -35,7 +35,9 @@ import { isElevenLabsV4Model } from '../utils/elevenLabsModels';
 import { normalizeUserImpression } from '../utils/impression';
 import { parseGeneratedImpression } from '../utils/impressionGeneration';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
-import { COMMON_TIMEZONES } from '../utils/timezone';
+import { COMMON_TIMEZONES, resolveCharTimeZone } from '../utils/timezone';
+import { getLocalDateKey } from '../utils/localDate';
+import { formatMemoryArchiveTime, getMemoryMessageClock } from '../utils/dailyMemoryDate';
 import {
     clearTimeAwarenessOverride,
     disableCharacterAmsg2Schedule,
@@ -706,19 +708,16 @@ const Character: React.FC = () => {
 
       if (!apiConfig.apiKey || !formData) { addToast('请先配置 API Key', 'error'); return; }
       const targetId = formData.id;
+      const timeZone = resolveCharTimeZone(formData);
       try {
           const allMsgs = await DB.getMessagesByCharId(targetId, true);
           // 忽略 hideBeforeMessageId —— 这是强制重总结的关键
-          const dayMsgs = allMsgs.filter(m => {
-              const d = new Date(m.timestamp);
-              const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-              return key === dateStr;
-          });
+          const dayMsgs = allMsgs.filter(m => getLocalDateKey(getMemoryMessageClock(m, timeZone)) === dateStr);
           if (dayMsgs.length === 0) { addToast(`${dateStr} 当天无消息可总结`, 'info'); return; }
 
-          const timeFmt = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
           const rawLog = dayMsgs
-              .map(m => formatMessageWithTime(m, formData.name, userProfile.name, timeFmt))
+              .map(m => formatMessageWithTime(m, formData.name, userProfile.name,
+                  () => formatMemoryArchiveTime(getMemoryMessageClock(m, timeZone))))
               .join('\n');
 
           // 模板优先级：override（弹窗现场选）→ 当前 state → 默认 preset
@@ -874,14 +873,11 @@ const Character: React.FC = () => {
         try {
             const msgs = await DB.getMessagesByCharId(targetId, true);
             const validMsgs = msgs.filter(m => !formData.hideBeforeMessageId || m.id >= formData.hideBeforeMessageId);
+            const timeZone = resolveCharTimeZone(formData);
             const msgsByDate: Record<string, any[]> = {};
             
             msgs.forEach(m => {
-                const d = new Date(m.timestamp);
-                const year = d.getFullYear();
-                const month = String(d.getMonth() + 1).padStart(2, '0');
-                const day = String(d.getDate()).padStart(2, '0');
-                const dateStr = `${year}-${month}-${day}`;
+                const dateStr = getLocalDateKey(getMemoryMessageClock(m, timeZone));
                 
                 if (batchRange.start && dateStr < batchRange.start) return;
                 if (batchRange.end && dateStr > batchRange.end) return;
@@ -901,9 +897,9 @@ const Character: React.FC = () => {
                 setBatchProgress(`Processing ${date} (${i+1}/${dates.length})`);
                 
                 const dayMsgs = msgsByDate[date];
-                const timeFmt = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                 const rawLog = dayMsgs
-                    .map(m => formatMessageWithTime(m, formData.name, userProfile.name, timeFmt))
+                    .map(m => formatMessageWithTime(m, formData.name, userProfile.name,
+                        () => formatMemoryArchiveTime(getMemoryMessageClock(m, timeZone))))
                     .join('\n');
 
                 // Use selected template (same as ChatApp) with variable substitution

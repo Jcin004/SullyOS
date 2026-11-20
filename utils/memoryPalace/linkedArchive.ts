@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { MemoryFragment } from '../../types';
 import { MemoryNodeDB } from './db';
-import { formatLocalDateKey } from './memoryDateEdit';
+import { getDailyMemoryDate } from '../dailyMemoryDate';
 import { MEMORY_NODES_CHANGED } from './nodeChanges';
 import { memoryContentWithDates } from './relativeTime';
 
@@ -13,7 +13,7 @@ export async function resolveLinkedArchives(charId: string, memories: MemoryFrag
         if (node?.charId !== charId) return memory;
         return {
             ...memory,
-            date: formatLocalDateKey(node.createdAt) || memory.date,
+            date: getDailyMemoryDate(node) || memory.date,
             summary: readableExport ? memoryContentWithDates(node) : node.content,
         };
     }));

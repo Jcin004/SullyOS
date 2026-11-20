@@ -234,12 +234,19 @@ export const MemoryNodeDB = {
 
     /** 更新访问记录（检索后调用） */
     touchAccess: async (id: string): Promise<void> => {
-        const node = await getByKey<MemoryNode>(STORE_MEMORY_NODES, id);
-        if (!node) return;
-        node.lastAccessedAt = Date.now();
-        node.accessCount += 1;
-        await put<MemoryNode>(STORE_MEMORY_NODES, node);
-        syncNodeMetadataToRemote(node);
+        const db = await openDB();
+        await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(STORE_MEMORY_NODES, 'readwrite');
+            const store = tx.objectStore(STORE_MEMORY_NODES);
+            const read = store.get(id);
+            read.onsuccess = () => {
+                const node = read.result as MemoryNode | undefined;
+                if (!node || node.archived) return;
+                store.put({ ...node, lastAccessedAt: Date.now(), accessCount: (node.accessCount || 0) + 1 });
+            };
+            tx.oncomplete = () => resolve();
+            tx.onerror = tx.onabort = () => reject(tx.error);
+        });
     },
 };
 
@@ -725,6 +732,9 @@ export const EventBoxDB = {
                         throw new Error('事件盒已被其他整合更新，请重新整合');
                     }
                     const members = new Set([...fresh.archivedMemoryIds, ...fresh.liveMemoryIds]);
+                    if (snapshot.archivedMemoryIds.some(id => !members.has(id))) {
+                        throw new Error('事件盒归档成员已删除，请重新整合');
+                    }
                     const current = reads.map(read => read.result as MemoryNode | undefined);
                     const contentKey = (node: MemoryNode) => JSON.stringify([
                         node.charId, node.eventBoxId, node.content, node.room, node.createdAt, node.importance, node.mood, node.tags,

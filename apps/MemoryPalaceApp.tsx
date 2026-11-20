@@ -1634,6 +1634,7 @@ export default function MemoryPalaceApp() {
                 room: editRoom,
                 tags: editTags.split(/[,，]/).map(t => t.trim()).filter(Boolean),
                 createdAt: dateAdjusted.createdAt,
+                dailyArchiveDate: dateAdjusted.dailyArchiveDate,
                 lastAccessedAt: dateAdjusted.lastAccessedAt,
                 },
                 memoryPalaceConfig.embedding,
@@ -2220,24 +2221,7 @@ export default function MemoryPalaceApp() {
         const hasBackup = character?.memories?.some(memory => memory.palaceMemoryId === nodeId);
         const choice = hasBackup ? await askLinkedArchiveDeletion() : undefined;
         if (choice === null) return false;
-        // 先从 EventBox 中移除（若属于某盒）
-        try { await removeMemoryFromBox(nodeId); } catch { /* ignore */ }
-        // 删关联
-        const links = await MemoryLinkDB.getByNodeId(nodeId);
-        for (const link of links) {
-            await MemoryLinkDB.delete(link.id);
-        }
-        // 删向量（本地）
-        const { MemoryVectorDB } = await import('../utils/memoryPalace');
-        await MemoryVectorDB.delete(nodeId);
-        // 删向量（远程同步）
-        if (remoteVectorConfig?.enabled && remoteVectorConfig.initialized) {
-            import('../utils/memoryPalace/supabaseVector').then(({ deleteVector }) =>
-                deleteVector(remoteVectorConfig, nodeId).catch(() => {})
-            );
-        }
-        // 删节点
-        await deleteNodeAndLinkedArchive(node, choice);
+        await deleteNodeAndLinkedArchive(node, choice, remoteVectorConfig);
         return true;
     };
 

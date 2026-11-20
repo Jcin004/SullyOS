@@ -116,34 +116,13 @@ export async function vectorSearch(
         try {
             const remoteResults = await remoteSearch(remoteConfig, queryVector, charId, threshold, topK);
             if (remoteResults.length > 0) {
-                // 远程结果已包含内容，构建轻量 MemoryNode（带 EventBox 字段 + Russell 情感 + 置顶 + 衍生来源）
-                return remoteResults.map(r => ({
-                    node: {
-                        id: r.memoryId,
-                        charId,
-                        content: r.content,
-                        room: r.room as any,
-                        tags: r.tags,
-                        importance: r.importance,
-                        mood: r.mood,
-                        valence: r.valence ?? undefined,
-                        arousal: r.arousal ?? undefined,
-                        embedded: true,
-                        createdAt: r.createdAt || Date.now(),
-                        lastAccessedAt: r.lastAccessedAt || r.createdAt || Date.now(),
-                        accessCount: r.accessCount || 0,
-                        pinnedUntil: r.pinnedUntil,
-                        sourceId: r.sourceId,
-                        origin: (r.origin as any) ?? undefined,
-                        eventBoxId: r.eventBoxId,
-                        archived: r.archived,
-                        isBoxSummary: r.isSummary,
-                    },
-                    similarity: r.similarity,
-                }));
+                // Supabase provides similarity. Local records decide whether a hit may be recalled.
+                const hits = await loadLocalHits(remoteResults, charId);
+                if (hits.length > 0) return hits;
+            } else {
+                // 远程正常但这次没命中，不重复搜索。
+                return [];
             }
-            // 远程正常但这次没命中：直接返回空，不要再跑一遍本地（避免双倍耗时）。
-            return [];
         } catch (e: any) {
             // 远程坏了（CORS / 500 无 CORS 头 / DNS 等网络错）：熔断整个会话的远程路径
             const msg = e?.message || String(e);
@@ -172,6 +151,12 @@ export async function vectorSearch(
         scored = mainThreadSearch(queryVector, vectors, threshold, topK);
     }
 
+    return loadLocalHits(scored, charId);
+}
+
+async function loadLocalHits(
+    scored: { memoryId: string; similarity: number }[], charId: string,
+): Promise<VectorSearchResult[]> {
     // 加载对应的 MemoryNode（过滤 archived 节点）
     //
     // 性能：原来是 for-await 串行 getById，30 条候选 × 每次一个 IDB 事务
@@ -182,7 +167,7 @@ export async function vectorSearch(
     const results: VectorSearchResult[] = [];
     for (let i = 0; i < scored.length; i++) {
         const node = nodes[i];
-        if (node && !node.archived) {
+        if (node?.charId === charId && !node.archived) {
             results.push({ node, similarity: scored[i].similarity });
         }
     }

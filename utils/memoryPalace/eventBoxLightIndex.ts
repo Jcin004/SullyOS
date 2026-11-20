@@ -146,7 +146,7 @@ export function buildEventBoxLightIndex(nodes: MemoryNode[], eventBoxes: EventBo
         box.tags.forEach(tag => add('box_tag', tag, 0.95));
 
         const summary = box.summaryNodeId ? nodeMap.get(box.summaryNodeId) : undefined;
-        if (summary) {
+        if (summary && !summary.archived) {
             entityValues(summary).forEach(entity => add('summary_entity', entity, 0.96));
             summary.tags.forEach(tag => add('summary_tag', tag, 0.9));
             add('summary_content', summary.content.slice(0, 1200), 0.76);

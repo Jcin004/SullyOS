@@ -14,6 +14,8 @@ import { buildSARMemoryBoundaryInstruction, formatMessageForPrompt } from '../me
 import { readRecallRuntimeSnapshot } from './trace';
 import { hasRelativeTime, hasMatchingRelativeSource, relativeTimeEnabled } from './relativeTime';
 import { getLocalDateKey } from '../localDate';
+import { formatMemoryArchiveTime, getMemoryMessageClock } from '../dailyMemoryDate';
+import { nowInTimeZone } from '../timezone';
 
 /** Theater mirrors are world narration, not direct dialogue from either sender. */
 function formatExtractionMessage(message: Message, charName: string, userName: string): string {
@@ -98,11 +100,10 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
 **日期标注（date，必填）**：每条消息前缀都带了 \`[YYYY-MM-DD HH:MM]\` 时间戳。每条记忆必须根据**该事件实际发生的那一天**填 date 字段（"YYYY-MM-DD"），而不是套用整批的某一天。同一批对话跨多天时，跨日的记忆要分别标各自的日期。`;
 }
 
-function buildConversationText(messages: Message[], charName: string, userLabel: string): string {
+function buildConversationText(messages: Message[], charName: string, userLabel: string, timeZone?: string): string {
     // 每行带 [YYYY-MM-DD HH:MM] 时间戳前缀。
     // 没有这个 LLM 完全看不到日期，多日 batch 提取出来的记忆全部会被压到一个时间点
     // （见 parseMemoryNodesFromBuffer 的 midTime 兜底），跨日时间线就乱了。
-    const pad2 = (n: number) => String(n).padStart(2, '0');
     return messages
         .map((m, index) => {
             const experienced = m.metadata?.source === 'story_theater_memory' ? messageExperienceTime(m) : undefined;
@@ -110,8 +111,8 @@ function buildConversationText(messages: Message[], charName: string, userLabel:
             const body = `[M${index}] ` + plotDate + formatExtractionMessage(m, charName, userLabel);
             const ts = m.timestamp;
             if (!ts || ts <= 0) return body;
-            const d = new Date(ts);
-            const stamp = `[${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}]`;
+            const clock = nowInTimeZone(timeZone, new Date(ts));
+            const stamp = `[${getLocalDateKey(clock)} ${formatMemoryArchiveTime(clock)}]`;
             return `${stamp} ${body}`;
         })
         .join('\n');
@@ -129,23 +130,23 @@ function messageExperienceTime(message: Message): number | undefined {
         && (message.metadata?.source === 'story_theater_memory' || time > 0) ? time : undefined;
 }
 
-function resolveExperienceTime(item: { experienceSource?: unknown; date?: unknown }, messages: Message[]): number | undefined {
+function resolveExperienceSource(item: { experienceSource?: unknown; date?: unknown }, messages: Message[], timeZone?: string): Message | undefined {
     if (typeof item.experienceSource === 'string' && /^M\d+$/.test(item.experienceSource)) {
         const source = messages[Number(item.experienceSource.slice(1))];
-        return source && messageExperienceTime(source);
+        return source && messageExperienceTime(source) !== undefined ? source : undefined;
     }
-    const times = new Set(messages.map(messageExperienceTime));
-    if (times.size === 1) return times.values().next().value;
+    const sourcesByTime = new Map(messages.map(message => [messageExperienceTime(message), message]));
+    if (sourcesByTime.size === 1 && !sourcesByTime.has(undefined)) return sourcesByTime.values().next().value;
     // Older extractors may provide only the event date. Accept it when it identifies one original timestamp.
-    if (typeof item.date === 'string' && !times.has(undefined)) {
-        const sameDay = [...times].filter(time => time !== undefined && getLocalDateKey(new Date(time)) === item.date);
+    if (typeof item.date === 'string' && !sourcesByTime.has(undefined)) {
+        const sameDay = [...sourcesByTime.values()].filter(source => getLocalDateKey(getMemoryMessageClock(source, timeZone)) === item.date);
         if (sameDay.length === 1) return sameDay[0];
     }
 }
 
 /** 从消息缓冲区直接解析记忆节点（不依赖 TopicBox） */
 function parseMemoryNodesFromBuffer(
-    parsed: any[], charId: string, messages: Message[], _batchLabel: string, includeEntities: boolean, linkDates = false,
+    parsed: any[], charId: string, messages: Message[], _batchLabel: string, includeEntities: boolean, linkDates = false, timeZone?: string,
 ): MemoryNode[] {
     if (parsed.length === 0) return [];
 
@@ -159,22 +160,22 @@ function parseMemoryNodesFromBuffer(
     const minTs = firstTs - dayMs;
     const maxTs = lastTs + dayMs;
 
-    /** 解析 LLM 写的 date 字段 → 该日 12:00 本地时间。失败 / 越界则回到 midTime。 */
-    const resolveCreatedAt = (raw: unknown): number => {
-        if (typeof raw !== 'string') return midTime;
+    /** 解析 LLM 写的日历日，失败时交由调用方选取时间。 */
+    const resolveCreatedAt = (raw: unknown): number | undefined => {
+        if (typeof raw !== 'string') return;
         const s = raw.trim();
-        if (!s) return midTime;
+        if (!s) return;
         // 接受 "YYYY-MM-DD" / "YYYY/M/D" / "YYYY年M月D日" 等
         const norm = s.replace(/[年\/]/g, '-').replace(/[月日]/g, '');
         const parts = norm.split('-').map(p => parseInt(p, 10));
-        if (parts.length < 3 || parts.some(n => Number.isNaN(n))) return midTime;
+        if (parts.length < 3 || parts.some(n => Number.isNaN(n))) return;
         const [y, m, d] = parts;
-        if (y < 1900 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return midTime;
+        if (y < 1900 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return;
         // 用消息时间戳的本地时区表征"该日中午"——避免 UTC 解析跨日漂移
         const dt = new Date(y, m - 1, d, 12, 0, 0, 0);
         const ts = dt.getTime();
-        if (Number.isNaN(ts)) return midTime;
-        if (ts < minTs || ts > maxTs) return midTime;
+        if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return;
+        if (ts < minTs || ts > maxTs) return;
         return ts;
     };
 
@@ -205,8 +206,13 @@ function parseMemoryNodesFromBuffer(
     return parsed
         .filter(item => item.content && item.room)
         .map((item): MemoryNode => {
-            const createdAt = resolveCreatedAt(item.date);
-            const experiencedAt = resolveExperienceTime(item, messages);
+            const modelDate = resolveCreatedAt(item.date);
+            const createdAt = modelDate ?? midTime;
+            const experienceSource = resolveExperienceSource(item, messages, timeZone);
+            const experiencedAt = experienceSource && messageExperienceTime(experienceSource);
+            const dailyArchiveDate = experienceSource
+                ? getLocalDateKey(getMemoryMessageClock(experienceSource, timeZone))
+                : getLocalDateKey(modelDate === undefined ? nowInTimeZone(timeZone, new Date(midTime)) : new Date(modelDate));
             const pinDays = parseInt(item.pinDays, 10);
             // 置顶 deadline 跟着 per-memory createdAt 算，否则"今天感冒 pinDays 5"
             // 会从 batch 中点起算，跨日 batch 里就直接少算/多算。
@@ -228,6 +234,7 @@ function parseMemoryNodesFromBuffer(
                 arousal: a,
                 embedded: false,
                 createdAt,
+                dailyArchiveDate,
                 ...(experiencedAt !== undefined ? { experiencedAt } : {}),
                 lastAccessedAt: createdAt,
                 accessCount: 0,
@@ -450,6 +457,7 @@ export async function extractMemoriesFromBuffer(
     userName?: string,
     relatedMemories?: RelatedMemoryRef[],
     pinnedMemories?: PinnedMemoryRef[],
+    timeZone?: string,
 ): Promise<BufferExtractionResult> {
     if (messages.length === 0) return { memories: [], crossTimeLinks: [], eventBoxHints: [], unpinIds: [], corrections: [] };
 
@@ -457,7 +465,7 @@ export async function extractMemoriesFromBuffer(
     if (batches.length > 1) {
         const result: BufferExtractionResult = { memories: [], crossTimeLinks: [], eventBoxHints: [], unpinIds: [], corrections: [] };
         for (const batch of batches) {
-            const next = await extractMemoriesFromBuffer(batch, charId, charName, llmConfig, charContext, userName, relatedMemories, pinnedMemories);
+            const next = await extractMemoriesFromBuffer(batch, charId, charName, llmConfig, charContext, userName, relatedMemories, pinnedMemories, timeZone);
             result.memories.push(...next.memories);
             result.crossTimeLinks.push(...next.crossTimeLinks);
             result.eventBoxHints.push(...next.eventBoxHints);
@@ -470,7 +478,7 @@ export async function extractMemoriesFromBuffer(
     const includeEntities = readRecallRuntimeSnapshot().featureFlagsSnapshot.recallRouter;
     const linkDates = relativeTimeEnabled();
     const userLabel = userName || '用户';
-    const conversationText = buildConversationText(messages, charName, userLabel);
+    const conversationText = buildConversationText(messages, charName, userLabel, timeZone);
     const hasTheaterRecords = messages.some(message => message.metadata?.source === 'story_theater_memory');
     const theaterMemoryRule = hasTheaterRecords
         ? `\n\n## 剧场记录识读\n[剧场记录] 是第三人称叙事原文，不代表记忆主体或用户亲口讲述。直接引语按剧情中的实际说话者理解。\n提取 ${charName} 实际参与、观察、听见或后来获知的经历。其他地点或分组发生的事，须有感知或获知依据才能写入其个人认知。\n根据事实与经历的重要性提取；剧场记录中原本由谁输入，不决定事件的关注优先级。`
@@ -577,7 +585,7 @@ pinDays 仅在需要置顶时才写，大多数记忆不需要。
         const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
         const batchLabel = fmt(d1) === fmt(d2) ? fmt(d1) : `${fmt(d1)}-${fmt(d2)}`;
 
-        const memories = parseMemoryNodesFromBuffer(parsed, charId, messages, batchLabel, includeEntities, linkDates);
+        const memories = parseMemoryNodesFromBuffer(parsed, charId, messages, batchLabel, includeEntities, linkDates, timeZone);
 
         // 解析跨时间关联（→ EventBox 绑定信号）+ eventName/eventTags 提示
         const { crossTimeLinks, eventBoxHints } = parseRelatedToAndHints(

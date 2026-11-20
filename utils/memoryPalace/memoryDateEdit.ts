@@ -8,6 +8,7 @@
  */
 
 import type { MemoryFragment } from '../../types';
+import { getDailyMemoryDate } from '../dailyMemoryDate';
 import { MemoryNodeDB } from './db';
 import type { MemoryNode, RemoteVectorConfig } from './types';
 
@@ -154,6 +155,7 @@ export function applyPartialDatePatchToNode(
     return {
         ...node,
         createdAt: nextCreatedAt,
+        dailyArchiveDate: formatLocalDateKey(nextCreatedAt) ?? undefined,
         lastAccessedAt: syncLastAccessed ? nextCreatedAt : node.lastAccessedAt,
     };
 }
@@ -188,7 +190,7 @@ export function syncLinkedArchiveFragmentDates(
     if (!memories || memories.length === 0 || updatedNodes.length === 0) return null;
     const dateByNodeId = new Map<string, string>();
     for (const node of updatedNodes) {
-        const dateKey = formatLocalDateKey(node.createdAt);
+        const dateKey = getDailyMemoryDate(node);
         if (dateKey) dateByNodeId.set(node.id, dateKey);
     }
     if (dateByNodeId.size === 0) return null;

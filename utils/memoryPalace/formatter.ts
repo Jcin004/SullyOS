@@ -66,6 +66,7 @@ export async function expandAndFormat(
     const now = referenceTime ?? Date.now();
     const realNow = referenceTime === undefined ? now : Date.now();
     const allCharNodes = await MemoryNodeDB.getByCharId(charId);
+    const localNodeMap = new Map(allCharNodes.map(n => [n.id, n]));
     const pinnedNodes = allCharNodes.filter(n => n.pinnedUntil && n.pinnedUntil > realNow && !n.archived);
     const pinnedIds = new Set(pinnedNodes.map(n => n.id));
 
@@ -76,9 +77,10 @@ export async function expandAndFormat(
     const boxHits = new Map<string, { topScore: number; hitNodeIds: Set<string>; sample: ScoredMemory; guaranteed: boolean }>();
     const standaloneItems: ScoredMemory[] = [];
 
-    for (const r of results) {
-        if (pinnedIds.has(r.node.id)) continue; // 已置顶不再下沉到列表里
-        if (r.node.archived) continue;          // 防御：理论上 archived 不会到这里
+    for (const result of results) {
+        const node = localNodeMap.get(result.node.id);
+        if (!node || node.archived || pinnedIds.has(node.id)) continue;
+        const r = { ...result, node };
 
         const ebId = r.node.eventBoxId;
         if (ebId) {
@@ -102,8 +104,6 @@ export async function expandAndFormat(
 
     // 2. 加载所有 box 的完整内容
     const renderItems: RenderItem[] = [];
-    const localNodeMap = new Map(allCharNodes.map(n => [n.id, n]));
-
     for (const [boxId, hit] of boxHits) {
         const box = await EventBoxDB.getById(boxId);
         if (!box) {
@@ -111,13 +111,14 @@ export async function expandAndFormat(
             renderItems.push(buildStandaloneItem(hit.sample, now, omitDates));
             continue;
         }
-        const item = await buildBoxItem(box, hit.topScore, localNodeMap, now, hit.guaranteed, omitDates);
+        const item = buildBoxItem(box, hit.topScore, localNodeMap, now, hit.guaranteed, omitDates);
         if (item) renderItems.push(item);
     }
 
     for (const r of standaloneItems) {
         renderItems.push(buildStandaloneItem(r, now, omitDates));
     }
+    if (!renderItems.length && !anticipations.length && !pinnedNodes.length) return '';
 
     // 3. 排序（finalScore 降序，同分时较新者优先）+ 截断到 MAX_OUTPUT_ITEMS
     renderItems.sort((a, b) => {
@@ -280,24 +281,24 @@ function buildStandaloneItem(r: ScoredMemory, now: number, omitDates = false): R
 
 // ─── 子渲染：整个 EventBox（summary + 活节点） ──────────
 
-async function buildBoxItem(
+function buildBoxItem(
     box: EventBox,
     topScore: number,
     localNodeMap: Map<string, MemoryNode>,
     now: number,
     guaranteed: boolean = false,
     omitDates: boolean = false,
-): Promise<RenderItem | null> {
+): RenderItem | null {
     // 加载 summary（如有）
     let summary: MemoryNode | null = null;
     if (box.summaryNodeId) {
-        const s = localNodeMap.get(box.summaryNodeId) || (await MemoryNodeDB.getById(box.summaryNodeId)) || null;
-        if (s) summary = s;
+        const s = localNodeMap.get(box.summaryNodeId);
+        if (s && !s.archived) summary = s;
     }
     // 加载活节点（按时间升序）
     const liveNodes: MemoryNode[] = [];
     for (const id of box.liveMemoryIds) {
-        const n = localNodeMap.get(id) || (await MemoryNodeDB.getById(id));
+        const n = localNodeMap.get(id);
         if (n && !n.archived) liveNodes.push(n);
     }
     liveNodes.sort((a, b) => a.createdAt - b.createdAt);

@@ -48,8 +48,9 @@ async function writeAutoArchive(
 ): Promise<{ fragments: number; changed: boolean }> {
     const db = await openDB();
     const detail = await new Promise<MemoryAutoArchiveSyncDetail | undefined>((resolve, reject) => {
-        const tx = db.transaction('characters', 'readwrite');
+        const tx = db.transaction(['characters', 'memory_nodes'], 'readwrite');
         const store = tx.objectStore('characters');
+        const nodes = tx.objectStore('memory_nodes');
         const request = store.get(charId);
         let change: MemoryAutoArchiveSyncDetail | undefined;
         let failure: unknown;
@@ -64,14 +65,26 @@ async function writeAutoArchive(
                 const linked = new Set(current.map(memory => memory.palaceMemoryId));
                 const fragments = getFragments(current).filter(fragment =>
                     !ids.has(fragment.id) && (!fragment.palaceMemoryId || !linked.has(fragment.palaceMemoryId)));
-                const hideChanged = hideBeforeMessageId > (character.hideBeforeMessageId || 0);
-                if (!fragments.length && !hideChanged) return;
-                change = { charId, fragments, hideBeforeMessageId: hideChanged ? hideBeforeMessageId : undefined };
-                store.put({
-                    ...character,
-                    ...(fragments.length ? { memories: mergePalaceFragmentsIntoMemories(current, fragments) } : {}),
-                    ...(hideChanged ? { hideBeforeMessageId } : {}),
-                });
+                const reads = fragments.map(fragment => fragment.palaceMemoryId ? nodes.get(fragment.palaceMemoryId) : undefined);
+                let pending = reads.filter(Boolean).length;
+                const write = () => {
+                    const valid = fragments.filter((_, index) => {
+                        const read = reads[index];
+                        return !read || (read.result as MemoryNode | undefined)?.charId === charId;
+                    });
+                    const hideChanged = hideBeforeMessageId > (character.hideBeforeMessageId || 0);
+                    if (!valid.length && !hideChanged) return;
+                    change = { charId, fragments: valid, hideBeforeMessageId: hideChanged ? hideBeforeMessageId : undefined };
+                    store.put({
+                        ...character,
+                        ...(valid.length ? { memories: mergePalaceFragmentsIntoMemories(current, valid) } : {}),
+                        ...(hideChanged ? { hideBeforeMessageId } : {}),
+                    });
+                };
+                if (!pending) write();
+                for (const read of reads) {
+                    if (read) read.onsuccess = () => { if (--pending === 0) write(); };
+                }
             } catch (error) {
                 failure = error;
                 tx.abort();
