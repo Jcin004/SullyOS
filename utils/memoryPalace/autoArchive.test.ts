@@ -170,6 +170,43 @@ describe('全自动记忆双写缺口修复', () => {
         }
     });
 
+    it('原文保留量为 0 时按缓冲阈值整理并推进水位线', async () => {
+        const charId = 'archive-zero-hot-zone';
+        await DB.saveCharacter({
+            id: charId, name: '角色', memories: [], memoryPalaceEnabled: true, autoArchiveEnabled: true,
+            memoryPalaceWaterline: { preset: 'custom', hotZoneSize: 0, bufferThreshold: 10 },
+        } as CharacterProfile);
+        const ids: number[] = [];
+        for (let index = 1; index <= 9; index++) {
+            ids.push(await DB.saveMessage({
+                charId, role: 'user', type: 'text', content: `钟楼修理记录第 ${index} 条`,
+            }));
+        }
+        const config = { baseUrl: 'https://example.test/v1', apiKey: 'test', model: 'test', dimensions: 3 };
+        const fetch = vi.fn(async (url: string) => {
+            const data = url.endsWith('/embeddings')
+                ? { data: [{ index: 0, embedding: [1, 0, 0] }] }
+                : { choices: [{ message: { content: JSON.stringify([{ content: '我记录了钟楼的维修过程。', room: 'living_room' }]) } }] };
+            return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+        });
+        vi.stubGlobal('fetch', fetch);
+        try {
+            const runArchive = () => processNewMessagesWithAutoArchive([], charId, '角色', config, config, '用户');
+            expect(await runArchive()).toMatchObject({ skipReason: 'threshold' });
+            expect(fetch).not.toHaveBeenCalled();
+
+            await DB.saveMessage({ charId, role: 'assistant', type: 'text', content: '钟楼的维修记录已完成。' });
+            expect(await runArchive()).toMatchObject({ stored: 1, processedMessages: 9 });
+            expect(localStorage.getItem(`mp_lastMsgId_${charId}`)).toBe(String(ids[8]));
+            fetch.mockClear();
+            expect(await runArchive()).toMatchObject({ skipReason: 'threshold' });
+            expect(fetch).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllGlobals();
+            localStorage.removeItem(`mp_lastMsgId_${charId}`);
+        }
+    });
+
     it('rejects a delayed auto archive for a palace node deleted before the write', async () => {
         const charId = 'archive-after-delete';
         const source = node('deleted-before-archive', 2026, 11, 13, { charId });

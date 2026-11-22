@@ -587,7 +587,7 @@ const MemoryWaterlineEditor: React.FC<{
     }, [character.id, resolved.hotZoneSize, resolved.bufferThreshold]);
 
     const saveCustom = () => {
-        const hot = Number(hotDraft);
+        const hot = hotDraft.trim() ? Number(hotDraft) : resolved.hotZoneSize;
         const buffer = Number(bufferDraft);
         onSaveCustom(hot, buffer);
     };
@@ -653,7 +653,7 @@ const MemoryWaterlineEditor: React.FC<{
                     </div>
                     <div style={{ marginTop: 7 }}><b style={{ color: '#7c3aed' }}>水位线前（较旧的一侧）</b>：聊天已经经过向量化，被整理进记忆宫殿。原记录仍在数据库里，没有删除；AI 平时不再整段重读，需要时会从记忆宫殿召回。</div>
                     <div style={{ marginTop: 4 }}><b style={{ color: '#7c3aed' }}>水位线后（较新的一侧）</b>：聊天暂时保留为原文，包括正在等待整理的内容，以及 AI 每次直接读取的最近原文。</div>
-                    <div style={{ marginTop: 4 }}>等待区攒够设定条数后，较早的约 85% 会被向量化并移到水位线前，留下约 15% 衔接下一次整理。</div>
+                    <div style={{ marginTop: 4 }}>最近原文设为 0 时，所有尚未整理的有效消息都进入等待区。攒够设定条数后，较早的约 85% 会被向量化并移到水位线前，留下约 15% 衔接下一次整理。</div>
                     <div style={{ marginTop: 6, padding: '7px 8px', borderRadius: 9, background: '#faf5ff', color: '#6d28d9' }}>
                         例如 50 / 20：AI 每次直接读最近 50 条；在这 50 条之外又攒够 20 条等待内容时，约 17 条会被向量化、进入水位线前，约 3 条留下衔接。一问一答通常约 2 条消息。
                     </div>
@@ -706,7 +706,7 @@ const MemoryWaterlineEditor: React.FC<{
                     {resolved.preset === 'custom' && (
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, alignItems: 'end', marginTop: 8 }}>
                             <label style={{ minWidth: 0 }}>
-                                <span style={{ display: 'block', fontSize: 9, color: '#9ca3af', marginBottom: 3 }}>AI 直接读最近原文（20–500）</span>
+                                <span style={{ display: 'block', fontSize: 9, color: '#9ca3af', marginBottom: 3 }}>AI 直接读最近原文（{MIN_MEMORY_HOT_ZONE_SIZE}–{MAX_MEMORY_HOT_ZONE_SIZE}）</span>
                                 <input
                                     type="number"
                                     min={MIN_MEMORY_HOT_ZONE_SIZE}

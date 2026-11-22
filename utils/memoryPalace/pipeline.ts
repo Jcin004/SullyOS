@@ -2164,8 +2164,9 @@ export async function processNewMessages(
             }
 
             // 日常后台路径：热区 = 角色档位指定的最近 N 条。
-            const hotZoneStartIdx = totalCount - hotZoneSize;
-            const hotZoneStartId = textMessages[hotZoneStartIdx].id;
+            const hotZoneStartId = hotZoneSize === 0
+                ? Number.POSITIVE_INFINITY
+                : textMessages[totalCount - hotZoneSize].id;
             buffer = textMessages.filter(m => m.id > lastProcessedId && m.id < hotZoneStartId);
         }
 
