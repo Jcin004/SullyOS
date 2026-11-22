@@ -639,6 +639,7 @@ const legacyRelationshipFingerprints = new Map([
     [2288, 'a10a8412:39f3e926'],
     [1981, 'cd119ec3:d72f4bef'],
     [1710, '70d27b22:e86ac256'], // Prior shipped three-axis default; user edits stay untouched.
+    [1022, '58856cb9:05852ced'], // First standalone relationship prompt asset.
 ]);
 
 function isLegacyRelationshipDefault(content: string): boolean {
@@ -659,7 +660,12 @@ export const resolveStoryPresetDocument = (
     preset: StoryTheaterPreset,
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
-    const document = override || preset.document;
+    const source = override || preset.document;
+    const prompts = source.prompts.map(prompt =>
+        prompt.id === STORY_RELATIONSHIP_PROMPT_ID && isLegacyRelationshipDefault(prompt.content)
+            ? { ...prompt, content: STORY_RELATIONSHIP_PROMPT }
+            : prompt);
+    const document = prompts.some((prompt, index) => prompt !== source.prompts[index]) ? { ...source, prompts } : source;
     if (document.promptLayout === 'ordered') return document;
     const oldDefaults = preset.builtIn ? previousNativeById : rawPromptById;
     const threeAxisDefaults = preset.builtIn ? nativePromptById : previousRawById;
@@ -670,9 +676,6 @@ export const resolveStoryPresetDocument = (
             .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
                 || prompt.content !== oldDefaults.get(prompt.id)?.content)
             .map(prompt => {
-                if (prompt.id === STORY_RELATIONSHIP_PROMPT_ID && isLegacyRelationshipDefault(prompt.content)) {
-                    return { ...prompt, content: STORY_RELATIONSHIP_PROMPT };
-                }
                 const oldDefault = oldDefaults.get(prompt.id);
                 const nextDefault = threeAxisDefaults.get(prompt.id);
                 if (prompt.id === 'nmj-v6-gemini-format-lock' && nextDefault && prompt.content === nextDefault.content.replace(

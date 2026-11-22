@@ -62,11 +62,12 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
             '<story_text>我知道她愿意守约。</story_text><turn_cast>["未闭合的名单"]' +
             relation({ identity: '可信的朋友', cognition: '我知道她愿意守约', ...evidence }),
         } }] })))
-        .mockResolvedValueOnce(response(relation({ axes: { FL: { delta: 5, ...evidence } } }), cast))
+        .mockResolvedValueOnce(response(relation({ axes: { FL: { score: 10, delta: 30, ...evidence } } }), cast))
         .mockResolvedValueOnce(response('<relationship_panel>{bad', cast))
         .mockResolvedValueOnce(response('', [actors[0].id]))
         .mockResolvedValueOnce(response('', cast))
-        .mockResolvedValueOnce(response(relation({ axes: { DI: { phase: 'active', ...evidence } } }), cast))
+        .mockResolvedValueOnce(response(relation({ axes: { DI: { score: 14, phase: 'ended', ...evidence } } }), cast))
+        .mockResolvedValueOnce(response('', cast))
         .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content:
             '<story_text>两人照常等车。</story_text><turn_cast>' + JSON.stringify(cast) + '</turn_cast>',
         } }] })));
@@ -92,7 +93,7 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
             { entry: story, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {} })));
         await DB.saveStoryTheater(entry);
         await render(entry);
-        await send(1); expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20, phase: 'active', strength: 'mild' } });
+        await send(1); expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
         const oldRows = await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true);
         const oldRelationship = await current();
         preset = convertedPreset();
@@ -118,7 +119,8 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
         const third = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(third.metadata?.theaterPrivateAxes).toEqual({ [actors[0].id]: '我整理自己的信件' });
         if (isReal) expect(third.metadata?.theaterMirrorIds[actors[0].id]).toBeGreaterThan(0);
-        expect(third.metadata[isReal ? 'theaterRealRelationshipEvent' : 'theaterStoryRelationshipEvent'].updates[0].decayDI).toBeUndefined();
+        expect(third.metadata[isReal ? 'theaterRealRelationshipEvent' : 'theaterStoryRelationshipEvent'].updates[0])
+            .toMatchObject({ mode: 'state', direction: { axes: { FL: { score: 10, ...evidence } } } });
         expect(third.content).toContain('<score>10</score><delta>5</delta>');
         await send(4); expect((await current()).axes.DI?.score).toBe(20);
         const fourth = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
@@ -138,19 +140,27 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
             .toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
         await send(5); expect((await current()).axes.DI?.score).toBe(20);
         await send(6); expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 20 } });
-        await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('换一种写法'))!.click());
-        await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(20); });
-        // Rewriting a floor leaves DI unchanged unless the new character state explicitly changes it.
+        const rewrite = () => act(async () => Array.from(container.querySelectorAll('button'))
+            .find(button => button.textContent?.includes('换一种写法'))!.click());
+        await rewrite();
+        await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(14); });
+        await rewrite();
+        await vi.waitFor(async () => {
+            await flush();
+            expect(fetch).toHaveBeenCalledTimes(8);
+            expect(container.querySelector('button.story-send-button .animate-spin')).toBeNull();
+            expect((await current()).axes.DI?.score).toBe(14);
+        });
         const free = { ...entry, castModeEnabled: false };
         await DB.saveStoryTheater(free);
         await render(free);
-        await send(8);
+        await send(9);
         const latest = (await DB.getMessagesByCharId(storyTheaterThreadId(entry.id), true)).at(-1)!;
         expect(latest.metadata.theaterCastIds).toBeUndefined();
-        expect((await current()).axes.DI?.score).toBe(20);
+        expect((await current()).axes.DI?.score).toBe(14);
         // Deleting the FL event preserves the last explicitly established DI state.
         await act(async () => DB.deleteMessage(third.id));
-        expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
+        expect((await current()).axes).toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 14 } });
         expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[1].id, actors[0].id])]).toBeUndefined();
         if (!isReal) expect((await DB.getRealRelationshipGraph()).directions[JSON.stringify([actors[0].id, actors[1].id])]).toBeUndefined();
     } finally {
@@ -190,10 +200,10 @@ it('会话按世界读取和保存实际人物对，自由续写与出演模式�
         + (cast ? '<turn_cast>' + JSON.stringify([a.id, b.id]) + '</turn_cast>' : ''),
     } }] }));
     const fetch = vi.fn<typeof globalThis.fetch>()
-        .mockImplementationOnce(async () => response({ delta: 1 }))
+        .mockImplementationOnce(async () => response({ score: 74 }))
         .mockImplementationOnce(async () => response({ score: 32 }, false))
-        .mockImplementationOnce(async () => { await seed(peer, 82); return response({ delta: 5 }); })
-        .mockImplementationOnce(async () => response({ delta: 3 }));
+        .mockImplementationOnce(async () => { await seed(peer, 82); return response({ score: 79 }); })
+        .mockImplementationOnce(async () => response({ score: 85 }));
     vi.stubGlobal('fetch', fetch);
     const container = document.createElement('div'); document.body.append(container);
     const root = createRoot(container);
@@ -633,7 +643,7 @@ it('单次请求处理出演、私轴、自由续写和场外对话，并保留�
         await DB.saveStoryTheater(entry);
         await render(entry.id, saveEntry);
         expect(container.querySelector('select[aria-label="关系三轴主要角色"]')).toBeNull();
-        expect(container.textContent).toContain('按正文实际发生关系事件的人物对分别记录');
+        expect(container.textContent).toContain('关系面板由预设生成');
         const castFallbackThread = storyTheaterThreadId(entry.id);
         const serializedPanel = '<relationship_panel>' + JSON.stringify({
             primaryId: b.id,

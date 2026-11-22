@@ -4,8 +4,7 @@ import RealRelationshipNetwork from '../../components/date/story/RealRelationshi
 import { relationshipFixtureState } from './real-relationship-network-state';
 import { DB } from '../../utils/db';
 import { createStoryTheaterDraft, storyTheaterThreadId } from '../../utils/storyTheater';
-import { realRelationshipBaseline, realRelationshipPayload } from '../../utils/realRelationshipModel';
-import { parseStoryRelationshipContent, stripStoryRelationshipPanels } from '../../utils/storyTheaterRelationships';
+import { buildStoryRelationshipPayload, parseStoryRelationshipContent, stripStoryRelationshipPanels } from '../../utils/storyTheaterRelationships';
 
 async function start() {
     const actors = relationshipFixtureState.characters;
@@ -23,10 +22,10 @@ async function start() {
                 trigger: '他向我道谢', evidence: '我注意到他接信时松了口气',
                 axes: { FL: { score: 42, trigger: '他认真收好信', evidence: '我注意到了他的珍惜' }, RI: { score: 0, trigger: '我的认识仍是友谊', evidence: '我没有产生恋爱性注意' } } },
         ] }) + '</relationship_panel>';
-        const panel = parseStoryRelationshipContent(response)!;
+        const panel = parseStoryRelationshipContent(response, undefined, 'model');
         await DB.saveMessage({ charId: storyTheaterThreadId(story.id), role: 'assistant', type: 'text', content: stripStoryRelationshipPanels(response),
             metadata: { source: 'story_theater', theaterId: story.id, theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
-                theaterRealRelationshipEvent: realRelationshipPayload(panel, actors, realRelationshipBaseline(graph, actors), reason => { throw new Error(reason); }) } });
+                theaterRealRelationshipEvent: buildStoryRelationshipPayload(panel, actors, reason => { throw new Error(reason); }) } });
     }
     const layout = await DB.getRealRelationshipLayout();
     if (!Object.keys(layout.positions).length) await DB.patchRealRelationshipLayout({ positions: {

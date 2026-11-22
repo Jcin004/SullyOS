@@ -197,15 +197,15 @@ describe('糯米机原生剧情预设边界', () => {
         expect(affinity.content).toContain('FL 关系联结');
         expect(affinity.content).toContain('RI 恋爱性心动');
         expect(affinity.content).toContain('DI 失序扰动');
-        expect(affinity.content).toContain('角色自身的性情、经历、处境与情绪潮线');
-        expect(affinity.content).toContain('这些内容不以分数变化为前提');
+        expect(affinity.content).toContain('性情、成长经历、彼此的关系历史、当下心理和本轮剧情');
+        expect(affinity.content).toContain('这些内容可单独记录');
         expect(document.prompts.some(prompt => ['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id))).toBe(false);
         const sent = compileStoryPreset({ preset: BUILTIN_NIGHT_SCREENING_PRESET, relationshipMode: 'axes', userName: '用户', characterNames: ['阿遥'],
             slots: { actors: '角色资料', persona: '', scenario: '', worldBefore: '', worldAfter: '', history: '' } });
         const axes = sent.messages.find(message => message.content.includes('FL 关系联结'))!;
         expect(axes.content).toBe(affinity.content);
         expect(axes.content).not.toContain('事件来源 → 人物自身感知与解读 → 实际反应 → FL/RI/DI 变化');
-        expect(axes.content).toContain('【关系面板｜供程序承接，不进入剧情正文】');
+        expect(axes.content).toContain('【关系面板｜正文之后】');
         expect(axes.content).toContain('<affinity_panel mode="three_axes">');
         expect(axes.content).not.toMatch(/<(?:score|delta)>[+-]?\d|<(?:axis|source_type|decay)>/);
         expect(axes.content).toContain('RI 恋爱性心动');
@@ -308,7 +308,7 @@ describe('糯米机原生剧情预设边界', () => {
         const control = migrated.prompts.find(prompt => prompt.id === legacyControl.id)!;
         expect(control.enabled).toBe(false);
         expect(control.name).toContain('FL · RI · DI');
-        expect(control.content).toContain('成长激励');
+        expect(control.content).toContain('成长经历');
         expect(migrated.prompts.find(prompt => prompt.id === legacyOpaque.id)).toBeUndefined();
         const edited: StoryTheaterPreset = {
             ...imported, document: { ...imported.document, prompts: imported.document.prompts.map(prompt =>
@@ -821,7 +821,7 @@ describe('本轮关系备注', () => {
     it('预设是唯一关系文案来源，其他默认段落只检查技术格式', () => {
         expect(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(
             prompt => prompt.id === 'nmj-v65-affinity-control'
-        )?.content).toContain('这些内容不以分数变化为前提');
+        )?.content).toContain('这些内容可单独记录');
         expect(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.find(
             prompt => prompt.id === 'nmj-v616-silent-preflight'
         )?.content).not.toContain('角色的关系承接各自的经历、处境与情绪潮线');

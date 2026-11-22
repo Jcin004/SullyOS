@@ -3,7 +3,7 @@ import type { Message } from '../types';
 import { createStoryTheaterDraft, normalizeStoryTheater, parseStoryDisplayBlocks, BUILTIN_NIGHT_SCREENING_PRESET, resolveStoryPresetDocument } from './storyTheater';
 import { buildStoryRelationshipGuide, buildStoryRelationshipPayload, getStoryRelationshipBaseline, parseStoryRelationshipContent,
     reconcileStoryRelationships, restrictStoryRelationshipsToCast,
-    stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID,
+    serializeStoryThreeAxisPanel, stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT, STORY_RELATIONSHIP_PROMPT_ID,
     LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 
 const a = { id: 'a', name: '狛治' }, b = { id: 'b', name: '香奈乎' }, c = { id: 'c', name: '狛治' };
@@ -20,13 +20,16 @@ const baseline = (rows: Message[] = []) => getStoryRelationshipBaseline(rows, ac
 const direction = (panel: ReturnType<typeof baseline> | undefined, from = a.id, to = b.id) =>
     panel?.relationships.find(row => row.fromId === from && row.toId === to);
 const generate = (rows: unknown[], history: Message[] = []) => reconcileStoryRelationships(proposal(rows), baseline(history));
+const modelPayload = (raw: string, report: (issue: string) => void = () => {}) =>
+    buildStoryRelationshipPayload(parseStoryRelationshipContent(raw, report, 'model'), actors, report);
 
 describe('按实际人物对的三轴关系', () => {
     it('轻微心动、好奇、共因双轴与结束阶段独立结算，只有 score 能初始化', () => {
         const curiosity = '<affinity_panel mode="three_axes"><affinity_person><from_id>a</from_id><to_id>b</to_id>'
             + '<DI><score>12</score><trigger>好奇</trigger><evidence>反复观察对方，错过报站</evidence></DI></affinity_person></affinity_panel>';
         const first = reconcileStoryRelationships(curiosity, baseline());
-        expect(direction(snapshot(first))?.axes).toMatchObject({ DI: { score: 12, strength: 'mild', phase: 'active' } });
+        expect(direction(snapshot(first))?.axes.DI).toMatchObject({ score: 12 });
+        expect(direction(snapshot(first))?.axes.DI?.delta).toBeUndefined();
         expect(direction(snapshot(first))?.axes.RI).toBeUndefined();
         const second = generate([pair(a.id, b.id, {
             RI: { score: 2, trigger: '轻声答谢', evidence: '微微想以恋人身份靠近' },
@@ -34,17 +37,19 @@ describe('按实际人物对的三轴关系', () => {
         expect(direction(snapshot(second))?.axes.RI?.score).toBe(2);
         expect(direction(snapshot(second))?.axes.FL).toBeUndefined();
         const third = generate([pair(a.id, b.id, {
-            RI: { delta: 1, trigger: '突然靠近', evidence: '期待将来还会亲近' },
-            DI: { delta: 6, trigger: '突然靠近', evidence: '忘了下一句话' },
+            RI: { score: 3, delta: 90, trigger: '突然靠近', evidence: '期待将来还会亲近' },
+            DI: { score: 18, delta: -100, trigger: '突然靠近', evidence: '忘了下一句话' },
         })], [message(first), message(second, 2)]);
-        expect(direction(snapshot(third))?.axes).toMatchObject({ RI: { score: 3 }, DI: { score: 18 } });
+        expect(direction(snapshot(third))?.axes).toMatchObject({ RI: { score: 3, delta: 1 }, DI: { score: 18, delta: 6 } });
         const carried = [message(first), message(second, 2), message(third, 3)];
         const ended = generate([pair(a.id, b.id, { DI: { phase: 'ended', ...fact } })], carried);
-        expect(direction(snapshot(ended))?.axes.DI?.score).toBe(13);
+        expect(snapshot(ended)).toBeUndefined();
         expect(direction(baseline([...carried, message(ended, 4)]))?.axes.RI?.score).toBe(3);
+        expect(direction(baseline([...carried, message(ended, 4)]))?.axes.DI?.score).toBe(18);
         expect(snapshot(generate([pair(a.id, b.id, { RI: { delta: 1, ...fact }, DI: { delta: 5, ...fact } })]))).toBeUndefined();
         const zero = generate([pair(a.id, b.id, { RI: { score: 0, ...fact } })]);
-        expect(direction(snapshot(generate([pair(a.id, b.id, { RI: { delta: 1, ...fact } })], [message(zero)])))?.axes.RI?.score).toBe(1);
+        expect(direction(snapshot(generate([pair(a.id, b.id, { RI: { score: 1, ...fact } })], [message(zero)])))?.axes.RI)
+            .toMatchObject({ score: 1, delta: 1 });
     });
 
     it('结构化回放承接独立文字和三轴，无需从正文重复解析，也不把变化证据放入快照', () => {
@@ -54,10 +59,10 @@ describe('按实际人物对的三轴关系', () => {
             relation_note: '信任逐渐稳定', relation_fragments: ['她主动归还旧信'] }], {
             state_notes: { a: { name: a.name, note: '我决定兑现承诺' } },
         });
-        const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(raw), actors, previous, () => {});
+        const payload = modelPayload(raw);
         const content = reconcileStoryRelationships(stripStoryRelationshipPanels(raw), previous, { payload });
         expect(snapshot(content)?.relationships[0]).toMatchObject({
-            relation_note: '信任逐渐稳定', axes: { FL: { score: 30, delta: 0 }, RI: { score: 7, delta: 0 } },
+            relation_note: '信任逐渐稳定', axes: {},
         });
         expect(content).not.toContain('我更愿意主动交谈');
         const state = baseline([message(start), message('<story_text>正文。</story_text>', 2, { theaterStoryRelationshipEvent: payload })]);
@@ -77,11 +82,11 @@ describe('按实际人物对的三轴关系', () => {
             identity: '有些在意的人', cognition: '我开始留意她停顿的样子',
             relation_note: '见面后有点别扭', relation_fragments: ['她替我留了靠窗的座位'] }]);
         const issues: string[] = [];
-        const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(input), actors, prior, issue => issues.push(issue));
+        const payload = modelPayload(input, issue => issues.push(issue));
         expect(issues).toEqual([]);
         expect(payload?.updates).toHaveLength(1);
         const output = reconcileStoryRelationships(stripStoryRelationshipPanels(input), prior, { payload });
-        expect(direction(snapshot(output))?.axes).toMatchObject({ FL: { score: 34, delta: 0 } });
+        expect(direction(snapshot(output))?.axes).toEqual({});
         expect(direction(snapshot(output))?.relation_note).toBe('见面后有点别扭');
         const carried = baseline([message(first), message(output, 2, { theaterStoryRelationshipEvent: payload })]);
         expect(direction(carried)).toMatchObject({
@@ -97,7 +102,7 @@ describe('按实际人物对的三轴关系', () => {
     it('文字与数值分别承接；缺少证据不影响三轴，已有轴可直接报告绝对值', () => {
         const first = generate([pair(a.id, b.id, { FL: { score: 40 }, RI: { score: 8 } })]);
         const follow = generate([{ ...pair(a.id, b.id, {
-            FL: { delta: 2 }, RI: { score: 6 },
+            FL: { score: 42 }, RI: { score: 6 },
         }), relation_note: '熟络了，却有些失落', relation_fragments: ['分开时没再回头'] }], [message(first)]);
         expect(direction(snapshot(follow))?.axes).toMatchObject({ FL: { score: 42, delta: 2 }, RI: { score: 6, delta: -2 } });
         expect(direction(snapshot(follow))?.relation_fragments).toEqual(['分开时没再回头']);
@@ -106,69 +111,67 @@ describe('按实际人物对的三轴关系', () => {
         });
     });
 
-    it('仅关系认知变化也可显示旧三轴；展示用 +0 不会重复触发 DI 回落', () => {
+    it('认知可单独写入，楼层面板的历史回退只重放实际提交的数值', () => {
         const first = generate([pair(a.id, b.id, { FL: { score: 60 }, DI: { score: 20, phase: 'ended', strength: 'mild' } })]);
         const raw = proposal([{ ...pair(a.id, b.id, {}), cognition: '我开始怀疑自己的判断' }]);
         const state = baseline([message(first)]);
-        const payload = buildStoryRelationshipPayload(parseStoryRelationshipContent(raw), actors, state, () => {});
+        const payload = modelPayload(raw);
         expect(payload?.updates[0].direction.axes).toEqual({});
         const next = reconcileStoryRelationships(stripStoryRelationshipPanels(raw), state, { payload });
-        expect(direction(snapshot(next))?.cognition).toBe('我开始怀疑自己的判断');
-        expect(direction(snapshot(next))?.axes).toMatchObject({ FL: { score: 60, delta: 0 }, DI: { score: 15, delta: 0 } });
+        expect(payload?.updates[0].direction.cognition).toBe('我开始怀疑自己的判断');
+        expect(direction(snapshot(next))?.axes).toEqual({});
         expect(direction(baseline([message(first), message(next, 2)]))?.axes).toMatchObject({
-            FL: { score: 60 }, DI: { score: 15 },
+            FL: { score: 60 }, DI: { score: 20 },
         });
+        expect(direction(baseline([message(next, 2)]))?.axes).toEqual({});
     });
 
-    it('没有证据标签的 DI 阶段也可在后续剧情中继续承接', () => {
+    it('模型可直接调低 DI，阶段和强度不参与结算', () => {
         const first = generate([pair(a.id, b.id, { DI: { score: 35, strength: 'mild', phase: 'active' } })]);
         const second = generate([pair(a.id, b.id, {
-            DI: { phase: 'ended', strength: 'mild' },
+            DI: { score: 28, phase: 'ended', strength: 'strong' },
         })], [message(first)]);
-        expect(direction(snapshot(second))?.axes.DI?.score).toBe(30);
-        expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI?.score).toBe(30);
+        expect(direction(snapshot(second))?.axes.DI).toMatchObject({ score: 28, delta: -7 });
+        expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI).toEqual({ score: 28 });
     });
 
     it('多人交流名单只帮助识别出场，不擅自令人物失序减弱', () => {
         const first = generate([pair(a.id, b.id, { DI: { score: 20, ...fact } }),
             pair(a.id, c.id, { DI: { score: 20, ...fact } })]);
-        const state = baseline([message(first)]);
-        const cast = new Set(actors.map(actor => actor.id));
-        expect(buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast, interactions: [] })).toBeUndefined();
-        expect(buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast, interactions: [[a.id, b.id]] })).toBeUndefined();
         const carried = baseline([message(first), message('一起等车', 2)]);
         expect(direction(carried, a.id, b.id)?.axes.DI?.score).toBe(20);
         expect(direction(carried, a.id, c.id)?.axes.DI?.score).toBe(20);
     });
 
     it('首次 FL 依据角色卡、既有关系和共同经历，两个方向独立初始化', () => {
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('角色自身的性情、经历、处境与情绪潮线');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('性情、成长经历、彼此的关系历史、当下心理和本轮剧情');
         const guide = buildStoryRelationshipGuide(baseline(), '虚构剧场 test');
         expect(guide).toContain('关系历史归属：虚构剧场 test');
         expect(guide).toContain('"actors":[{"id":"a"');
         expect(guide).not.toContain('trigger');
-        expect(STORY_RELATIONSHIP_PROMPT).toContain('这些内容不以分数变化为前提');
+        expect(STORY_RELATIONSHIP_PROMPT).toContain('只提交 score');
         const first = generate([pair(a.id, b.id, { FL: { score: 74, ...fact } }), pair(b.id, a.id, { FL: { score: 63, ...fact } })]);
-        expect(direction(snapshot(first))?.axes.FL).toMatchObject({ score: 74, initial: true });
+        expect(direction(snapshot(first))?.axes.FL).toMatchObject({ score: 74 });
+        expect(direction(snapshot(first))?.axes.FL?.delta).toBeUndefined();
         expect(direction(snapshot(first), b.id, a.id)?.axes.FL?.score).toBe(63);
     });
 
-    it('更新任意人物对，优先 delta、允许无需证据的增量，忽略自指和未知 ID', () => {
+    it('更新任意人物对，以绝对分取代旧值，跳过无有效 score 的轴', () => {
         const first = generate([
             pair(a.id, b.id, { FL: { score: 98, ...fact }, RI: { score: 20, ...fact } }),
             pair(b.id, a.id, { FL: { score: 10, ...fact }, RI: { score: 2, ...fact } }),
         ]);
         const next = generate([
             pair(a.id, b.id, { FL: { score: 12, delta: 9, ...fact }, RI: { delta: -10 } }),
-            pair(b.id, a.id, { FL: { delta: -20, ...fact }, RI: { delta: 7, ...fact } }),
+            pair(b.id, a.id, { FL: { score: 0, delta: -20, ...fact }, RI: { score: 9, ...fact } }),
             pair(b.id, c.id, { FL: { score: 99, ...fact } }), pair(c.id, b.id, { FL: { score: 34, ...fact } }),
             pair(a.id, a.id, { FL: { score: 100, ...fact } }), pair('unknown', a.id, { FL: { score: 100, ...fact } }),
         ], [message(first)]);
         const panel = snapshot(next)!;
         expect(panel.relationships).toHaveLength(4);
-        expect(direction(panel)?.axes).toMatchObject({ FL: { score: 100, delta: 2 } });
-        expect(direction(panel)?.axes.RI).toMatchObject({ score: 10, delta: -10 });
-        expect(direction(baseline([message(first), message(next, 2)]))?.axes.RI?.score).toBe(10);
+        expect(direction(panel)?.axes).toMatchObject({ FL: { score: 12, delta: -86 } });
+        expect(direction(panel)?.axes.RI).toBeUndefined();
+        expect(direction(baseline([message(first), message(next, 2)]))?.axes.RI?.score).toBe(20);
         expect(direction(panel, b.id, a.id)?.axes).toMatchObject({ FL: { score: 0, delta: -10 }, RI: { score: 9, delta: 7 } });
         expect(direction(panel, b.id, c.id)?.axes.FL?.score).toBe(99);
         expect(direction(panel, c.id, b.id)?.axes.FL?.score).toBe(34);
@@ -208,43 +211,43 @@ describe('按实际人物对的三轴关系', () => {
     });
 
     it.each([['mild', 75], ['moderate', 56], ['strong', 64]] as const)(
-        'DI %s 在明确结束时回落；没有本轮变化就承接原值', (strength, ended) => {
-            const first = generate([pair(a.id, b.id, { FL: { score: 57, ...fact }, RI: { score: 23, ...fact }, DI: { score: 80, ...fact, strength, phase: 'active' } })]);
-            const second = generate([pair(a.id, b.id, { DI: { delta: 0, ...fact, strength, phase: 'ended' } })], [message(first)]);
-            expect(direction(snapshot(second))?.axes.DI).toMatchObject({ score: ended, delta: ended - 80, ...fact });
-            const history = [message(first), message(second, 2)];
-            const state = baseline(history);
-            const payload = buildStoryRelationshipPayload(undefined, actors, state, () => {}, { cast: new Set([a.id, b.id]), interactions: [] });
-            expect(payload).toBeUndefined();
-            const third = reconcileStoryRelationships('<story_text>他们照常等车。</story_text>', state, { payload });
-            expect(snapshot(third)).toBeUndefined();
-            expect(direction(baseline([...history, message(third, 3)]))?.axes)
-                .toMatchObject({ FL: { score: 57 }, RI: { score: 23 }, DI: { score: ended } });
-            expect(direction(baseline([message(first), message('无面板', 2)]))?.axes.DI?.score).toBe(80);
-            const other = generate([pair(b.id, c.id, { FL: { score: 20, ...fact } })], [message(first)]);
-            expect(direction(baseline([message(first), message(other, 2)]))?.axes.DI?.score).toBe(80);
-            expect(direction(baseline([message(first), message(second, 2)]))?.axes.DI?.score).toBe(ended);
+        '旧 v2 DI %s 事件继续按原公式重放，后续绝对分按原值保存', (strength, ended) => {
+            const old = (axes: object) => proposal([pair(a.id, b.id, axes)], { historyVersion: 2 });
+            const first = message(old({ DI: { score: 80, initial: true, strength, phase: 'active' } }));
+            const second = message(old({ DI: { score: ended, initial: false, strength, phase: 'ended', delta: ended - 80, eventDelta: 0 } }), 2);
+            const third = message(generate([pair(a.id, b.id, { DI: { score: 68 } })], [first, second]), 3);
+            expect(direction(baseline([first, second]))?.axes.DI?.score).toBe(ended);
+            expect(direction(baseline([second]))?.axes.DI).toBeUndefined();
+            expect(direction(snapshot(third.content))?.axes.DI?.delta).toBe(68 - ended);
+            expect(direction(baseline([third]))?.axes.DI).toEqual({ score: 68 });
         },
     );
 
     it('旧 XML/JSON 三轴续接，双方实际出演时无需主要角色', () => {
         const old = '<affinity_panel mode="three_axes"><primary_id>a</primary_id><affinity_person><from_id>a</from_id><to_id>b</to_id><FL><score>20</score></FL></affinity_person></affinity_panel>';
         const original = baseline([message(old)]);
-        const xml = '<story_text>递水。</story_text><affinity_panel mode="three_axes"><affinity_person><from_id>a</from_id><to_id>b</to_id><FL><delta>3</delta><trigger>递水</trigger><evidence>接过了</evidence></FL></affinity_person></affinity_panel>';
+        const xml = '<story_text>递水。</story_text><affinity_panel mode="three_axes"><affinity_person><from_id>a</from_id><to_id>b</to_id><FL><score>23</score><delta>3</delta></FL></affinity_person></affinity_panel>';
         expect(direction(snapshot(reconcileStoryRelationships(xml, original)))?.axes.FL?.score).toBe(23);
         expect(snapshot(reconcileStoryRelationships(xml, restrictStoryRelationshipsToCast(original, new Set(['b', 'c']))))).toBeUndefined();
         const otherPair = generate([pair(b.id, c.id, { FL: { score: 46, ...fact } })]);
         expect(direction(snapshot(reconcileStoryRelationships(otherPair, restrictStoryRelationshipsToCast(baseline(), new Set(['b', 'c'])))), b.id, c.id)?.axes.FL?.score).toBe(46);
     });
 
-    it('重写早轮后按增量重放；删除初值不会被后轮快照复活；顺序按消息 ID', () => {
+    it('按消息 ID 重放旧增量和新状态，删除旧初值后只有新的有效绝对分可以初始化', () => {
         const first = generate([pair(a.id, b.id, { FL: { score: 98, ...fact } })]);
-        const next = generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })], [message(first)]);
+        const next = proposal([pair(a.id, b.id, { FL: { score: 100, delta: 2, eventDelta: 9, initial: false } })],
+            { historyVersion: 2 });
         const rewritten = generate([pair(a.id, b.id, { FL: { score: 40, ...fact } })]);
         expect(direction(baseline([message(next, 2), message(rewritten)]))?.axes.FL?.score).toBe(49);
         expect(direction(baseline([message(next, 2)]))?.axes.FL).toBeUndefined();
         expect(direction(baseline([message(first)]))?.axes.FL?.score).toBe(98);
-        expect(direction(baseline([message(first, 1, { theaterCastIds: ['b', 'c'] })]))?.axes.FL).toBeUndefined();
+        const oldSnapshot = proposal([pair(a.id, b.id, { FL: { score: 98 } })]);
+        expect(direction(baseline([message(oldSnapshot, 1, { theaterCastIds: ['b', 'c'] })]))?.axes.FL).toBeUndefined();
+        expect(direction(baseline([message(first, 1, { theaterCastIds: [] })]))?.axes.FL?.score).toBe(98);
+        const payload = modelPayload(proposal([pair(a.id, b.id, { FL: { score: 35, delta: 2 } })]));
+        const absolute = message('<story_text>正文。</story_text>', 3, { theaterStoryRelationshipEvent: payload });
+        expect(direction(baseline([absolute, message(next, 2), message(rewritten)]))?.axes.FL).toEqual({ score: 35 });
+        expect(direction(baseline([message(next, 2), absolute]))?.axes.FL).toEqual({ score: 35 });
     });
 
     it('损坏、重复面板和重复方向不产生更新，正文保留', () => {
@@ -253,8 +256,27 @@ describe('按实际人物对的三轴关系', () => {
             expect(snapshot(reconcileStoryRelationships(content, baseline()))).toBeUndefined();
             expect(stripStoryRelationshipPanels(content)).toContain('story_text');
         }
-        expect(direction(snapshot(generate([pair(a.id, b.id, { FL: { score: 90 } })]))?.axes.FL?.score).toBe(90);
+        expect(direction(snapshot(generate([pair(a.id, b.id, { FL: { score: 90 } })])))?.axes.FL?.score).toBe(90);
         expect(snapshot(generate([pair(a.id, b.id, { FL: { delta: 9, ...fact } })]))).toBeUndefined();
+    });
+
+    it('越界、非整数与缺少 score 的轴保留旧值，仍接收同方向有效分数和文字', () => {
+        const history = [message(generate([pair(a.id, b.id, { FL: { score: 40 }, DI: { score: 20 } })]))];
+        const input = proposal([{ ...pair(a.id, b.id, {
+            FL: { score: 101, delta: -1 }, RI: { score: 33 }, DI: { score: 4.5 },
+        }), relation_note: '她还在等答复' }]);
+        const issues: string[] = [];
+        const payload = modelPayload(input, issue => issues.push(issue));
+        expect(issues).toHaveLength(2);
+        expect(payload?.updates[0].direction.axes).toEqual({ RI: { score: 33 } });
+        const state = baseline([...history, message(input, 2, { theaterStoryRelationshipEvent: payload })]);
+        expect(direction(state)).toMatchObject({ relation_note: '她还在等答复', axes: {
+            FL: { score: 40 }, RI: { score: 33 }, DI: { score: 20 },
+        } });
+        const xml = serializeStoryThreeAxisPanel({ primaryId: '', primaryName: '', relationships: [{
+            fromId: a.id, toId: b.id, fromName: a.name, toName: b.name, axes: { FL: { score: -1 } },
+        }] });
+        expect(modelPayload(xml)).toBeUndefined();
     });
 
     it.each([
@@ -276,6 +298,10 @@ describe('按实际人物对的三轴关系', () => {
             const preset = { ...BUILTIN_NIGHT_SCREENING_PRESET, builtIn };
             expect(resolveStoryPresetDocument(preset, legacy)).toEqual(upgraded);
             expect(resolveStoryPresetDocument(preset, custom)).toEqual(custom);
+            expect(resolveStoryPresetDocument(preset, { ...legacy, promptLayout: 'ordered' }))
+                .toEqual({ ...upgraded, promptLayout: 'ordered' });
+            const orderedCustom = { ...custom, promptLayout: 'ordered' as const };
+            expect(resolveStoryPresetDocument(preset, orderedCustom)).toBe(orderedCustom);
         }
     });
 });

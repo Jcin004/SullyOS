@@ -1,11 +1,10 @@
 import type { Message } from '../types';
 import {
     STORY_RELATIONSHIP_AXES, applyStoryRelationshipUpdate,
-    parseStoryRelationshipContent, legacyStoryRelationshipSelfNotes,
+    parseStoryRelationshipContent, legacyStoryRelationshipSelfNotes, storyRelationshipHistoryMode,
     type StoryRelationshipActor, type StoryRelationshipAxis,
     type StoryRelationshipDirection, type StoryRelationshipPanel, type StoryRelationshipPayload,
 } from './storyTheaterRelationships';
-export { buildStoryRelationshipPayload as realRelationshipPayload } from './storyTheaterRelationships';
 
 export interface RealRelationshipSource {
     kind: 'story' | 'legacy' | 'manual';
@@ -87,7 +86,14 @@ export function upsertRealRelationshipEvent(graph: RealRelationshipGraph, id: st
     const index = graph.events.findIndex(event => event.id === id);
     const meaningful = payload && (payload.updates.length || Object.keys(payload.stateNotes).length);
     if (index < 0 && !meaningful) return false;
-    if (index >= 0 && meaningful && samePayload(graph.events[index], payload)) return false;
+    if (index >= 0 && meaningful && samePayload(graph.events[index], payload)) {
+        // Earlier edits can change the reader's delta without changing this event.
+        if (display && source.messageId !== undefined && payload.updates.some(update => update.mode === 'state')) {
+            const before = realRelationshipGraphBefore(graph, source.messageId);
+            applyRealRelationshipEvent(before, { ...graph.events[index] }, display);
+        }
+        return false;
+    }
     if (!meaningful) {
         graph.events.splice(index, 1);
         rebuildRealRelationshipGraph(graph);
@@ -125,7 +131,7 @@ export function legacyRealRelationshipPayload(message: Message): RealRelationshi
     const stateNotes = { ...panel.state_notes };
     if (panel.primaryId && panel.state_note) stateNotes[panel.primaryId] = { name: panel.primaryName, note: panel.state_note };
     return { version: 1, stateNotes, updates: panel.relationships.map(direction => ({
-        direction, mode: panel.historyVersion === 2 ? 'canonical' : 'snapshot',
+        direction, mode: storyRelationshipHistoryMode(panel),
     })) };
 }
 

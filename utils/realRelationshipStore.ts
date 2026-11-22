@@ -100,7 +100,7 @@ export function syncRealRelationshipMessage(tx: IDBTransaction, row: Message, di
             }, payload, relationships);
             if (changed) write(tx, graph);
             if (display) {
-                const previousPanel = !changed && previousContent
+                const previousPanel = !changed && !relationships?.length && previousContent
                     ? previousContent.match(/<affinity_panel\b[^>]*\bmode="three_axes"[^>]*>[\s\S]*?<\/affinity_panel\s*>/i)?.[0] : undefined;
                 display(previousPanel ? row.content + '\n\n' + previousPanel
                     : appendStoryRelationshipPanel(row.content, relationships ?? [], payload.stateNotes));

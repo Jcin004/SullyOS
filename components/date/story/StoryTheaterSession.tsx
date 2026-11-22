@@ -52,7 +52,7 @@ import {
     type StoryGenerationSettings,
 } from '../../../utils/storyTheater';
 import {
-    buildStoryRelationshipGuide, getStoryRelationshipBaseline, readStoryRelationshipPayload, reconcileStoryRelationships,
+    buildStoryRelationshipGuide, buildStoryRelationshipPayload, getStoryRelationshipBaseline, readStoryRelationshipPayload, reconcileStoryRelationships,
     STORY_RELATIONSHIP_AXES, STORY_RELATIONSHIP_LABELS, STORY_RELATIONSHIP_PROMPT_ID,
     parseStoryRelationshipContent, stripStoryRelationshipPanels,
 } from '../../../utils/storyTheaterRelationships';
@@ -66,7 +66,7 @@ import { processNewMessagesWithAutoArchive } from '../../../utils/memoryPalace/a
 import { incrementDigestRound, runCognitiveDigestion } from '../../../utils/memoryPalace';
 import StoryQuickPresetPanel from './StoryQuickPresetPanel';
 import { StoryAppearanceButton } from './StoryTheaterTheme';
-import { legacyRealRelationshipPayload, realRelationshipBaseline, realRelationshipGraphBefore, realRelationshipPayload } from '../../../utils/realRelationshipModel';
+import { legacyRealRelationshipPayload, realRelationshipBaseline, realRelationshipGraphBefore } from '../../../utils/realRelationshipModel';
 import { realRelationshipSignature } from '../../../utils/realRelationshipStore';
 import { shareOrDownloadFile } from '../../../utils/shareExport';
 import {
@@ -1048,7 +1048,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
                 throw new Error('本轮需要返回剧情正文。');
             }
             if (outOfStory && !outOfStoryBody) throw new Error('本轮没有场外正文，请重试。');
-            // In free continuation this report only supplies participation for DI, never mirrors or private axes.
+            // Free continuation can strip optional cast tags without creating mirrors or private axes.
             const freeCast = !outOfStory && !castTurn && relationshipsEnabled && /<\/?turn_cast\b/i.test(generated)
                 ? parseStoryTheaterReply(assertStoryRerollBody(generated, true), requestActors) : undefined;
             const { castIds, castStatus, interactions, interactionStatus, body, axes } = outOfStory
@@ -1074,14 +1074,12 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const relationshipIssues = new Set<string>();
             const reportRelationshipIssue = (reason: string) => relationshipIssues.add(reason);
             // Read the model response before optional cast/axis tags can discard the report.
-            const panel = relationshipBaseline && !outOfStory ? parseStoryRelationshipContent(generated, reportRelationshipIssue) : undefined;
-            const confirmedCast = freeCast?.castStatus === 'reported' ? new Set(freeCast.castIds)
-                : castStatus === 'reported' ? actualCast : undefined;
-            const participation = confirmedCast && !relationshipIssues.size ? { cast: confirmedCast, interactions } : undefined;
             const relationshipEvent = relationshipBaseline && !outOfStory
-                ? realRelationshipPayload(panel, requestActors, relationshipBaseline, reportRelationshipIssue, participation) : undefined;
+                ? buildStoryRelationshipPayload(parseStoryRelationshipContent(generated, reportRelationshipIssue, 'model'),
+                    requestActors, reportRelationshipIssue)
+                : undefined;
             const fictionalEvent = relationshipHistory && !outOfStory
-                ? relationshipEvent ?? (rerollTarget && relationshipIssues.size
+                ? relationshipEvent ?? (rerollTarget
                     ? readStoryRelationshipPayload(rerollTarget.metadata?.theaterStoryRelationshipEvent) ?? legacyRealRelationshipPayload(rerollTarget)
                     : undefined)
                 : undefined;

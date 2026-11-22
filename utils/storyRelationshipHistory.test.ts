@@ -44,7 +44,7 @@ describe('关系世界历史与原子保存', () => {
         const pending = { id: await DB.saveMessage({ charId: storyTheaterThreadId(realB.id), role: 'user', type: 'text', content: '继续',
             metadata: { source: 'story_theater', theaterId: realB.id } }) };
         const history = await DB.getStoryRelationshipHistory(realB);
-        const content = reconcileStoryRelationships(propose(a.id, b.id, { delta: 5 }), getStoryRelationshipBaseline(history.messages, cast));
+        const content = reconcileStoryRelationships(propose(a.id, b.id, { score: 45 }), getStoryRelationshipBaseline(history.messages, cast));
         await DB.commitStoryTheaterTurn({ charId: storyTheaterThreadId(realB.id), role: 'assistant', type: 'text', content, timestamp: 1,
             metadata: { source: 'story_theater', theaterId: realB.id, theaterRelationshipScope: history.scope } },
             (await DB.getMessageById(pending.id))!, [], undefined, undefined, { entry: realB, signature: history.signature });
@@ -77,7 +77,7 @@ describe('关系世界历史与原子保存', () => {
         if (action === 'edit') await DB.updateMessage(old.id, legacy(a.id, b.id, 29));
         if (action === 'delete') await DB.deleteMessages([old.id]);
         if (action === 'cast') await DB.updateMessageMetadata(old.id, prev => ({ ...prev, theaterCastIds: [b.id] }));
-        const content = reconcileStoryRelationships(propose(a.id, b.id, { delta: 5 }), getStoryRelationshipBaseline(history.messages, cast));
+        const content = reconcileStoryRelationships(propose(a.id, b.id, { score: 25 }), getStoryRelationshipBaseline(history.messages, cast));
         await expect(DB.commitStoryTheaterTurn({ charId: input.charId, role: 'assistant', type: 'text', content, timestamp: 2,
             metadata: { source: 'story_theater', theaterId: one.id, theaterCastIds: [a.id, b.id], theaterRelationshipScope: history.scope } },
             input, [a.id, b.id], (id, original) => createStoryTheaterMirrorMessage(one, id, original), undefined,
@@ -135,7 +135,7 @@ describe('关系世界历史与原子保存', () => {
         const cast = actors('replay-world'), [a, b] = cast;
         const one = await entry('replay-real-1', true), two = await entry('replay-real-2', true);
         const initial = await save(one, reconcileStoryRelationships(propose(a.id, b.id, { score: 40 }), getStoryRelationshipBaseline([], cast)), { theaterRelationshipScope: 'real' });
-        const next = await save(two, reconcileStoryRelationships(propose(a.id, b.id, { delta: 7 }), await state(two, cast)), { theaterRelationshipScope: 'real' });
+        const next = await save(two, propose(a.id, b.id, { delta: 7 }), { theaterRelationshipScope: 'real' });
         const history = await DB.getStoryRelationshipHistory(one);
         const boundary = getStoryRelationshipBaseline(history.messages.filter(row => row.id < initial.id), cast);
         const rewritten = reconcileStoryRelationships(propose(a.id, b.id, { score: 60 }), boundary);

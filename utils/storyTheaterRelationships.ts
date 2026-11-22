@@ -16,7 +16,7 @@ interface Actor {
 
 interface AxisValue {
     score: number;
-    /** A delta-only report cannot initialize an axis. */
+    /** Legacy delta-only reports used a placeholder score. */
     hasScore?: boolean;
     delta?: number;
     trigger?: string;
@@ -53,7 +53,7 @@ export interface StoryRelationshipPanel {
     primaryName: string;
     state_note?: string;
     relationships: Relationship[];
-    historyVersion?: 2;
+    historyVersion?: 2 | 3;
     state_notes?: Record<string, { name: string; note: string }>;
     actors?: Actor[];
     /** Distinguish a deliberately empty report from entries discarded during parsing. */
@@ -62,8 +62,9 @@ export interface StoryRelationshipPanel {
 
 export interface StoryRelationshipUpdate {
     direction: Relationship;
-    mode: 'proposal' | 'snapshot' | 'canonical' | 'manual';
+    mode: 'state' | 'proposal' | 'snapshot' | 'canonical' | 'manual';
     clearAxes?: Axis[];
+    /** Passive decay recorded by older clients. */
     decayDI?: true;
 }
 
@@ -71,11 +72,6 @@ export interface StoryRelationshipPayload {
     version: 1;
     updates: StoryRelationshipUpdate[];
     stateNotes: NonNullable<StoryRelationshipPanel['state_notes']>;
-}
-
-export interface StoryRelationshipParticipation {
-    cast: ReadonlySet<string>;
-    interactions: readonly (readonly string[])[];
 }
 
 export const LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT = "主要角色由剧场设置中的角色 ID 确定，与用户执笔身份分别处理。主要角色在场时，分别记录其与其他出演角色的两个方向。\nFL 关系联结：信任、默契、熟悉、共同经历。首次记录依据双方各自的角色卡、既有关系和共同经历确定初值。后续依据陪伴、理解、合作、失信、排斥等具体相处事实缓慢变化。\nRI 恋爱性心动：由明确的恋爱性吸引触发，如恋爱性的注意、回味、渴望、亲密倾向。辨别竞争性占有与恋爱性亲密排他。时间和距离本身不扣分，有具体的心动消退、反感或排斥才更新。\nDI 失序扰动：具体事件让情绪、注意力或行动节奏偏移，如冒犯、挑衅、胜负、尴尬、惊讶或社交压力。普通好奇不计入。事件仍造成扰动时记 active，结束当轮记 ended；没有扰动事件则省略 phase 和 strength，由程序回落。\n结合双方各自的人格七维、认知和亲历事实判断吸引来源是否影响注意和具体轴：\n身体/审美（外貌、声音、气味、体态、触碰与距离）；能力/人格（才华、专注、判断力、价值观与底线）；被看见/安全（理解、记住细节、接住情绪、尊重边界与可靠）；\n互惠偏爱（被选择、主动、好感暗示与熟悉曝光）；情绪/经历（快乐、日常陪伴、共患难、遗憾与未完成）；反差/未知/社会（神秘、探索、他人认可、竞争与投射）；成长激励（想成为更好的自己、想配得上或并肩）。\n从每个方向的出发人物独立判断。人物只拥有自己能够知道的故事内事实。面板供读者回看。三轴各为 0–100，分别更新，同一事件影响多轴时逐轴写触发事件与证据。\n沿用主要角色自身的 state_note，记录其内在拉扯、选择代价或已形成的新理解。只在有新事实时更新。各方向可用 relation_note 记录当前的关系质地。";
@@ -111,6 +107,7 @@ export const isStoryThreeAxisPanel = (opening: string) => /\bmode\s*=\s*(?:"thre
 const shortText = (value: unknown) => typeof value === 'string' ? value.trim().slice(0, 400) : '';
 const integer = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : undefined;
 const clamp = (score: number) => Math.max(0, Math.min(100, score));
+const isStateScore = (score: number) => Number.isInteger(score) && score >= 0 && score <= 100;
 const pairKey = (fromId: string, toId: string) => JSON.stringify([fromId, toId]);
 
 const encodePanel = (value: unknown) => JSON.stringify(value)
@@ -133,8 +130,9 @@ const strengthOf = (value: unknown): Strength | undefined =>
     value === 'mild' || value === 'moderate' || value === 'strong' ? value : undefined;
 
 type RelationshipIssue = (reason: string) => void;
+type RelationshipPanelSource = 'history' | 'model';
 
-function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRelationshipPanel {
+function readThreeAxisPanel(body: string, report: RelationshipIssue | undefined, source: RelationshipPanelSource): StoryRelationshipPanel {
     const primaryId = field(body, 'primary_id');
     const state_notes: NonNullable<StoryRelationshipPanel['state_notes']> = {};
     for (const record of rawFields(body, 'self_record')) {
@@ -151,21 +149,21 @@ function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRela
         }
         const axes: Relationship['axes'] = {};
         for (const axis of STORY_RELATIONSHIP_AXES) {
-            const source = rawFields(person, axis)[0] || '';
-            const score = fieldInt(source, 'score');
-            const delta = fieldInt(source, 'delta');
-            const phase = field(source, 'phase');
+            const axisBody = rawFields(person, axis)[0] || '';
+            const score = fieldInt(axisBody, 'score');
+            const delta = fieldInt(axisBody, 'delta');
+            const phase = field(axisBody, 'phase');
             if (score === undefined && delta === undefined && !(axis === 'DI' && (phase === 'active' || phase === 'ended'))) {
-                if (source) report?.(axis + ' 缺少有效的 score 或 delta');
+                if (axisBody) report?.(axis + ' 缺少有效的 score');
                 continue;
             }
             axes[axis] = {
-                score: clamp(score ?? 0), delta,
+                score: source === 'model' ? score ?? 0 : clamp(score ?? 0), delta,
                 hasScore: score !== undefined,
-                trigger: shortText(field(source, 'trigger')), evidence: shortText(field(source, 'evidence')),
-                strength: strengthOf(field(source, 'strength')), phase: phase === 'active' || phase === 'ended' ? phase : undefined,
-                initial: field(source, 'initial') === 'true' ? true : field(source, 'initial') === 'false' ? false : undefined,
-                eventDelta: fieldInt(source, 'event_delta'),
+                trigger: shortText(field(axisBody, 'trigger')), evidence: shortText(field(axisBody, 'evidence')),
+                strength: strengthOf(field(axisBody, 'strength')), phase: phase === 'active' || phase === 'ended' ? phase : undefined,
+                initial: field(axisBody, 'initial') === 'true' ? true : field(axisBody, 'initial') === 'false' ? false : undefined,
+                eventDelta: fieldInt(axisBody, 'event_delta'),
             };
         }
         return [{
@@ -180,8 +178,9 @@ function readThreeAxisPanel(body: string, report?: RelationshipIssue): StoryRela
     const primaryNote = body.replace(legacyPersonPattern, '').replace(/<self_record\b[^>]*>[\s\S]*?<\/self_record\s*>/gi, '');
     const hadRelationshipEntries = /<affinity_person\b/i.test(body);
     if (hadRelationshipEntries && !people.length) report?.('人物方向标签未闭合');
+    const version = fieldInt(primaryNote, 'history_version');
     return { primaryId, primaryName: field(body, 'primary_name') || primaryId, state_note: shortText(field(primaryNote, 'state_note')),
-        state_notes, historyVersion: field(body, 'history_version') === '2' ? 2 : undefined, relationships,
+        state_notes, historyVersion: version === 2 || version === 3 ? version : undefined, relationships,
         hadRelationshipEntries };
 }
 
@@ -222,15 +221,16 @@ function readPanel(body: string): StoryRelationshipPanel | undefined {
     return value;
 }
 
-export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json' = 'json', report?: RelationshipIssue): StoryRelationshipPanel | undefined {
-    if (format === 'xml') return readThreeAxisPanel(body, report);
+export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json' = 'json', report?: RelationshipIssue,
+    source: RelationshipPanelSource = 'history'): StoryRelationshipPanel | undefined {
+    if (format === 'xml') return readThreeAxisPanel(body, report, source);
     const value = readPanel(body);
     if (!value) return undefined;
     return {
         primaryId: value.primaryId,
         primaryName: shortText(value.primaryName),
         state_note: shortText(value.state_note),
-        historyVersion: value.historyVersion === 2 ? 2 : undefined,
+        historyVersion: value.historyVersion === 2 || value.historyVersion === 3 ? value.historyVersion : undefined,
         hadRelationshipEntries: value.relationships.length > 0,
         state_notes: value.state_notes && typeof value.state_notes === 'object' ? Object.fromEntries(
             Object.entries(value.state_notes).flatMap(([id, item]) => typeof (item as any)?.note === 'string'
@@ -249,12 +249,12 @@ export function parseStoryRelationshipPanel(body: string, format: 'xml' | 'json'
                 const delta = integer(item?.delta);
                 if (!item) continue;
                 if (score === undefined && delta === undefined && !(axis === 'DI' && (item.phase === 'active' || item.phase === 'ended'))) {
-                    report?.(axis + ' 缺少有效的 score 或 delta');
+                    report?.(axis + ' 缺少有效的 score');
                     continue;
                 }
                 const strength = item.strength;
                 axes[axis] = {
-                    score: clamp(score ?? 0),
+                    score: source === 'model' ? item.score ?? 0 : clamp(score ?? 0),
                     hasScore: score !== undefined,
                     delta,
                     trigger: shortText(item.trigger),
@@ -311,21 +311,22 @@ export function storyTheaterMirrorContent(message: Pick<Message, 'content' | 'ro
         ? stripStoryRelationshipPanels(message.content) : message.content;
 }
 
-const decayDI = (score: number, strength?: Strength) => {
+const legacyDIDecay = (score: number, strength?: Strength) => {
     if (strength === 'strong') return Math.floor(score * 0.8);
     if (strength === 'moderate') return Math.floor(score * 0.7);
     return clamp(score - 5);
 };
 
-export function parseStoryRelationshipContent(content: string, report?: RelationshipIssue): StoryRelationshipPanel | undefined {
+export function parseStoryRelationshipContent(content: string, report?: RelationshipIssue,
+    source: RelationshipPanelSource = 'history'): StoryRelationshipPanel | undefined {
     const panels = Array.from(content.matchAll(legacyPanelPattern)).filter(match => isStoryThreeAxisPanel(match[0].slice(0, match[0].indexOf('>') + 1)));
     const old = Array.from(content.matchAll(panelPattern));
     const openings = Array.from(content.matchAll(/<(?:affinity_panel|relationship_panel)\b[^>]*>/gi))
         .filter(([tag]) => /^<relationship_panel/i.test(tag) || isStoryThreeAxisPanel(tag));
     if (openings.length > 1) { report?.('本轮输出了多份三轴关系面板'); return; }
     if (openings.length > panels.length + old.length) { report?.('三轴关系面板未闭合'); return; }
-    const parsed = panels.length ? parseStoryRelationshipPanel(panels[0][1], 'xml', report)
-        : old.length ? parseStoryRelationshipPanel(old[0][1], 'json', report) : undefined;
+    const parsed = panels.length ? parseStoryRelationshipPanel(panels[0][1], 'xml', report, source)
+        : old.length ? parseStoryRelationshipPanel(old[0][1], 'json', report, source) : undefined;
     if (!parsed) {
         if (old.length) report?.('关系面板 JSON 无效或缺少 relationships 数组');
         else if (/<affinity_panel\b/i.test(content)) report?.('未找到三轴模式的关系面板');
@@ -370,7 +371,8 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
             continue;
         }
         const panel = parseStoryRelationshipContent(message.content);
-        const cast = Array.isArray(message.metadata?.theaterCastIds) ? new Set<string>(message.metadata.theaterCastIds) : undefined;
+        const cast = panel?.historyVersion !== 3 && Array.isArray(message.metadata?.theaterCastIds)
+            ? new Set<string>(message.metadata.theaterCastIds) : undefined;
         const allowed = (id: string) => actors.some(actor => actor.id === id) && (!cast || cast.has(id));
         if (panel) {
             const notes = { ...panel.state_notes };
@@ -378,22 +380,17 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
             for (const [id, value] of Object.entries(notes)) if (allowed(id)) {
                 state_notes[id] = { name: actors.find(actor => actor.id === id)!.name, note: value.note };
             }
+            const mode = storyRelationshipHistoryMode(panel);
             for (const previous of panel.relationships) {
-                const row = byPair.get(pairKey(previous.fromId, previous.toId));
+                const key = pairKey(previous.fromId, previous.toId);
+                const row = byPair.get(key);
                 if (!row || !allowed(row.fromId) || !allowed(row.toId)) continue;
-                if (previous.relation_note) row.relation_note = previous.relation_note;
-                if (previous.relation_fragments?.length) row.relation_fragments = previous.relation_fragments;
-                if (previous.identity !== undefined) row.identity = previous.identity;
-                if (previous.cognition !== undefined) row.cognition = previous.cognition;
-                for (const axis of STORY_RELATIONSHIP_AXES) {
-                    const item = previous.axes[axis];
-                    if (!item) continue;
-                    const prior = row.axes[axis];
-                    // Legacy panels are snapshots, never guessed deltas or five-axis conversions.
-                    const next = replayStoryRelationshipAxis(axis, prior, item, panel.historyVersion);
-                    if (next) row.axes[axis] = { score: next.score, strength: next.strength };
-                    // If its initial assessment was deleted, a later delta cannot invent a new baseline.
-                }
+                byPair.set(key, applyStoryRelationshipUpdate({
+                    mode, direction: {
+                        ...previous, fromName: row.fromName, toName: row.toName,
+                        relation_fragments: previous.relation_fragments?.length ? previous.relation_fragments : undefined,
+                    },
+                }, row).next);
             }
         } else {
             for (const actor of actors) {
@@ -422,28 +419,27 @@ export function buildStoryRelationshipGuide(baseline?: StoryRelationshipPanel, s
             fromId: row.fromId, toId: row.toId, fromName: row.fromName, toName: row.toName,
             identity: row.identity, cognition: row.cognition, relation_note: row.relation_note,
             relation_fragments: row.relation_fragments,
-            axes: Object.fromEntries(Object.entries(row.axes).map(([axis, value]) => [axis, axis === 'DI'
-                ? { score: value.score, strength: value.strength, phase: value.phase } : { score: value.score }])),
+            axes: Object.fromEntries(Object.entries(row.axes).map(([axis, value]) => [axis, { score: value.score }])),
         })) });
 }
 
-export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, proposed?: AxisValue): AxisValue | undefined {
+/** Compatibility for stored event proposals and explicit historical DI decay. */
+function applyLegacyRelationshipProposal(axis: Axis, previous: AxisValue | undefined, proposed?: AxisValue): AxisValue | undefined {
     const score = integer(proposed?.score);
     const prior = previous?.score ?? 0;
     const trigger = shortText(proposed?.trigger);
     const evidence = shortText(proposed?.evidence);
     if (!previous && (score === undefined || proposed?.hasScore === false)) return undefined;
-    // AI can state an absolute value or a delta. When both are present, the delta wins.
     const change = previous ? integer(proposed?.delta) ?? (score === undefined ? 0 : clamp(score) - prior) : score ?? 0;
     if (axis === 'DI') {
         if (proposed) {
             const phase = proposed.phase ?? 'active';
             const strength = proposed.strength ?? previous?.strength ?? 'mild';
             const peak = clamp(prior + change);
-            const next = phase === 'active' ? peak : decayDI(peak, strength);
+            const next = phase === 'active' ? peak : legacyDIDecay(peak, strength);
             return { score: next, delta: next - prior, ...(trigger ? { trigger } : {}), ...(evidence ? { evidence } : {}), strength, phase };
         }
-        const next = decayDI(prior, previous?.strength);
+        const next = legacyDIDecay(prior, previous?.strength);
         return {
             score: next, delta: next - prior, strength: previous?.strength,
             ...(next !== prior ? { trigger: '无持续扰动', evidence: '扰动回落' } : {}),
@@ -453,9 +449,8 @@ export function calculateStoryRelationshipAxis(axis: Axis, previous: AxisValue |
     return { score: next, delta: next - prior, ...(trigger ? { trigger } : {}), ...(evidence ? { evidence } : {}) };
 }
 
-/** Existing v1 absolute snapshots and v2 canonical events share one replay rule. */
-export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | undefined, item: AxisValue, historyVersion?: 2): AxisValue | undefined {
-    if (historyVersion !== 2 || item.initial === true) return { score: item.score, strength: item.strength };
+function replayCanonicalRelationshipAxis(axis: Axis, previous: AxisValue | undefined, item: AxisValue): AxisValue | undefined {
+    if (item.initial === true) return { score: item.score, strength: item.strength };
     if (!previous) return undefined;
     // A canonical event has already been validated. Optional provenance must not erase its change.
     // DI without a phase still represents a passive decay in older panels.
@@ -463,17 +458,27 @@ export function replayStoryRelationshipAxis(axis: Axis, previous: AxisValue | un
     if (axis === 'DI' && item.eventDelta === 0 && item.delta === 0 && !item.phase) {
         return { score: previous.score, strength: previous.strength };
     }
-    return axis === 'DI' ? calculateStoryRelationshipAxis(axis, previous,
+    return axis === 'DI' ? applyLegacyRelationshipProposal(axis, previous,
         item.phase && item.strength ? { ...item, delta: item.eventDelta ?? item.delta ?? 0 } : undefined)
         : { score: clamp(previous.score + (item.eventDelta ?? item.delta ?? 0)), strength: item.strength };
 }
 
-/** Accept independently described character states. Participation never invents a DI change. */
+export function storyRelationshipHistoryMode(panel: StoryRelationshipPanel): StoryRelationshipUpdate['mode'] {
+    if (panel.historyVersion === 3) return 'state';
+    return panel.historyVersion === 2 ? 'canonical' : 'snapshot';
+}
+
+function readRelationshipAxisState(value: AxisValue | undefined): AxisValue | undefined {
+    if (!value || value.hasScore === false || !isStateScore(value.score)) return undefined;
+    const { score, trigger, evidence } = value;
+    return { score, ...(trigger ? { trigger } : {}), ...(evidence ? { evidence } : {}) };
+}
+
+/** Validate model scores independently of the prior state and the direction's text. */
 export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | undefined, actors: readonly Actor[],
-    baseline: StoryRelationshipPanel, report: RelationshipIssue, _participation?: StoryRelationshipParticipation): StoryRelationshipPayload | undefined {
+    report: RelationshipIssue): StoryRelationshipPayload | undefined {
     const names = new Map(actors.map(actor => [actor.id, actor.name]));
     const resolve = storyCandidateResolver(actors);
-    const previous = new Map(baseline.relationships.map(row => [pairKey(row.fromId, row.toId), row]));
     const updates = new Map<string, StoryRelationshipUpdate>();
     const seen = new Set<string>();
     for (const row of panel?.relationships ?? []) {
@@ -488,19 +493,15 @@ export function buildStoryRelationshipPayload(panel: StoryRelationshipPanel | un
         for (const axis of STORY_RELATIONSHIP_AXES) {
             const value = row.axes[axis];
             if (!value) continue;
-            const label = names.get(fromId) + ' → ' + names.get(toId) + ' ' + axis;
-            const prior = previous.get(key)?.axes[axis];
-            if (!prior && value.hasScore === false) {
-                report(label + ' 尚未初始化，需要首次评分');
-                continue;
-            }
-            axes[axis] = value;
+            const state = readRelationshipAxisState(value);
+            if (state) axes[axis] = state;
+            else report(names.get(fromId) + ' → ' + names.get(toId) + ' ' + axis + ' 需要 0–100 的整数 score');
         }
         const hasAxes = Object.keys(axes).length > 0;
         const { identity, cognition, relation_note } = row;
         const relation_fragments = row.relation_fragments?.length ? row.relation_fragments : undefined;
         if (!hasAxes && identity === undefined && cognition === undefined && relation_note === undefined && !relation_fragments) continue;
-        updates.set(key, { mode: 'proposal', direction: {
+        updates.set(key, { mode: 'state', direction: {
             fromId, toId, fromName: names.get(fromId)!, toName: names.get(toId)!, axes, identity, cognition,
             ...(row.trigger ? { trigger: row.trigger } : {}), ...(row.evidence ? { evidence: row.evidence } : {}),
             relation_note, relation_fragments,
@@ -523,7 +524,7 @@ export function readStoryRelationshipPayload(value: unknown): StoryRelationshipP
     const payload = value as StoryRelationshipPayload | undefined;
     if (payload?.version === 1 && payload.stateNotes && Array.isArray(payload.updates) && payload.updates.every(update =>
         update?.direction?.fromId && update.direction.toId && update.direction.axes
-        && ['proposal', 'snapshot', 'canonical'].includes(update.mode))) return payload;
+        && ['state', 'proposal', 'snapshot', 'canonical'].includes(update.mode))) return payload;
 }
 
 /** Shared direction reducer for the two world scopes, ledger replay and the reader's panel. */
@@ -536,41 +537,36 @@ export function applyStoryRelationshipUpdate(update: StoryRelationshipUpdate, pr
         const value = row.axes[axis], prior = next.axes[axis];
         if (update.clearAxes?.includes(axis)) { delete next.axes[axis]; continue; }
         let after: AxisValue | undefined;
-        if (value) {
-            if (update.mode === 'canonical') after = replayStoryRelationshipAxis(axis, prior, value, 2);
-            else if (update.mode === 'proposal') after = calculateStoryRelationshipAxis(axis, prior, value);
+        if (update.mode === 'state') {
+            after = readRelationshipAxisState(value);
+        } else if (value) {
+            if (update.mode === 'canonical') after = replayCanonicalRelationshipAxis(axis, prior, value);
+            else if (update.mode === 'proposal') after = applyLegacyRelationshipProposal(axis, prior, value);
             else if (value.hasScore !== false) after = { ...value };
-            else if (prior) after = calculateStoryRelationshipAxis(axis, prior, value);
+            else if (prior) after = applyLegacyRelationshipProposal(axis, prior, value);
         } else if (axis === 'DI' && update.decayDI && prior) {
-            after = calculateStoryRelationshipAxis(axis, prior);
+            after = applyLegacyRelationshipProposal(axis, prior);
         }
         if (!after) continue;
         next.axes[axis] = after;
-        if (render && (value || after.score !== prior?.score)) displayed[axis] = { ...after, initial: !prior,
-            eventDelta: prior ? value?.eventDelta ?? value?.delta
-                ?? (value?.score === undefined ? 0 : clamp(value.score) - prior.score) : value?.score };
+        if (render && (value || after.score !== prior?.score)) {
+            displayed[axis] = {
+                score: after.score, trigger: after.trigger, evidence: after.evidence,
+                delta: prior === undefined ? undefined : after.score - prior.score,
+            };
+        }
     }
     for (const field of ['identity', 'cognition', 'trigger', 'evidence', 'relation_note', 'relation_fragments'] as const) {
         if (row[field] !== undefined) Object.assign(next, { [field]: row[field] });
     }
     const visible = Object.keys(displayed).length > 0 || row.identity !== undefined
         || row.cognition !== undefined || row.relation_note !== undefined || Boolean(row.relation_fragments?.length);
-    if (render && visible) {
-        // Display established axes at +0 when only the relationship's texture changed.
-        // These display-only values do not enter the event ledger as updates.
-        for (const axis of STORY_RELATIONSHIP_AXES) {
-            if (displayed[axis] || !next.axes[axis]) continue;
-            const value = next.axes[axis]!;
-            displayed[axis] = { score: value.score, delta: 0, initial: false, eventDelta: 0,
-                ...(value.strength ? { strength: value.strength } : {}) };
-        }
-    }
     return { next, display: render && visible ? { ...row, axes: displayed } : undefined };
 }
 
 export function appendStoryRelationshipPanel(prose: string, relationships: Relationship[], state_notes: StoryRelationshipPayload['stateNotes']): string {
     if (!relationships.length && !Object.keys(state_notes).length) return prose;
-    return prose + '\n\n' + serializeStoryThreeAxisPanel({ primaryId: '', primaryName: '', historyVersion: 2, relationships, state_notes });
+    return prose + '\n\n' + serializeStoryThreeAxisPanel({ primaryId: '', primaryName: '', historyVersion: 3, relationships, state_notes });
 }
 
 /** Legacy string callers use the same parser and reducer. The session passes its validated event. */
@@ -578,8 +574,8 @@ export function reconcileStoryRelationships(content: string, baseline?: StoryRel
     prepared?: { payload: StoryRelationshipPayload | undefined }): string {
     const prose = prepared ? content : stripStoryRelationshipPanels(content);
     if (!baseline) return prose;
-    const payload = prepared ? prepared.payload : buildStoryRelationshipPayload(parseStoryRelationshipContent(content),
-        baseline.actors ?? [], baseline, () => {});
+    const payload = prepared ? prepared.payload : buildStoryRelationshipPayload(parseStoryRelationshipContent(content, undefined, 'model'),
+        baseline.actors ?? [], () => {});
     if (!payload) return prose;
     const previous = new Map(baseline.relationships.map(row => [pairKey(row.fromId, row.toId), row]));
     const relationships = payload.updates.flatMap(update => {

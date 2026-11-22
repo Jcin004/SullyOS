@@ -3,8 +3,8 @@ import type { CharacterProfile, Message, StoryTheaterEntry } from '../types';
 import { DB, openDB } from './db';
 import { createStoryTheaterDraft, createStoryTheaterMirrorMessage, storyTheaterThreadId } from './storyTheater';
 import { replaceStoryTheaterReply } from './storyTheaterReply';
-import { realRelationshipPayload, realRelationshipBaseline, realRelationshipGraphBefore, realRelationshipKey, type RealRelationshipGraph } from './realRelationshipModel';
-import { buildStoryRelationshipGuide, parseStoryRelationshipContent, stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
+import { realRelationshipBaseline, realRelationshipKey, type RealRelationshipGraph } from './realRelationshipModel';
+import { buildStoryRelationshipGuide, buildStoryRelationshipPayload, parseStoryRelationshipContent, stripStoryRelationshipPanels, STORY_RELATIONSHIP_PROMPT } from './storyTheaterRelationships';
 import { REAL_RELATIONSHIP_GRAPH_KEY, realRelationshipSignature } from './realRelationshipStore';
 import { exportActivityTextAsset } from './activityBackup';
 import { remapIndependentUser } from './independentUserImport';
@@ -30,17 +30,17 @@ async function seed(entry: StoryTheaterEntry, content: string, metadata = {}) {
         metadata: { source: 'story_theater', theaterId: entry.id, ...metadata } });
     return (await DB.getMessageById(id))!;
 }
-function prepareReply(content: string, graph: RealRelationshipGraph, actors: Awaited<ReturnType<typeof fixture>>['actors']) {
+function prepareReply(content: string, actors: Awaited<ReturnType<typeof fixture>>['actors']) {
     const issues: string[] = [];
-    const panel = parseStoryRelationshipContent(content, reason => issues.push(reason));
-    const payload = panel && realRelationshipPayload(panel, actors, realRelationshipBaseline(graph, actors), reason => issues.push(reason));
+    const reportIssue = (reason: string) => issues.push(reason);
+    const panel = parseStoryRelationshipContent(content, reportIssue, 'model');
+    const payload = buildStoryRelationshipPayload(panel, actors, reportIssue);
     return { content: stripStoryRelationshipPanels(content), payload, issues };
 }
 async function turn(f: Awaited<ReturnType<typeof fixture>>, entry: StoryTheaterEntry, raw: string,
     options: { castFailed?: boolean; replace?: Message; snapshot?: RealRelationshipGraph; failMirror?: boolean } = {}) {
     const snapshot = options.snapshot || await DB.getRealRelationshipGraph();
-    const baseline = realRelationshipGraphBefore(snapshot, options.replace?.id);
-    const prepared = prepareReply(raw, baseline, f.actors);
+    const prepared = prepareReply(raw, f.actors);
     const pending = options.replace ? undefined : (await DB.getMessageById(await DB.saveMessage({
         charId: storyTheaterThreadId(entry.id), role: 'user', type: 'text', content: '继续本轮',
         metadata: { source: 'story_theater', theaterId: entry.id },
@@ -107,17 +107,17 @@ describe('真实世界关系网独立状态', () => {
         finally { scan.mockRestore(); }
     });
 
-    it('FL=5 → 出演名单解析失败（有效关系仍保存）→ 下一轮 FL+5 = 10', async () => {
+    it('出演名单解析失败时仍保存关系文字与绝对分', async () => {
         const f = await fixture('cast-failed');
         await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
         const failed = await turn(f, f.a, report([row(f.from, f.to, {}, { identity: '可靠的朋友', cognition: '我知道她会履约', ...fact })]), { castFailed: true });
         expect(failed.metadata?.theaterCastIds).toEqual([]);
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to)).toMatchObject({ identity: '可靠的朋友', axes: { FL: { score: 5 } } });
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 5, ...fact } })]));
+        await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 10, ...fact } })]));
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(10);
         const firstFailed = await fixture('first-cast-failed');
         await turn(firstFailed, firstFailed.a, report([row(firstFailed.from, firstFailed.to, { FL: { score: 5, ...fact } })]), { castFailed: true });
-        await turn(firstFailed, firstFailed.b, report([row(firstFailed.from, firstFailed.to, { FL: { delta: 5, ...fact } })]));
+        await turn(firstFailed, firstFailed.b, report([row(firstFailed.from, firstFailed.to, { FL: { score: 10, ...fact } })]));
         expect(direction(await DB.getRealRelationshipGraph(), firstFailed.from, firstFailed.to).axes.FL?.score).toBe(10);
     });
 
@@ -125,13 +125,12 @@ describe('真实世界关系网独立状态', () => {
         const f = await fixture('continuity');
         await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
         expect(buildStoryRelationshipGuide(realRelationshipBaseline(await DB.getRealRelationshipGraph(), f.actors), '真实世界')).toContain('"score":5');
-        const previous = await DB.getRealRelationshipGraph();
         await seed(f.fiction, report([row(f.from, f.to, { FL: { score: 99 } })]), { theaterRealRelationshipProtocol: 1,
-            theaterRealRelationshipEvent: prepareReply(report([row(f.from, f.to, { FL: { score: 99, ...fact } })]), previous, f.actors).payload });
+            theaterRealRelationshipEvent: prepareReply(report([row(f.from, f.to, { FL: { score: 99, ...fact } })]), f.actors).payload });
         await turn(f, f.a, '<story_text>独自整理信件。</story_text>');
         await turn(f, f.a, '<story_text>剧情仍有效。</story_text><relationship_panel>{broken');
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(5);
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 5, ...fact } })]));
+        await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 10, ...fact } })]));
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(10);
     });
 
@@ -145,13 +144,16 @@ describe('真实世界关系网独立状态', () => {
         let graph = await DB.getRealRelationshipGraph();
         expect(direction(graph, f.from, f.to)).toMatchObject({ identity: '恋人', axes: { FL: { score: 20 }, RI: { score: 30 }, DI: { score: 80 } } });
         expect(direction(graph, f.to, f.from).identity).toBeUndefined();
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 2, ...fact } })]));
+        await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 22, ...fact } })]));
         graph = await DB.getRealRelationshipGraph();
         expect(direction(graph, f.from, f.to)).toMatchObject({ identity: '恋人', axes: { FL: { score: 22 }, DI: { score: 80 } } });
         expect(direction(graph, f.to, f.from).axes.FL?.score).toBe(75);
         expect(direction(graph, f.other, f.to).axes.FL?.score).toBe(42);
         await turn(f, f.b, report([row(f.from, f.to, { DI: { delta: 0, ...fact, phase: 'ended', strength: 'strong' } })]));
-        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.DI?.score).toBe(64);
+        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.DI?.score).toBe(80);
+        const next = await turn(f, f.b, report([row(f.from, f.to, { DI: { score: 68, phase: 'ended', strength: 'strong' } })]));
+        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.DI).toEqual({ score: 68 });
+        expect(parseStoryRelationshipContent(next.content)?.relationships[0].axes.DI?.delta).toBe(-12);
     });
 
     it('第一视角认知只存中央 metadata/独立图，文本镜像不携带其他人物的内心', async () => {
@@ -202,7 +204,13 @@ describe('真实世界关系网独立状态', () => {
     it('重写和删除旧剧情重算后续增量，保留原消息 ID，不让快照复活被删初值', async () => {
         const f = await fixture('rewrite');
         const first = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 10, ...fact } })]));
-        const second = await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 5, ...fact } })]));
+        const second = await seed(f.b, '<story_text>旧版生成。</story_text>', {
+            theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1,
+            theaterRealRelationshipEvent: { version: 1, stateNotes: {}, updates: [{ mode: 'proposal',
+                direction: { ...row(f.from, f.to, { FL: { score: 0, hasScore: false, delta: 5, ...fact } }),
+                    fromName: '狛治', toName: '香奈乎' },
+            }] },
+        });
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(15);
         const rewritten = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 30, ...fact } })]), { replace: first });
         expect(rewritten.id).toBe(first.id);
@@ -213,23 +221,45 @@ describe('真实世界关系网独立状态', () => {
         expect(retried.content).toBe(rewritten.content);
         expect((await DB.getRealRelationshipGraph()).revision).toBe(graph.revision);
         await DB.deleteMessages([first.id]);
-        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL).toBeUndefined();
+        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to)?.axes.FL).toBeUndefined();
         expect(await DB.getMessageById(second.id)).not.toBeNull();
     });
 
     it('重写旧的无关系楼层也按原位置插入；手动修正保持其原来时序', async () => {
         const f = await fixture('backdated');
         const first = await turn(f, f.a, '<story_text>独自阅读。</story_text>');
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 5, ...fact } })]));
+        await seed(f.b, report([row(f.from, f.to, { FL: { score: 25, delta: 5, eventDelta: 5, initial: false } })],
+            { historyVersion: 2 }));
         await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 20, ...fact } })]), { replace: first });
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(25);
         let graph = await DB.getRealRelationshipGraph();
         graph = await DB.editRealRelationship({ fromId: f.from, toId: f.to, identity: '朋友', cognition: '我选择相信她', axes: { FL: 50, RI: null }, reason: '校正既有关系' }, graph.revision);
         await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 40, ...fact } })]), { replace: (await DB.getMessageById(first.id))! });
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(50);
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 2, ...fact } })]));
+        await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 52, ...fact } })]));
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(52);
         expect(graph.directions[realRelationshipKey(f.from, f.to)].axes.RI).toBeUndefined();
+    });
+
+    it('重写和删除先前楼层后，绝对分不变，重写时按当时的前值显示差值', async () => {
+        const f = await fixture('absolute-replay');
+        const first = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 35 } })]));
+        const follow = report([row(f.from, f.to, { FL: { score: 68, delta: -10 } })]);
+        const second = await turn(f, f.b, follow);
+        expect(parseStoryRelationshipContent(second.content)?.relationships[0].axes.FL).toMatchObject({ score: 68, delta: 33 });
+        await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 42 } })]), { replace: first });
+        let graph = await DB.getRealRelationshipGraph();
+        expect(graph.events.find(event => event.source.messageId === second.id)?.changes).toEqual([
+            { fromId: f.from, toId: f.to, axis: 'FL', before: 42, after: 68 },
+        ]);
+        const rewritten = await turn(f, f.b, follow, { replace: second });
+        expect(parseStoryRelationshipContent(rewritten.content)?.relationships[0].axes.FL).toMatchObject({ score: 68, delta: 26 });
+        expect(await DB.getRealRelationshipGraph()).toEqual(graph);
+        await DB.deleteMessage(first.id);
+        const afterDelete = await turn(f, f.b, follow, { replace: rewritten });
+        expect(parseStoryRelationshipContent(afterDelete.content)?.relationships[0].axes.FL?.delta).toBeUndefined();
+        graph = await DB.getRealRelationshipGraph();
+        expect(direction(graph, f.from, f.to).axes.FL).toEqual({ score: 68 });
     });
 
     it('未初始化与真正 0 分独立，手动编辑及并发校验不覆盖新状态', async () => {
@@ -242,7 +272,7 @@ describe('真实世界关系网独立状态', () => {
         expect(direction(graph, f.from, f.to).axes.FL?.score).toBe(0);
         await expect(DB.editRealRelationship({ fromId: f.from, toId: f.to, identity: '', cognition: '', axes: { FL: 90 }, reason: '' }, oldRevision)).rejects.toThrow('别处更新');
         await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 99, delta: 5, ...fact } })]));
-        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(5);
+        expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(99);
     });
 
     it('两个真实场景并发提交同一基线，只有一笔成功；失败重试不叠加旧评分', async () => {
@@ -288,7 +318,7 @@ describe('真实世界关系网独立状态', () => {
         const f = await fixture('free');
         const saved = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
         const snapshot = await DB.getRealRelationshipGraph();
-        const next = prepareReply(report([row(f.from, f.to, { FL: { score: 22, ...fact } })]), realRelationshipGraphBefore(snapshot, saved.id), f.actors);
+        const next = prepareReply(report([row(f.from, f.to, { FL: { score: 22, ...fact } })]), f.actors);
         await replaceStoryTheaterReply(saved, next.content, { theaterRelationshipScope: 'real', theaterRealRelationshipProtocol: 1, theaterRealRelationshipEvent: next.payload }, true, undefined,
             { entry: f.a, signature: realRelationshipSignature(snapshot) });
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(22);
@@ -305,14 +335,14 @@ describe('真实世界关系网独立状态', () => {
         const f = await fixture('patch-restore');
         const first = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
         let graph = await DB.getRealRelationshipGraph();
-        graph = await DB.editRealRelationship({ fromId: f.from, toId: f.to, identity: '朋友', axes: {}, reason: '只补关系认同' }, graph.revision);
+        await DB.editRealRelationship({ fromId: f.from, toId: f.to, identity: '朋友', axes: {}, reason: '只补关系认同' }, graph.revision);
         await DB.patchRealRelationshipLayout({ positions: { [f.from]: { x: 111, y: 222 } } });
-        const prepared = prepareReply(report([row(f.from, f.to, { FL: { score: 20, ...fact } })]), realRelationshipGraphBefore(graph, first.id), f.actors);
+        const prepared = prepareReply(report([row(f.from, f.to, { FL: { score: 20, ...fact } })]), f.actors);
         await DB.importFullData({ messages: [{ ...first, content: prepared.content, metadata: { ...first.metadata, theaterRealRelationshipEvent: prepared.payload } }] } as any);
         graph = await DB.getRealRelationshipGraph();
         expect(direction(graph, f.from, f.to)).toMatchObject({ identity: '朋友', axes: { FL: { score: 20 } } });
         expect((await DB.getRealRelationshipLayout()).positions[f.from]).toEqual({ x: 111, y: 222 });
-        await turn(f, f.b, report([row(f.from, f.to, { FL: { delta: 5, ...fact } })]));
+        await turn(f, f.b, report([row(f.from, f.to, { FL: { score: 25, ...fact } })]));
         expect(direction(await DB.getRealRelationshipGraph(), f.from, f.to).axes.FL?.score).toBe(25);
     });
 
@@ -356,14 +386,13 @@ describe('真实世界关系网独立状态', () => {
     it('无效人物、重复方向、缺少初始值不被误判为空报告，显式空报告才能撤销重写楼层的事件', async () => {
         const f = await fixture('invalid-rewrite');
         const original = await turn(f, f.a, report([row(f.from, f.to, { FL: { score: 5, ...fact } })]));
-        const graph = await DB.getRealRelationshipGraph();
         for (const invalid of [[null], [row('unknown', f.to, { FL: { score: 88, ...fact } })],
             [row(f.from, f.to, { FL: { delta: 5 } })],
             [row(f.from, f.to, { FL: { delta: 5, ...fact } }), row(f.from, f.to, { FL: { delta: 5, ...fact } })]]) {
-            const prepared = prepareReply(report(invalid), realRelationshipGraphBefore(graph, original.id), f.actors);
+            const prepared = prepareReply(report(invalid), f.actors);
             expect(prepared.payload).toBeUndefined();
         }
-        const malformedXml = prepareReply('<affinity_panel mode="three_axes"><FL><delta>5</delta></FL></affinity_panel>', graph, f.actors);
+        const malformedXml = prepareReply('<affinity_panel mode="three_axes"><FL><delta>5</delta></FL></affinity_panel>', f.actors);
         expect(malformedXml.payload).toBeUndefined();
         expect(malformedXml.issues).toEqual(['三轴关系面板中缺少有效的人物方向或自我记录']);
         await turn(f, f.a, report([]), { replace: original });
