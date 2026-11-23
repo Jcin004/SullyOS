@@ -679,7 +679,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             }, { skipTimeAwareness: true }));
             contexts.push({ actor, core, recent });
         }
-        return formatStoryActorContexts(contexts, userProfile.name, mask.name, entry.writesToCharacterMemory);
+        return formatStoryActorContexts(contexts, userProfile.name, mask.name, true);
     }, [entry.id, entry.carryCharacterMemory, entry.writesToCharacterMemory, mask.name, memoryPalaceConfig.embedding, remoteVectorConfig, userProfile]);
 
     const buildMaskMemoryContext = useCallback(async (query: string): Promise<string> => {
