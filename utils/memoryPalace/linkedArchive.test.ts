@@ -17,6 +17,17 @@ describe('new linked archives, old archives unchanged', () => {
     it('keeps historical repair/import generation as plain snapshots', () => {
         expect(buildAutoArchiveFragments([node], 0)!.fragments[0].palaceMemoryId).toBeUndefined();
     });
+    it('shows the same experience day in storage and in the archive view', async () => {
+        const experienced = { ...node, experiencedAt: new Date(2026, 8, 15, 12).getTime() };
+        vi.spyOn(MemoryNodeDB, 'getById').mockResolvedValue(experienced as MemoryNode);
+        try {
+            const [linked] = buildAutoArchiveFragments([experienced], 0, true)!.fragments;
+            expect(linked.date).toBe('2026-09-15');
+            expect((await resolveLinkedArchives(node.charId, [linked]))[0].date).toBe(linked.date);
+        } finally {
+            vi.restoreAllMocks();
+        }
+    });
     it('resolves only explicit links and leaves fallback text untouched in storage', async () => {
         const spy = vi.spyOn(MemoryNodeDB, 'getById').mockResolvedValue({ ...node, content: '宫殿修改后' } as MemoryNode);
         try {

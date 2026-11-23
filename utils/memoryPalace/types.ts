@@ -85,6 +85,7 @@ export interface MemoryNode {
     embedded: boolean;          // 是否已向量化
     createdAt: number;          // timestamp ms
     experiencedAt?: number;     // 事件经历时间，毫秒；可独立于归档时间
+    dailyArchiveDate?: string;  // 日结使用的日历日，保留提取时的角色或剧场日期
     lastAccessedAt: number;     // timestamp ms
     accessCount: number;
     pinnedUntil?: number | null; // 便利贴置顶截止时间（timestamp ms），null/undefined = 不置顶

@@ -33,6 +33,7 @@ import { fulfillAnticipation, disappointAnticipation, createAnticipation } from 
 import { vectorizeAndStore } from './vectorStore';
 import { safeFetchJson } from '../safeApi';
 import { safeParseJsonArray } from './jsonUtils';
+import { getMemoryExperienceTime } from './memoryDate';
 
 /** 从 localStorage 读取远程向量配置（与 pipeline.ts 同一份来源） */
 function getRemoteVectorConfig(): RemoteVectorConfig | undefined {
@@ -306,7 +307,7 @@ ${material.selfRoomNodes.map((n, i) => `[R${i}] (${n.tags.join(', ')}): ${n.cont
 ` : ''}
 ${material.recentEpisodes.length > 0 ? `### 最近的经历（回看）
 这些是上次静下来回想之后，你与其他角色相处的经历。回头看看它们，有些经历放在一起会让你注意到当时没注意的东西：
-${material.recentEpisodes.map((n, i) => `[E${i}] (${fmtDate(n.createdAt)}, ${n.mood}): ${n.content}`).join('\n')}
+${material.recentEpisodes.map((n, i) => `[E${i}] (${fmtDate(getMemoryExperienceTime(n))}, ${n.mood}): ${n.content}`).join('\n')}
 ` : `### 最近发生的事
 ${material.recentContext.map(n => `- (${n.room}, ${n.mood}): ${n.content}`).join('\n')}`}
 

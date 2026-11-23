@@ -5,7 +5,6 @@ import {
     createBlankStoryPreset,
     estimateStoryTokens,
     formatStoryActorContexts,
-    getStoryCharacterContextLimit,
 } from './storyTheater';
 
 const actor = (id: number) => ({ id: `actor-${id}`, name: `演员${id}` }) as CharacterProfile;
@@ -72,10 +71,7 @@ describe('真实剧情的角色原文', () => {
         expect(formatted.split('<story_text>')).toHaveLength(3);
     });
 
-    it('0 份角色原文时仍渲染所有角色的设定，并沿用未设置时的默认额度', () => {
-        expect(getStoryCharacterContextLimit(undefined)).toBe(100);
-        expect(getStoryCharacterContextLimit(0)).toBe(0);
-        expect(getStoryCharacterContextLimit(1000)).toBe(500);
+    it('角色没有可读原文时仍渲染所有角色的设定', () => {
         const contexts = [1, 2, 3].map(id => ({ actor: actor(id), core: `角色卡${id}`, recent: [] }));
         const rendered = formatStoryActorContexts(contexts, '本人', '本人', true);
         expect(rendered).toBe('角色卡1\n\n---\n\n角色卡2\n\n---\n\n角色卡3');

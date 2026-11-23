@@ -12,8 +12,10 @@ import {
 } from '@phosphor-icons/react';
 import type { APIConfig, CharacterProfile, UserProfile } from '../../types';
 import { useBlobRefUrl } from '../../utils/blobRef';
+import { getMemoryExperienceTime } from '../../utils/memoryPalace/memoryDate';
 import {
     diagnoseRecallIssue,
+    formatRepairBoxDateRange,
     formatRepairMemoryDate,
     getMemoryGuideCopy,
     loadRecallRepairSnapshot,
@@ -57,22 +59,6 @@ function nodeKindLabel(item: RepairNode): string {
     if (item.kind === 'archived') return '旧细节（已合入总结）';
     if (item.kind === 'live') return '近期片段';
     return '独立记忆';
-}
-
-function boxDateLabel(nodes: RepairNode[]): string {
-    if (nodes.length === 0) return '日期不详';
-    const timestamps = nodes
-        .filter(item => item.kind !== 'summary')
-        .map(item => item.node.createdAt)
-        .filter(value => Number.isFinite(value))
-        .sort((a, b) => a - b);
-    const source = timestamps.length > 0
-        ? timestamps
-        : nodes.map(item => item.node.createdAt).filter(value => Number.isFinite(value));
-    if (source.length === 0) return '日期不详';
-    const first = formatRepairMemoryDate(source[0]);
-    const last = formatRepairMemoryDate(source[source.length - 1]);
-    return first === last ? first : `${first} — ${last}`;
 }
 
 const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
@@ -538,7 +524,7 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
                                         <div className="memory-strip-kicker">
                                             <span>{nodeKindLabel(item)}</span>
                                             <span>·</span>
-                                            <span>{formatRepairMemoryDate(item.node.createdAt)}</span>
+                                            <span>{formatRepairMemoryDate(getMemoryExperienceTime(item.node))}</span>
                                             <span>·</span>
                                             <span>{getRoomLabel(item.node.room, user.name)}</span>
                                             {item.recalled && <span>刚才用到了这条</span>}
@@ -567,7 +553,7 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
                                         <div className="memory-strip-kicker">
                                             <span>独立记忆</span>
                                             <span>·</span>
-                                            <span>{formatRepairMemoryDate(item.node.createdAt)}</span>
+                                            <span>{formatRepairMemoryDate(getMemoryExperienceTime(item.node))}</span>
                                             <span>·</span>
                                             <span>{getRoomLabel(item.node.room, user.name)}</span>
                                             {suspectIds.includes(item.node.id) && <span>可能有关</span>}
@@ -587,7 +573,7 @@ const MemoryRepairPortal: React.FC<MemoryRepairPortalProps> = ({
                                         >
                                             <div className="memory-strip-kicker">
                                                 <span>事件盒</span><span>·</span>
-                                                <span>{boxDateLabel(group.nodes)}</span><span>·</span>
+                                                <span>{formatRepairBoxDateRange(group.nodes)}</span><span>·</span>
                                                 <span>刚才用到了其中 {group.recalledNodeIds.length} 条</span><span>·</span>
                                                 <span>共 {group.nodes.length} 条相关记录</span>
                                             </div>
@@ -782,7 +768,7 @@ const NodeEditor: React.FC<{
                 <div className="flex items-center gap-2 text-[11px] tracking-[.08em] text-white/45">
                     <span>{nodeKindLabel(item)}</span>
                     <span>·</span>
-                    <span>{formatRepairMemoryDate(item.node.createdAt)}</span>
+                    <span>{formatRepairMemoryDate(getMemoryExperienceTime(item.node))}</span>
                     <span>·</span>
                     <span>{getRoomLabel(item.node.room)}</span>
                     {item.recalled && <span className="text-violet-200/75">刚才用到了这条</span>}

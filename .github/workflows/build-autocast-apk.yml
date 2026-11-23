@@ -8,14 +8,24 @@ on:
       - build/latest-sullyos-apk-20261115
       - fix/story-interaction-groups-20261115
       - feat/story-theater-preset-prompts-20261115
+      - feat/unified-story-theater-20261117
     paths:
       - .github/workflows/build-autocast-apk.yml
       - assets/presets/night-screening-v6.14.sully.json
+      - assets/presets/three-axis-relationship.sully.prompt.json
       - types.ts
       - utils/storyTheater.ts
       - utils/storyTheaterCast.ts
       - utils/storyTheaterCast.test.ts
       - utils/storyTheaterSessionCast.test.ts
+      - utils/storyTheaterRelationships.ts
+      - utils/storyTheaterRelationships.test.ts
+      - utils/realRelationshipModel.ts
+      - utils/realRelationshipStore.ts
+      - utils/realRelationshipStore.test.ts
+      - utils/storyTheaterReply.ts
+      - utils/storyTheaterTurn.test.ts
+      - utils/storyTheaterContextSettings.test.ts
       - utils/storyPresetGroups.test.ts
       - utils/db.ts
       - components/date/story/StoryTheaterEditor.tsx
@@ -62,7 +72,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify story memory and API response handling
-        run: pnpm exec vitest run utils/memoryPalace/longMemoryInput.test.ts utils/safeApi.stream.test.ts utils/storyTheaterCast.test.ts utils/storyPresetGroups.test.ts
+        run: pnpm exec vitest run utils/storyTheater utils/storyPresetGroups.test.ts utils/meetingReading.test.ts utils/safeApi.stream.test.ts utils/memoryPalace/longMemoryInput.test.ts
 
       - name: Build Capacitor web assets
         run: |
@@ -87,14 +97,14 @@ jobs:
       - name: Prepare APK output
         run: |
           mkdir -p apk-output
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Interaction-Scheduler-20261115.apk
-          sha256sum apk-output/SullyOS-Interaction-Scheduler-20261115.apk
-          ls -lh apk-output/SullyOS-Interaction-Scheduler-20261115.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/SullyOS-Unified-Story-20261117.apk
+          sha256sum apk-output/SullyOS-Unified-Story-20261117.apk
+          ls -lh apk-output/SullyOS-Unified-Story-20261117.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: SullyOS-Interaction-Scheduler-20261115-APK
-          path: apk-output/SullyOS-Interaction-Scheduler-20261115.apk
+          name: SullyOS-Unified-Story-20261117-APK
+          path: apk-output/SullyOS-Unified-Story-20261117.apk
           if-no-files-found: error
           retention-days: 14

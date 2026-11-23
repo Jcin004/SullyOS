@@ -114,15 +114,16 @@ function reply(source: unknown = 'M0') {
         { content: '用户昨天休假。', room: 'user_room', date: '2026-09-15', relativeTimeSource: source },
     ]) } }] } as any;
 }
-async function extract() { return (await extractMemoriesFromBuffer(messages, 'relative-char', '角色', config)).memories[0]; }
+async function extract(input = messages) { return (await extractMemoriesFromBuffer(input, 'relative-char', '角色', config)).memories[0]; }
 
 describe('提取时严格按开关绑定原消息日期', () => {
-    it('默认关闭时提示词和输入不增加编号，模型擅自返回来源也不存关联', async () => {
+    it('默认关闭时保留经历来源编号，省略相对时间规则和关联', async () => {
         fetchJson.mockResolvedValue(reply());
         const memory = await extract();
         const body = JSON.parse(String((fetchJson.mock.calls[0][1] as RequestInit).body));
         expect(body.messages[0].content).not.toContain('relativeTimeSource');
-        expect(body.messages[1].content).not.toContain('[M0]');
+        expect(body.messages[0].content).toContain('experienceSource');
+        expect(body.messages[1].content).toContain('[M0]');
         expect(memory).not.toHaveProperty('relativeTimeAnchor');
         expect(memory.content).toBe('用户昨天休假。');
     });
@@ -132,6 +133,19 @@ describe('提取时严格按开关绑定原消息日期', () => {
         const memory = await extract();
         expect(memory.relativeTimeAnchor).toEqual({ dateKey: '2026-09-16', source: 'message', messageId: 16 });
         expect(memoryContentWithDates(memory)).toContain('昨天〔2026年9月15日〕');
+    });
+
+    it('剧场消息按剧情日期补注，缺少剧情日期时不借用发送日', async () => {
+        enabled(true);
+        fetchJson.mockResolvedValue(reply());
+        const story: Message = { ...messages[0], metadata: {
+            source: 'story_theater_memory', theaterTimelineTimestamp: new Date(2026, 3, 10, 12).getTime(),
+        } };
+        const memory = await extract([story, messages[1]]);
+        expect(memory.relativeTimeAnchor?.dateKey).toBe('2026-04-10');
+        expect(memoryContentWithDates(memory)).toContain('昨天〔2026年4月9日〕');
+        expect(await extract([{ ...story, metadata: { source: 'story_theater_memory' } }, messages[1]]))
+            .not.toHaveProperty('relativeTimeAnchor');
     });
 
     it.each([undefined, 'M99', 'M-1', '0', 0])('无有效来源 %s 时不猜日期', async source => {

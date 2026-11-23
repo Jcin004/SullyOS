@@ -69,6 +69,11 @@ CSS 编辑器的旧预设及分享格式不迁移。CSS 分类保留 body portal
 
 消息头像通用容器 `.sully-chat-avatar-wrap` 仅在该头像可见时提供，含普通消息头像及组首头像。用它的 `::after` 配合透明背景图绘制外框，设置 `pointer-events:none`；容器保持 overflow:visible，图片形状单独通过 `.sully-chat-message-avatar-img` 的圆角或 clip-path 控制。气泡工坊已有框图是 `.sully-chat-avatar-frame`，可按需隐藏以避免叠加。以上 CSS 随原有 CSS 预设保存、分享和切换，不要求额外配置气泡贴图。
 
+消息时间位置由布局字段 `chatTimestampPosition`（`below` / `top_center`）控制，随角色装扮、整套预设导出与装扮预览保存，内置 `WeChat` 布局预设使用 `top_center`：
+- `below`（默认）：在同侧连续发言的末条气泡下方 `.sully-chat-timestamp-slot` 中显示 `HH:mm`，与即时对话发送进度 `<ChatSendProgress />` 独立渲染，美化时间样式不影响发送状态提示。
+- `top_center`：按相邻消息绝对时间差（≥ 5 分钟）分段，在每段首条非系统消息上方渲染整行居中的 `.sully-chat-time-divider`（脱离气泡宽度与左滑引用层），跨本地日历日自动附带「昨天 / 月日 / 年月日」（统一使用设备本地时区）；`chatBubbleStyle: 'wechat'`（含内置 `WeChat` 布局预设）默认渲染 4px 小圆角浅灰半透明时间胶囊，其余布局保持无底色灰字以免干扰深色白框。
+两种模式下的时间文字节点均为 `.sully-chat-timestamp`，供白框 CSS 定制字号、配色、胶囊底纹或伪元素装饰。
+
 已确认过旧版 `v1:decoration` 公告的用户不会重复弹出。装扮面板本身不再挂公告。聊天加号功能按单一顺序列表每页 8 项自动分页，第二页补入相册；各页固定两行，避免第三页内容少导致面板和翻页圆点跳动。
 
 ## 白框统一契约（2026-09）
@@ -77,7 +82,7 @@ CSS 编辑器的旧预设及分享格式不迁移。CSS 分类保留 body portal
 
 - `utils/chatWhitebox.ts`：固定选择器分组、卡片种类、CSS 作用域和完整设计要求的唯一来源。白框编辑器复制给 AI 的提示词与协同工作白框制作共用；协同验证器同样接受 `.sully-psyche*`。
 - `components/chat/ChatCardSurface.tsx`：私聊/群聊共用的卡片边界。外层 `.sully-chat-card`，包含 `.sully-chat-card-surface` 和 `.sully-chat-card-content`。`data-card-kind` 对应 MessageType，`data-card-variant` 标识结算/日记等子类型，`data-role` 区分 user/assistant/system。旧卡片业务组件、操作回调和元数据继续保留，未写新 CSS 时保留原样。
-- `utils/psycheAppearance.ts`：心象样式目录、解析和外观字段白名单。旧 `thinkingChainStyle/CustomColors/CustomCss` 继续读取；全局默认是 `OSTheme.chatPsyche`。角色设置优先于全局。心象设置只保留显示开关和追加提示词，内置风格位于个性装扮「心象」，自定义颜色/CSS 在聊天装扮「心象」。
+- `utils/psycheAppearance.ts`：心象样式目录、解析和外观字段白名单。旧 `thinkingChainStyle/CustomColors/CustomCss` 继续读取；全局默认是 `OSTheme.chatPsyche`。角色设置优先于全局。心象设置保留显示开关、手动翻译 API 和追加提示词；内置风格位于个性装扮「心象」，自定义颜色/CSS 在聊天装扮「心象」。翻译凭据、原文及译文不进入装扮分享。
 - 导出格式仍是 `sullyos-chat-decoration` v1，新增可选 `parts.psyche={styleId,customColors?,customCss?}`。旧文件没有这个字段则不改变现有心象；整套导出包含它；显示开关、追加提示词、角色资料和聊天记录绝不导出。领取并应用心象外观不会开启模型推理。
 - 样式顺序：布局基础 → 心象外观 CSS → 全局白框 → 角色白框 → 气泡 CSS → 关键操作保护。已有气泡 CSS 的覆盖顺序不变，白框现在可以明确覆盖旧心象 CSS。
 
@@ -114,3 +119,9 @@ HTML 卡片仍在独立 iframe 沙盒中；白框控制其外壳和排版，不�
 回归：`pnpm vitest run utils/chatWhitebox.test.ts utils/chatDecoration.test.ts utils/collaborationMakers.test.ts utils/beautyShare.test.ts`；另做手机宽度下的心象、转账、长卡片、滚动和旧预设验证。
 
 内置白框新增「星轨 · 深空」「星轨 · 雾紫」，在聊天装扮的全部/白框分类和「我的搭配」选择器中展示。入口通过 `utils/builtinWhitebox.ts` 读取 `presets/chat/*.json`，只使用本地静态素材，不写入收藏库或替换用户已有设置；应用沿用角色选择确认流程。两款源文件与构建脚本在 `art/acid-orbit`：依次执行 `build-lace.mjs`、`build.mjs`、`build-builtins.mjs`、`build-preview.mjs` 可同步 CSS、导入文件和内置包。蕾丝为用户提供的 CC0 scallop2（来源见 `art/acid-orbit/SCALLOP-LICENSE.txt`）。
+
+### 舞台隔离与深浅色对比度边界
+
+- `.sully-chat-root` 仅包裹聊天舞台本身（顶栏、消息流、底部输入区／加号与表情面板，以及舞台内直出的转账详情弹层 `.sully-chat-transfer-overlay` / `.sully-chat-transfer-dialog`、日程变更卡 `.sully-schedule-change`）。设置弹窗（如心象设置）、装扮工坊与自由搭配面板、小程序（瑞幸／麦当劳）、全屏语音／图片预览、消息内展开的全屏转发／520 信纸弹层及全局确认弹窗均挂载或 Portal 到 `.sully-chat-root` 之外，独立聊天页外层带 `text-slate-900`（家园小手机 `homePhone` 模式除外，保留小手机自身配色与 `.home-phone .fixed` 高度约束），使深色白框的文字配色仅作用于聊天舞台，不向通用弹窗或表单继承。
+- Tailwind Preflight 为 `input`、`textarea`、`select` 设置 `color: inherit`：浅色背景上的输入框与下拉框需要显式声明文字色与占位符色（如 `text-slate-800 placeholder:text-slate-400`；聊天默认浅色输入栏将 `text-slate-800` 放在 `.sully-chat-inputbar` 外壳上，兼顾防顶层白字继承与白框对输入栏的继承覆盖），深色底上的原生 `<select>` 与 `<input type="date">`／`<input type="time">` 声明 `[color-scheme:dark]` 并用 `[&_option]` 覆盖含 `<optgroup>` 在内的选项配色，避免 Windows / Chromium 原生弹出列表出现白底浅字。
+- 内置白框的通用面板／卡片覆盖使用零权重的 `:not(:where(...))` 排除语义功能元素，避免抬高选择器权重压过后续状态规则：颜色色板点（`.sully-chat-swatch-dot`）、未读或状态角标点（`.sully-chat-badge-dot`）、分页指示点（`.sully-chat-page-dot`）、可扫描二维码白底区（`.sully-chat-qr-surface`）、进度条填充（`.sully-chat-meter-fill`），以及自带独立视觉设计的七夕活动卡（`[data-card-variant="qixi_event_card"]`）与 520 典藏卡（`[data-card-variant="like520_card"]`）。回归守卫见 `utils/__tests__/themeContrastInheritance.test.ts`。

@@ -12,10 +12,17 @@ import type {
 } from '../types';
 import nightScreeningV627 from '../assets/presets/night-screening-v6.14.sully.json';
 import {
+    formatStoryRelationshipPanel, getPreviousStoryRelationshipDocument, isStoryThreeAxisPanel, parseStoryRelationshipPanel,
+    stripStoryRelationshipPanels, storyTheaterMirrorContent, STORY_RELATIONSHIP_PROMPT_ID, STORY_RELATIONSHIP_PROMPT,
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT, LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT, LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
+    type StoryRelationshipPanel,
+} from './storyTheaterRelationships';
+import {
     type WorldbookScanMessage,
 } from './worldbook';
 import { shareOrDownloadFile } from './shareExport';
 import { hasReliableMessageTimestamp } from './storyTheaterTimeline';
+import { normalizeStoryCastLimits } from './storyTheaterCast';
 
 export type StoryApiRole = 'system' | 'user' | 'assistant';
 export function hasStoryTheaterParticipant(entry: StoryTheaterEntry, characters: CharacterProfile[]): boolean {
@@ -79,12 +86,13 @@ export interface ResolvedStoryTheaterMask {
     characterId?: string;
 }
 
-export type StoryDisplayBlockKind = 'story' | 'scene' | 'backstage' | 'worldline' | 'debts' | 'theater' | 'choices' | 'affinity' | 'other';
+export type StoryDisplayBlockKind = 'story' | 'scene' | 'backstage' | 'worldline' | 'debts' | 'theater' | 'choices' | 'affinity' | 'relationship' | 'other';
 export interface StoryDisplayBlock {
     kind: StoryDisplayBlockKind;
     title?: string;
     text: string;
     theater?: StoryMiniTheaterDisplay;
+    relationship?: StoryRelationshipPanel;
 }
 
 export interface StoryMiniTheaterDisplayMessage {
@@ -105,15 +113,6 @@ export const REAL_COMPANION_MEMORY_GUARD = [
     '- 不得捏造两人曾经发生过的经历，不得把推测、梦境、预设示例或虚构剧场内容说成真实记忆。',
     '- 引用共同记忆时不得添油加醋、补写不存在的细节、篡改因果或夸大情感；不确定时必须明确表现为不确定。',
     '- 可以自然遗忘或记错角色确实可能记错的细枝末节，但不得借此创造对用户不利或未经用户确认的共同历史。',
-].join('\n');
-
-export const RELATIONSHIP_TEXTURE_GUIDE = [
-    '### 关系温度 · 高位不等于静止',
-    '- 关系温度是长期底座，不是每轮必须变化的进度条。尤其达到 95—100 后，没有真正改变关系的新事实就保持原值与 +0，不为制造新鲜感反复涨跌。',
-    '- 数值稳定时，变化应落在关系质地：默契如何落地、边界是否被尊重、哪件小事仍然刺手、彼此依赖的方式、刚形成的共同习惯、未说开的分歧或本轮完成的一次修复。',
-    '- <relation_note> 每轮只写一句最能概括此刻质地的关系天气，避免连续复用“甜蜜、亲密、信任加深”等空泛同义句。',
-    '- 在 <relation_note> 之后可追加 1—3 条 <relation_fragment>关系碎片</relation_fragment>；每条是一句基于本轮具体事实的短观察。维度按事实轮换，不写散乱 Markdown，不复述分数，不预测结局。',
-    '- 若本轮确实没有值得记录的新纹理，可以不输出 relation_fragment；不要硬编碎念。',
 ].join('\n');
 
 const NATIVE_MARKERS: Array<NonNullable<StoryTheaterPresetPrompt['marker']>> = [
@@ -183,6 +182,7 @@ export const createStoryTheaterDraft = (now: number = Date.now()): StoryTheaterE
     openingMode: 'user',
     mask: { type: 'user' },
     characterIds: [],
+    interactionTendenciesEnabled: false,
     writesToCharacterMemory: false,
     characterMemoryDates: {},
     carryCharacterMemory: false,
@@ -213,8 +213,11 @@ export const normalizeStoryTheater = (entry: StoryTheaterEntry): StoryTheaterEnt
                 ? { type: 'custom', id: entry.mask.id }
                 : { type: 'user' },
         characterIds: Array.isArray(entry.characterIds) ? entry.characterIds.filter(Boolean) : [],
+        primaryCharacterId: entry.primaryCharacterId && entry.characterIds?.includes(entry.primaryCharacterId) ? entry.primaryCharacterId : undefined,
         writesToCharacterMemory: entry.writesToCharacterMemory === true,
         castModeEnabled: entry.castModeEnabled !== false,
+        interactionTendenciesEnabled: entry.interactionTendenciesEnabled === true,
+        castLimits: entry.castLimits ? normalizeStoryCastLimits(entry.castLimits, entry.characterIds?.length ?? 0) : undefined,
         characterMemoryDates: entry.characterMemoryDates || {},
         carryCharacterMemory: entry.writesToCharacterMemory ? true : entry.carryCharacterMemory === true,
         characterContextLimits: entry.characterContextLimits || {},
@@ -294,6 +297,16 @@ export const resolveStoryTheaterMask = (
     return { selection: { type: 'user' }, name: user.name || '你', avatar: user.avatar, description: user.bio || '' };
 };
 
+export const normalizeStoryPresetGeneration = (
+    generation?: Partial<StoryTheaterPresetDocument['generation']>,
+): StoryTheaterPresetDocument['generation'] => ({
+    temperature: clampNumber(generation?.temperature, 0, 2, 0.9),
+    topP: clampNumber(generation?.topP, 0, 1, 1),
+    frequencyPenalty: clampNumber(generation?.frequencyPenalty, -2, 2, 0),
+    presencePenalty: clampNumber(generation?.presencePenalty, -2, 2, 0),
+    maxTokens: Math.round(clampNumber(generation?.maxTokens, 256, 32000, 8000)),
+});
+
 const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPresetDocument => {
     if (!value || value.schema !== 'sullyos.story-preset' || value.version !== 1 || !Array.isArray(value.prompts)) {
         throw new Error('不是受支持的糯米机剧情预设');
@@ -308,21 +321,20 @@ const normalizeDocument = (value: any, fallbackName: string): StoryTheaterPreset
             section: { id: String(prompt.section.id), name: String(prompt.section.name || '自定义分组'), edge: prompt.section.edge },
         } : {}),
         ...(NATIVE_MARKERS.includes(prompt?.marker) ? { marker: prompt.marker } : {}),
-        ...(prompt?.scope === 'story_theater' || prompt?.scope === 'story_theater_story' ? { scope: prompt.scope } : {}),
+        ...(value.promptLayout === 'ordered' && !prompt?.marker && !prompt?.section
+            && Number.isSafeInteger(prompt?.inChat?.depth) && prompt.inChat.depth >= 0
+            && Number.isSafeInteger(prompt.inChat.order)
+            ? { inChat: { depth: prompt.inChat.depth, order: prompt.inChat.order } } : {}),
+        ...(['story_theater', 'story_theater_story', 'story_only'].includes(prompt?.scope) ? { scope: prompt.scope } : {}),
     }));
     if (prompts.length === 0) throw new Error('预设中没有提示词条目');
     return {
         schema: 'sullyos.story-preset',
         version: 1,
+        ...(value.promptLayout === 'ordered' ? { promptLayout: 'ordered' as const } : {}),
         name: String(value.name || fallbackName || '未命名剧情预设'),
         description: String(value.description || ''),
-        generation: {
-            temperature: clampNumber(value.generation?.temperature, 0, 2, 0.9),
-            topP: clampNumber(value.generation?.topP, 0, 1, 1),
-            frequencyPenalty: clampNumber(value.generation?.frequencyPenalty, -2, 2, 0),
-            presencePenalty: clampNumber(value.generation?.presencePenalty, -2, 2, 0),
-            maxTokens: Math.round(clampNumber(value.generation?.maxTokens, 256, 32000, 8000)),
-        },
+        generation: normalizeStoryPresetGeneration(value.generation),
         prompts,
         assistantPrefill: String(value.assistantPrefill || ''),
     };
@@ -519,11 +531,16 @@ const mergeNightScreeningBackstageAndDebts = (document: StoryTheaterPresetDocume
     };
 };
 
+// Keep the previous native preset only to recognize untouched five-dimension overrides.
+const LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT = mergeNightScreeningBackstageAndDebts(
+    normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27'),
+);
+
 export const BUILTIN_NIGHT_SCREENING_PRESET: StoryTheaterPreset = {
     id: 'builtin-night-screening',
     name: '糯米鸡｜夜班放映室 V6.27',
     format: 'sullyos-story-preset',
-    document: mergeNightScreeningBackstageAndDebts(normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27')),
+    document: getPreviousStoryRelationshipDocument(LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT),
     builtIn: true,
     createdAt: 0,
     updatedAt: 0,
@@ -533,14 +550,18 @@ const STORY_THEATER_SECTION_START = 'nmj-v67-section-theater-start';
 const STORY_THEATER_SECTION_END = 'nmj-v67-section-theater-end';
 
 const LEGACY_THEATER_PROMPT_CONTENT: Record<string, string[]> = {
-    'nmj-v67-theater-cast': ["根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。", "按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}\n在 <turn_cast> 中原样输出名单里的角色 ID 一维 JSON 数组。"],
-    'nmj-v67-theater-interaction-bias': ["本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n优先关注倾向组中的人物，寻找自然的接触机会。多人组关注共同讨论，重叠组允许交流对象转移。降低近期反复搭档的关注权重。让人物自行决定是否开口、回应、加入或离开，保留独立行动与单人思考。单人组只表示独立关注，不安排对话。"],
-    'nmj-v67-theater-interaction-record': ["仅剧情模式执行，场外模式跳过。\n可记录角色（ID、姓名）：{{theater_candidate_data}}\n未列入出演名单的候选角色只作为背景角色；仅记录他们在正文中实际参与的直接交流。\n在剧情正文结束后、私轴之前输出 <interaction_result>JSON 二维数组</interaction_result>。只记录本轮正文中实际发生的直接交流。两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。"],
-    'nmj-v67-theater-output': ["剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>本轮正文中实际发生的直接交流关系，JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n互动分组只记录直接交流：两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}"],
+    "nmj-v67-theater-private-axes": ["读取并承接各角色最近的私轴：\n{{theater_previous_axes}}\n剧情结束后，为本轮出演名单中的每位角色更新一条简短私轴，记录角色自己的生活事务、思考、外界影响和行动。保留仍在继续的事项和念头。使用 JSON 对象，以角色 ID 为键，值为简短文字，放在 <private_axes> 中。直接输出标签与 JSON，不加代码围栏或说明。"],
+    "nmj-v67-theater-mode": ["根据用户最新输入选择剧情模式或场外模式。用户要求继续、推进剧情或给出角色行动时，执行剧情模式；用户明确讨论设定、写作或退出剧情时，执行场外模式。每轮只执行一种模式。\n本轮模式：{{theater_mode_state}}\n场外模式时，不执行出演、正文和私轴协议。"],
+    'nmj-v67-theater-cast': ["候选角色（ID、姓名）：{{theater_candidate_data}}\n出演包括在正文中独处、沉默或独立行动的角色。仅被提及的角色和用户执笔身份不列入。", "本轮候选角色（ID、姓名）：{{theater_candidate_data}}\n正文完成后，用 <turn_cast> 输出实际出场的候选角色 ID 一维 JSON 数组，包含独处、沉默或独立行动的角色。仅被提及的角色与用户执笔的身份不列入。没有候选角色出场时输出 []。", "根据候选角色与当前剧情，决定本轮出演名单和分组。不要将用户执笔的身份列入出演名单。\n{{theater_cast_data}}\n单人组记录角色独自思考或行动。多人组记录直接交流或共同参与同一段讨论，让每位组员进入这段交流。交流对象转移时另列一组，允许角色跨组。\n按本轮剧情决定分组数量、成员与顺序。使用 [A,B] [B,C] 表示交流对象转移，使用 [A,B] [C,D] 表示并行交流，使用 [A,B,C,D] 表示共同讨论。有已确定分组时，沿用原分组。", "按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}\n在 <turn_cast> 中原样输出名单里的角色 ID 一维 JSON 数组。", "按代码预先确定的出演名单生成本轮剧情，不要增删名单。\n本轮出演名单（角色 ID、姓名）：{{theater_cast_data}}"],
+    'nmj-v67-theater-interaction-bias': ["本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n将倾向组作为本轮注意力偏置。写作时主动留意组内人物的动作、话语和可回应之处，优先让他们有机会相互注意、接话、加入或转移交流。\n不要把倾向组写成固定搭档或必须完成的任务；遇到自然契机时优先沿这些方向展开，条件不合适时允许未实现。\n近期反复交流的搭档降低默认优先级，除非当前情境确实更适合他们继续交流。\n多人组关注同一段共同讨论；重叠组允许交流对象转移。单人组只表示独立关注，不安排对话。\n保留人物自己的目的、注意力和行动，不为凑齐交流而制造无关对话。", "本轮交流倾向：\n{{theater_interaction_tendencies}}\n近期实际互动：\n{{theater_previous_interactions}}\n尚未实现的交流倾向：\n{{theater_unrealized_tendencies}}\n优先关注倾向组中的人物，寻找自然的接触机会。多人组关注共同讨论，重叠组允许交流对象转移。降低近期反复搭档的关注权重。让人物自行决定是否开口、回应、加入或离开，保留独立行动与单人思考。单人组只表示独立关注，不安排对话。"],
+    'nmj-v67-theater-continuity': ["保持人物的时间、位置、动作和身体状态连续。人物加入、离开或转向另一段交流时，写出动作与空间衔接。", "保持人物的时间、位置、动作和身体状态连续。人物加入、离开或转向另一段交流时，写出动作与空间衔接。让未列入名单的背景角色按剧情自然出场。"],
+    'nmj-v67-theater-interaction-record': ["正文完成后，可用 <interaction_result> 记录实际发生的直接交谈或有针对性的实际互动，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计。此记录可省略，无互动时也可写 []；不影响剧情生成，不为填写记录制造互动。", "按正文中实际发生的直接交谈或有针对性的实际互动分组，成员须在出演名单内。多人实际参与同一次互动可同组，允许重叠。仅同场、旁观、被提及、听见对话或独处不计；无互动写 []。", "在 <turn_cast> 之后输出 <interaction_result>JSON 二维数组</interaction_result>，只记录出演角色在本轮正文中实际发生的直接交流。两人交流记为一组；多人直接参与同一段交流时记为一组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。", "仅剧情模式执行，场外模式跳过。\n可记录角色（ID、姓名）：{{theater_candidate_data}}\n未列入出演名单的候选角色只作为背景角色；仅记录他们在正文中实际参与的直接交流。\n在剧情正文结束后、私轴之前输出 <interaction_result>JSON 二维数组</interaction_result>。只记录本轮正文中实际发生的直接交流。两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。", "仅剧情模式执行，场外模式跳过。\n可记录角色（ID、姓名）：{{theater_candidate_data}}\n未列入出演名单的候选角色只作为背景角色；仅记录他们在正文中实际参与的直接交流。\n在剧情正文结束后、私轴之前输出 <interaction_result>JSON 二维数组</interaction_result>。只记录本轮正文中实际发生的直接交流。两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。不要依据交流倾向或可能性推断互动；每一组都要能在正文中找到明确的对话、回应或针对性动作。没有发生互动时输出 []。"],
+    'nmj-v67-theater-output': ["剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、可省略的事后记录 <interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。无互动时可省略互动记录或写 []，照常生成正文。场外只输出 <out_of_story>正文</out_of_story>。", "剧情模式先写完整正文（起始：{{theater_prefill}}），再依次输出 <turn_cast>出演角色 ID 一维 JSON 数组</turn_cast>、<interaction_result>JSON 二维数组</interaction_result>、<private_axes>JSON 对象</private_axes>。场外只输出 <out_of_story>正文</out_of_story>。", "剧情模式按顺序输出：\n1. 从预设起始文本开始的完整剧情正文。\n2. <turn_cast>实际出演角色 ID 的 JSON 一维数组</turn_cast>。\n3. <interaction_result>JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>角色 ID 的 JSON 二维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>本轮正文中实际发生的直接交流关系，JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n互动分组只记录直接交流：两人对话记为一组；多人围绕同一段讨论且每人实际参与记为一个多人组；交流对象转移时允许重叠分组。旁观、同场和听见话题不计入。没有发生互动时输出 []。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. <turn_cast>本轮出演角色 ID 的 JSON 一维数组</turn_cast>。\n2. 从预设起始文本开始的完整剧情正文。\n3. <interaction_result>JSON 二维数组</interaction_result>。\n4. <private_axes>JSON 对象</private_axes>。\n将出演名单放在正文之前，不要写入 <scene_header> 或 <story_text>。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}", "剧情模式按顺序输出：\n1. 从预设起始文本开始的完整剧情正文。\n2. <interaction_result>JSON 二维数组</interaction_result>。\n3. <private_axes>JSON 对象</private_axes>。\n不要在正文中重复输出出演名单。\n场外模式只输出 <out_of_story>正文</out_of_story>。\n剧情正文起始文本（仅剧情模式使用）：\n{{theater_prefill}}"],
 };
 
 /** 给旧预设补入最新版出演协议；只迁移未被用户改写的旧默认提示词。 */
 export const ensureStoryTheaterPromptSection = (document: StoryTheaterPresetDocument): StoryTheaterPresetDocument => {
+    if (document.promptLayout === 'ordered') return document;
     const defaults = BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.filter(prompt =>
         prompt.id === STORY_THEATER_SECTION_START
         || prompt.id === STORY_THEATER_SECTION_END
@@ -601,22 +622,80 @@ export const withBuiltInStoryPresets = (presets: StoryTheaterPreset[]): StoryThe
     ...presets.filter(preset => !preset.id.startsWith('builtin-night-screening')),
 ];
 
-/**
- * 快捷设置历史上保存的是整份内置文档。升级内置预设时只继承同 ID 条目的
- * 开关选择，正文与新增模块始终使用最新版；自建预设仍完整保留用户内容。
- */
+
+const RAW_NIGHT_SCREENING = normalizeDocument(nightScreeningV627, '糯米鸡｜夜班放映室 V6.27');
+const nativePromptById = new Map(BUILTIN_NIGHT_SCREENING_PRESET.document.prompts.map(prompt => [prompt.id, prompt]));
+const rawPromptById = new Map(RAW_NIGHT_SCREENING.prompts.map(prompt => [prompt.id, prompt]));
+const previousNativeById = new Map(LEGACY_BUILTIN_NIGHT_SCREENING_DOCUMENT.prompts.map(prompt => [prompt.id, prompt]));
+const previousRawById = new Map(getPreviousStoryRelationshipDocument(RAW_NIGHT_SCREENING).prompts.map(prompt => [prompt.id, prompt]));
+const legacyRelationshipDefaults = new Set([
+    LEGACY_CENTERED_STORY_RELATIONSHIP_PROMPT,
+    LEGACY_PAIR_STORY_RELATIONSHIP_PROMPT,
+    LEGACY_REAL_STORY_RELATIONSHIP_PROMPT,
+]);
+// UTF-16 length and two 32-bit fingerprints from shipped defaults: 29ec34f7, f5c4b76f, a5c7c30d.
+const legacyRelationshipFingerprints = new Map([
+    [1621, '2b3d0df3:7e1934ff'],
+    [2288, 'a10a8412:39f3e926'],
+    [1981, 'cd119ec3:d72f4bef'],
+    [1710, '70d27b22:e86ac256'], // Prior shipped three-axis default; user edits stay untouched.
+    [1022, '58856cb9:05852ced'], // First standalone relationship prompt asset.
+]);
+
+function isLegacyRelationshipDefault(content: string): boolean {
+    if (legacyRelationshipDefaults.has(content)) return true;
+    const expected = legacyRelationshipFingerprints.get(content.length);
+    if (!expected) return false;
+    let first = 0x811c9dc5, second = 0x9e3779b9;
+    for (let index = 0; index < content.length; index++) {
+        const code = content.charCodeAt(index);
+        first = Math.imul(first ^ code, 0x01000193);
+        second = Math.imul(second ^ code, 0x85ebca6b);
+    }
+    return expected === `${(first >>> 0).toString(16).padStart(8, '0')}:${(second >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/** Only recognize untouched defaults; saved prompt text and order are user data. */
 export const resolveStoryPresetDocument = (
     preset: StoryTheaterPreset,
     override?: StoryTheaterPresetDocument,
 ): StoryTheaterPresetDocument => {
-    if (!override) return ensureStoryTheaterPromptSection(preset.document);
-    if (!preset.builtIn) return ensureStoryTheaterPromptSection(override);
-    const enabledById = new Map(override.prompts.map(prompt => [prompt.id, prompt.enabled]));
+    const source = override || preset.document;
+    const prompts = source.prompts.map(prompt =>
+        prompt.id === STORY_RELATIONSHIP_PROMPT_ID && isLegacyRelationshipDefault(prompt.content)
+            ? { ...prompt, content: STORY_RELATIONSHIP_PROMPT }
+            : prompt);
+    const document = prompts.some((prompt, index) => prompt !== source.prompts[index]) ? { ...source, prompts } : source;
+    if (document.promptLayout === 'ordered') return document;
+    const oldDefaults = preset.builtIn ? previousNativeById : rawPromptById;
+    const threeAxisDefaults = preset.builtIn ? nativePromptById : previousRawById;
     return ensureStoryTheaterPromptSection({
-        ...preset.document,
-        prompts: preset.document.prompts.map(prompt => enabledById.has(prompt.id)
-            ? { ...prompt, enabled: enabledById.get(prompt.id) === true }
-            : prompt),
+        ...document,
+        prompts: document.prompts
+            // Remove only untouched obsolete five-dimension perception controls.
+            .filter(prompt => !['nmj-v65-affinity-opaque', 'nmj-v65-affinity-transparent'].includes(prompt.id)
+                || prompt.content !== oldDefaults.get(prompt.id)?.content)
+            .map(prompt => {
+                const oldDefault = oldDefaults.get(prompt.id);
+                const nextDefault = threeAxisDefaults.get(prompt.id);
+                if (prompt.id === 'nmj-v6-gemini-format-lock' && nextDefault && prompt.content === nextDefault.content.replace(
+                    '本轮要求输出关系面板时，<affinity_panel mode="three_axes"> 必须完整且只出现一次；',
+                    '本轮要求输出关系面板时，<relationship_panel> 必须完整且只出现一次；',
+                )) return { ...prompt, content: nextDefault.content };
+                if (prompt.id === 'nmj-v616-silent-preflight' && nextDefault && [
+                    '6. 关系侧表：启用双向关系时，以出演角色 ID 确认双方，分别依据各自亲历事件更新 FL、RI、DI。',
+                    '6. 关系侧表：角色的关系承接各自的经历、处境与情绪潮线。',
+                ].some(legacy => prompt.content === nextDefault.content.replace(
+                    '6. 关系侧表：检查已启用关系模块的输出格式。', legacy
+                ))) return { ...prompt, content: nextDefault.content };
+                if (prompt.id === 'nmj-v3-exit-check' && nextDefault && prompt.content === nextDefault.content.replace(
+                    '启用双向关系时，核对关系面板的角色 ID 与格式。',
+                    '启用双向关系时，确认人物关系的连续性。'
+                )) return { ...prompt, content: nextDefault.content };
+                return oldDefault && nextDefault && oldDefault.content === prompt.content && nextDefault.content !== oldDefault.content
+                    ? { ...prompt, content: nextDefault.content, name: prompt.name === oldDefault.name ? nextDefault.name : prompt.name }
+                    : prompt;
+            }),
     });
 };
 
@@ -675,7 +754,7 @@ const STORY_PRESET_GROUP_SPECS = [
     { key: 'theater', label: '出演模式', description: '出演名单、交流倾向、实际互动记录、人物连续性与私轴协议', start: 'nmj-v67-section-theater-start', end: 'nmj-v67-section-theater-end' },
     { key: 'story', label: '人物与剧情', description: '人物发动机、证据门、推进、对白与纠偏', start: 'nmj-v64-section-story-start', end: 'nmj-v64-section-story-end' },
     { key: 'tone', label: '文风与张力', description: '文风、场景张力、亲密镜头与叠加仲裁', start: 'nmj-v64-section-style-start', end: 'nmj-v64-section-arbitration-end' },
-    { key: 'camera', label: '镜头与关系', description: '人称、执笔权与多角色 U→C 关系温度', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
+    { key: 'camera', label: '镜头与关系', description: '人称、执笔权与主要角色的双向关系三轴', start: 'nmj-v64-section-camera-start', end: 'nmj-v65-section-affinity-end' },
     { key: 'output', label: '语言与输出', description: '语言、篇幅、场景条、幕后与余波、世界线', start: 'nmj-v64-section-language-start', end: 'nmj-v64-section-output-end' },
     { key: 'extras', label: '幕间与选项', description: '小剧场、边角频道与回复方向', start: 'nmj-v64-section-theater-start', end: 'nmj-v64-section-choices-end' },
     { key: 'exit', label: '出口与收尾', description: '出口检查、核心续写与定义增强', start: 'nmj-v64-section-exit-start', end: 'enhanceDefinitions' },
@@ -737,12 +816,25 @@ export const getStoryPresetPromptGroups = (document: StoryTheaterPresetDocument)
     return groups.sort((a, b) => a.startIndex - b.startIndex);
 };
 
-export const addStoryPresetGroup = (document: StoryTheaterPresetDocument, name: string): StoryTheaterPresetDocument => {
-    const id = makeStoryTheaterId();
-    return { ...document, prompts: [...document.prompts, ...(['start', 'end'] as const).map(edge => ({
-        id: makeStoryTheaterId(), name: name.trim() || '自定义分组', enabled: false, role: 'system' as const, content: '',
-        section: { id, name: name.trim() || '自定义分组', edge },
-    }))] };
+export const makeStoryPresetGroupBoundaries = (
+    name: string, makeId = makeStoryTheaterId,
+): [StoryTheaterPresetPrompt, StoryTheaterPresetPrompt] => {
+    const sectionId = makeId();
+    const label = name.trim() || '自定义分组';
+    const boundary = (edge: 'start' | 'end'): StoryTheaterPresetPrompt => ({
+        id: makeId(), name: label, enabled: false, role: 'system', content: '',
+        section: { id: sectionId, name: label, edge },
+    });
+    return [boundary('start'), boundary('end')];
+};
+
+export const addStoryPresetGroup = (document: StoryTheaterPresetDocument, name: string): StoryTheaterPresetDocument => ({
+    ...document, prompts: [...document.prompts, ...makeStoryPresetGroupBoundaries(name)],
+});
+
+export const storyPresetGroupInsertIndex = (document: StoryTheaterPresetDocument, group: StoryPresetPromptGroup): number => {
+    const end = document.prompts[group.endIndex];
+    return group.key === 'exit' || (end && isStoryPresetSectionMarker(end)) ? group.endIndex : group.endIndex + 1;
 };
 
 export const renameStoryPresetGroup = (document: StoryTheaterPresetDocument, sectionId: string, name: string): StoryTheaterPresetDocument => ({
@@ -763,8 +855,7 @@ export const moveStoryPresetPromptToGroup = (document: StoryTheaterPresetDocumen
     const next = { ...document, prompts: document.prompts.filter(item => item.id !== promptId) };
     const destination = getStoryPresetPromptGroups(next).find(group => group.key === groupKey);
     if (!destination) return document;
-    const last = next.prompts[destination.endIndex];
-    next.prompts.splice(isStoryPresetSectionMarker(last) ? destination.endIndex : destination.endIndex + 1, 0, prompt);
+    next.prompts.splice(storyPresetGroupInsertIndex(next, destination), 0, prompt);
     return next;
 };
 
@@ -778,9 +869,16 @@ export const applyStoryPresetChoice = (
 });
 
 const macroReplace = (text: string, userName: string, characterNames: string[]): string => text
-    .replace(/\{\{user\}\}/gi, userName || '你')
-    .replace(/\{\{char\}\}/gi, characterNames.join('、') || '角色')
-    .replace(/\{\{group\}\}/gi, characterNames.join('、') || '角色');
+    .replace(/\{\{(user|char|group)\}\}/gi, (_, macro: string) => macro.toLowerCase() === 'user'
+        ? userName || '你' : characterNames.join('、') || '角色');
+
+const orderedPromptMacros = (text: string, userName: string, actors: string[], lastUserMessage: string): string => (
+    text.replace(/\{\{(user|char|group|charIfNotGroup|lastUserMessage)\}\}/gi, (original, macro: string) => {
+        if (macro.toLowerCase() === 'lastusermessage') return lastUserMessage;
+        if (macro.toLowerCase() === 'charifnotgroup') return actors.length === 1 ? actors[0] : '';
+        return macroReplace(original, userName, actors);
+    })
+);
 
 const theaterMacroReplace = (text: string, values: Record<string, string> = {}): string => text
     .replace(/\{\{theater_[a-z0-9_]+\}\}/gi, token => values[token.slice(2, -2)] ?? '');
@@ -1053,7 +1151,7 @@ export const buildStoryIdentityGuard = (
     document: StoryTheaterPresetDocument,
     identityName: string,
     characterNames: string[],
-    autoCast = false,
+    threeAxes = false,
 ): string => {
     const identity = identityName.trim() && identityName.trim() !== '你' ? identityName.trim() : '当前用户侧角色（未命名）';
     const cast = characterNames.filter(Boolean).join('、') || '暂无其他角色';
@@ -1065,7 +1163,7 @@ export const buildStoryIdentityGuard = (
             : '- 当前预设使用自定义人称；服从预设明确写出的叙述规则，但仍遵守下面的身份绑定。';
     return [
         '### 糯米机运行时身份与人称锚点（覆盖旧楼层的写法，不覆盖角色卡事实）',
-        `- 用户侧剧情身份：${identity}。${autoCast ? '本轮候选角色' : '本轮参与角色'}：${cast}。关系协议中的 U 只指「${identity}」，C 只指本轮实际出演角色。`,
+        `- 用户侧剧情身份：${identity}。本轮参与角色：${cast}。${threeAxes ? '' : `关系协议中的 U 只指「${identity}」，C 才指名单中的各个角色。`}`,
         '- 生成回复的一方不属于故事人物。系统指令为方便表达而出现的“你”，只是执行语法，不能据此把生成端写进故事，也不能把故事里的“你”解释成生成端自己。',
         '- 用户最新输入仍按实际句法辨认说话人与受话人；但在最终输出的叙事旁白、场景条和关系面板中，未另行点名的“你／你的”只允许指用户侧剧情身份。',
         perspectiveRule,
@@ -1093,25 +1191,58 @@ const pushPromptMessage = (messages: StoryApiMessage[], role: StoryApiRole, cont
     messages.push({ role, content: clean });
 };
 
+
+export interface StoryPromptOrigin {
+    label: string;
+    presetText?: string;
+}
+
+
+/** Reads the exact composed message order; transport URLs and headers never enter this view. */
+export function formatStoryRequestPreview(payload: readonly StoryApiMessage[], origins: ReadonlyMap<StoryApiMessage, StoryPromptOrigin>, secrets: Array<string | undefined>): string {
+    const keys = [...new Set(secrets.filter((secret): secret is string => Boolean(secret)))].sort((a, b) => b.length - a.length);
+    const redact = (value: string) => keys.reduce((text, secret) => text.split(secret).join('[已隐藏]'), value)
+        .replace(/((?:authorization|proxy-authorization|x-api-key|api[_ -]?key)["']?\s*[:=]\s*["']?(?:bearer\s+)?)[^\s"',;]+/gi, '$1[已隐藏]');
+    return payload.map((message, index) => {
+        const source = origins.get(message);
+        return [
+            '===== ' + (index + 1) + ' · ' + message.role + ' · ' + (source?.label || '运行时注入') + ' =====',
+            ...(source?.presetText === undefined ? [] : ['【预设原文】', source.presetText]),
+            '【实际发送】', message.content,
+        ].join('\n');
+    }).map(redact).join('\n\n');
+}
+
 export const compileStoryPreset = (input: {
     preset?: StoryTheaterPreset | null;
     slots: StoryPromptSlots;
     historyMessages?: StoryApiMessage[];
+    pendingTurn?: StoryApiMessage;
     userName: string;
     characterNames: string[];
     storyTheaterMode?: 'story' | 'out_of_story';
+    /** false 时不注入交流倾向提示词；不影响出演、互动记录与私轴。 */
+    interactionTendenciesEnabled?: boolean;
     storyTheaterValues?: Record<string, string>;
-}): { messages: StoryApiMessage[]; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage; scenarioMessage?: StoryApiMessage } => {
+    relationshipMode?: 'axes' | 'skip';
+}): { messages: StoryApiMessage[]; origins: Map<StoryApiMessage, StoryPromptOrigin>; settings: StoryGenerationSettings; assistantPrefill?: StoryApiMessage; scenarioMessage?: StoryApiMessage } => {
     const { preset, slots, userName, characterNames } = input;
     const document = ensureStoryTheaterPromptSection((preset || BUILTIN_NIGHT_SCREENING_PRESET).document);
     const messages: StoryApiMessage[] = [];
+    const origins = new Map<StoryApiMessage, StoryPromptOrigin>();
     let scenarioMessage: StoryApiMessage | undefined;
 
     const worldBeforePrompts = document.prompts.filter(prompt => prompt.marker === 'world_before');
     const enabledWorldBeforePrompt = worldBeforePrompts.find(prompt => prompt.enabled);
     const firstEnabledCharacterIndex = document.prompts.findIndex(prompt => prompt.enabled && prompt.marker === 'characters');
-    const shouldBackfillWorldBefore = worldBeforePrompts.length === 0 && Boolean(slots.worldBefore.trim());
-    const shouldMoveWorldBeforeAheadOfCharacters = Boolean(
+    const explicitOrder = document.promptLayout === 'ordered';
+    const shouldBackfillWorldBefore = !explicitOrder && worldBeforePrompts.length === 0 && Boolean(slots.worldBefore.trim());
+    const depthPrompts: Array<{ message: StoryApiMessage; depth: number; order: number }> = [];
+    const lastUserMessage = explicitOrder
+        ? input.pendingTurn?.content ?? input.historyMessages?.slice().reverse().find(message => message.role === 'user')?.content ?? ''
+        : '';
+    let historyIndex = -1;
+    const shouldMoveWorldBeforeAheadOfCharacters = !explicitOrder && Boolean(
         enabledWorldBeforePrompt
         && firstEnabledCharacterIndex >= 0
         && document.prompts.indexOf(enabledWorldBeforePrompt) > firstEnabledCharacterIndex
@@ -1137,10 +1268,20 @@ export const compileStoryPreset = (input: {
         if (!prompt.enabled || prompt.section) continue;
         if (prompt.scope === 'story_theater' && !input.storyTheaterMode) continue;
         if (prompt.scope === 'story_theater_story' && input.storyTheaterMode !== 'story') continue;
-        let raw = prompt.content;
+        if (prompt.scope === 'story_only' && input.storyTheaterMode === 'out_of_story') continue;
+        if (input.interactionTendenciesEnabled === false && prompt.id === 'nmj-v67-theater-interaction-bias') continue;
+        // Relationship rules are authored in the preset; out-of-story turns only skip their panel.
+        if (input.relationshipMode === 'skip' && prompt.id === STORY_RELATIONSHIP_PROMPT_ID) continue;
+        const defaultOutOfStory = input.storyTheaterMode === 'out_of_story' && prompt.id === 'nmj-v67-theater-output'
+            && prompt.content === nativePromptById.get(prompt.id)?.content;
+        let raw = defaultOutOfStory ? '只输出 <out_of_story>正文</out_of_story>。' : prompt.content;
         if (prompt.marker) {
             if (injectedMarkers.has(prompt.marker)) continue;
             injectedMarkers.add(prompt.marker);
+            if (prompt.marker === 'history' && explicitOrder && (input.historyMessages || input.pendingTurn)) {
+                historyIndex = messages.length;
+                continue;
+            }
             if (prompt.marker === 'history' && input.historyMessages) {
                 messages.push(...input.historyMessages);
                 continue;
@@ -1148,10 +1289,19 @@ export const compileStoryPreset = (input: {
             raw = slotForMarker(prompt.marker, slots);
         }
         if (!raw.trim()) continue;
-        const content = macroReplace(theaterMacroReplace(raw, input.storyTheaterValues), userName, characterNames).trim();
-        if (!content) continue;
-        const message = { role: prompt.role, content };
-        messages.push(message);
+        const withTheaterValues = explicitOrder && prompt.id.startsWith('st-')
+            ? raw : theaterMacroReplace(raw, input.storyTheaterValues);
+        const rendered = explicitOrder && !prompt.marker
+            ? orderedPromptMacros(withTheaterValues, userName, characterNames, lastUserMessage)
+            : macroReplace(withTheaterValues, userName, characterNames);
+        if (!rendered.trim()) continue;
+        const message = { role: prompt.role, content: explicitOrder && !prompt.marker ? rendered : rendered.trim() };
+        if (explicitOrder && prompt.inChat && !prompt.marker) depthPrompts.push({ message, ...prompt.inChat });
+        else messages.push(message);
+        origins.set(message, {
+            label: prompt.marker ? '运行时填入 · ' + prompt.name : defaultOutOfStory ? '运行时协议 · ' + prompt.name : '预设 · ' + prompt.name,
+            ...(!prompt.marker ? { presetText: prompt.content } : {}),
+        });
         if (prompt.marker === 'scenario') scenarioMessage = message;
     }
 
@@ -1160,11 +1310,46 @@ export const compileStoryPreset = (input: {
         messages.unshift({ role: 'system', content: macroReplace(slots.worldBefore, userName, characterNames).trim() });
     }
 
-    const prefill = String(document.assistantPrefill || '').trim();
-    const assistantPrefill = prefill ? { role: 'assistant' as const, content: macroReplace(prefill, userName, characterNames) } : undefined;
+    if (explicitOrder && (historyIndex >= 0 || depthPrompts.length || input.pendingTurn)) {
+        const history = [...(input.historyMessages ?? []), ...(input.pendingTurn ? [input.pendingTurn] : [])];
+        const roleOrder = { assistant: 0, user: 1, system: 2 };
+        depthPrompts.sort((a, b) => b.depth - a.depth || a.order - b.order || roleOrder[a.message.role] - roleOrder[b.message.role]);
+        const withDepth: StoryApiMessage[] = [];
+        let cursor = 0;
+        for (let index = 0; index < depthPrompts.length; index++) {
+            const { message, depth, order } = depthPrompts[index];
+            const offset = Math.max(0, history.length - depth);
+            const peers = [message];
+            while (index + 1 < depthPrompts.length) {
+                const next = depthPrompts[index + 1];
+                if (next.depth !== depth || next.order !== order || next.message.role !== message.role) break;
+                peers.push(next.message);
+                index++;
+            }
+            const combined = peers.length === 1 ? message : { role: message.role, content: peers.map(peer => peer.content).join('\n') };
+            if (peers.length > 1) {
+                const sources = peers.map(peer => origins.get(peer));
+                origins.set(combined, {
+                    label: sources.map(source => source?.label).filter(Boolean).join('；'),
+                    presetText: sources.map(source => source?.presetText).filter(Boolean).join('\n'),
+                });
+            }
+            withDepth.push(...history.slice(cursor, offset), combined);
+            cursor = offset;
+        }
+        withDepth.push(...history.slice(cursor));
+        messages.splice(historyIndex < 0 ? messages.length : historyIndex, 0, ...withDepth);
+    }
 
+    const prefill = String(document.assistantPrefill || '').trim();
+    const prefillContent = explicitOrder
+        ? orderedPromptMacros(prefill, userName, characterNames, lastUserMessage)
+        : macroReplace(prefill, userName, characterNames);
+    const assistantPrefill = prefillContent.trim() ? { role: 'assistant' as const, content: prefillContent } : undefined;
+
+    if (assistantPrefill) origins.set(assistantPrefill, { label: '预设 · 助手预填', presetText: prefill });
     return {
-        messages,
+        messages, origins,
         settings: {
             temperature: document.generation.temperature,
             top_p: document.generation.topP,
@@ -1218,6 +1403,27 @@ export const appendStoryUserTurn = (
         { role: 'user', content: userContent },
         ...(assistantPrefill ? [assistantPrefill] : []),
     ];
+};
+
+/** Inserts runtime guards before the current input while preserving authored post-history rules. */
+export const assembleStoryPresetTurn = (
+    compiled: StoryApiMessage[],
+    runtime: StoryApiMessage[],
+    pendingTurn: StoryApiMessage,
+    assistantPrefill?: StoryApiMessage,
+    forceUserLastMessage = false,
+): StoryApiMessage[] => {
+    const pendingIndex = compiled.indexOf(pendingTurn);
+    if (pendingIndex >= 0 && !forceUserLastMessage) {
+        return [
+            ...compiled.slice(0, pendingIndex), ...runtime, ...compiled.slice(pendingIndex),
+            ...(assistantPrefill ? [assistantPrefill] : []),
+        ];
+    }
+    const before = pendingIndex < 0 ? compiled : compiled.filter(message => message !== pendingTurn);
+    const assembled = appendStoryUserTurn([...before, ...runtime], pendingTurn.content, assistantPrefill, forceUserLastMessage);
+    assembled[assembled.length - (assistantPrefill && !forceUserLastMessage ? 2 : 1)] = pendingTurn;
+    return assembled;
 };
 
 export const dedupeTheaterWorldbooks = (characters: CharacterProfile[]): MountedWorldbook[] => {
@@ -1325,7 +1531,8 @@ const DISPLAY_BLOCK_META: Record<string, { kind: StoryDisplayBlockKind; title?: 
     shot_debts: { kind: 'debts', title: '尚未偿还的镜头' },
     mini_theater: { kind: 'theater', title: '幕间剧场' },
     reply_choices: { kind: 'choices', title: '可以这样推进' },
-    affinity_panel: { kind: 'affinity', title: '关系变化' },
+    affinity_panel: { kind: 'affinity', title: '历史关系' },
+    relationship_panel: { kind: 'relationship', title: '双向关系' },
 };
 
 const DISPLAY_TAG_LABELS: Record<string, string> = {
@@ -1443,7 +1650,7 @@ const formatTaggedStoryFragment = (fragment: string): string => {
 export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] => {
     const source = String(content || '');
     const blocks: StoryDisplayBlock[] = [];
-    const topLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
+    const topLevel = /<(scene_header|story_text|backstage|mind_weather|worldline|world_line|shot_debts|mini_theater|reply_choices|affinity_panel|relationship_panel)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi;
     let cursor = 0;
     let match: RegExpExecArray | null;
     const push = (kind: StoryDisplayBlockKind, text: string, title?: string) => {
@@ -1467,6 +1674,9 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
         const meta = DISPLAY_BLOCK_META[match[1].toLowerCase()] || { kind: 'other' as const };
         if (meta.kind === 'theater') {
             pushTheater(match[2], meta.title);
+        } else if (meta.kind === 'relationship' || (meta.kind === 'affinity' && isStoryThreeAxisPanel(match[0].slice(0, match[0].indexOf('>'))))) {
+            const relationship = parseStoryRelationshipPanel(match[2], meta.kind === 'affinity' ? 'xml' : 'json');
+            if (relationship) blocks.push({ kind: 'relationship', title: '双向关系', relationship, text: formatStoryRelationshipPanel(relationship) });
         } else {
             push(meta.kind, match[2], meta.title);
         }
@@ -1486,12 +1696,7 @@ export const parseStoryDisplayBlocks = (content: string): StoryDisplayBlock[] =>
     return blocks;
 };
 
-export const getStoryCharacterContextLimit = (value: unknown): number =>
-    typeof value === 'number' && Number.isFinite(value)
-        ? Math.max(0, Math.min(500, Math.floor(value)))
-        : 100;
-
-const formatStoryContextContent = (content: string): string => String(content || '')
+const formatStoryContextContent = (content: string): string => stripStoryRelationshipPanels(String(content || ''))
     .replace(/<scene_header\b[^>]*>[\s\S]*?<\/scene_header\s*>/gi, '')
     .replace(/data:[^\s]+/gi, '[媒体]')
     .trim()
@@ -1624,7 +1829,7 @@ export function formatSharedStoryHistory(
             const input = inputId !== 0 && previous?.role === 'user' ? previous : undefined;
             if (input && (!available(input) || (inputId != null && inputId !== input.id))) return [];
             if (!input && inputId !== 0 && (inputId != null || index !== 0)) return [];
-            const text = [input && `用户：${input.content}`, `剧场：${reply.content}`].filter(Boolean).join('\n');
+            const text = [input && `用户：${input.content}`, `剧场：${stripStoryRelationshipPanels(reply.content)}`].filter(Boolean).join('\n');
             return [{ id: reply.id, entry, text }];
         });
     }).sort((a, b) => b.id - a.id);
@@ -1752,10 +1957,10 @@ export const storyTimelineTimestampForCharacter = (
 export const createStoryTheaterMirrorMessage = (
     entry: StoryTheaterEntry,
     charId: string,
-    central: Pick<Message, 'id' | 'role' | 'content' | 'timestamp'>,
+    central: Pick<Message, 'id' | 'role' | 'content' | 'timestamp' | 'metadata'>,
     previousTimeline?: number,
 ): Omit<Message, 'id'> => ({
-    charId, role: central.role, type: 'text', content: central.content, timestamp: central.timestamp,
+    charId, role: central.role, type: 'text', content: storyTheaterMirrorContent(central), timestamp: central.timestamp,
     metadata: {
         source: 'story_theater_memory', theaterId: entry.id, theaterTitle: entry.title,
         theaterCentralId: central.id, theaterTimestampVersion: 1, theaterReceivedAt: central.timestamp,

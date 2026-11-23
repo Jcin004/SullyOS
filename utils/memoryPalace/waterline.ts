@@ -29,7 +29,7 @@ export const MEMORY_PALACE_WATERLINE_PRESETS = {
     },
 } as const satisfies Record<Exclude<MemoryPalaceWaterlinePreset, 'custom'>, ResolvedMemoryPalaceWaterline>;
 
-export const MIN_MEMORY_HOT_ZONE_SIZE = 20;
+export const MIN_MEMORY_HOT_ZONE_SIZE = 0;
 export const MAX_MEMORY_HOT_ZONE_SIZE = 500;
 export const MIN_MEMORY_BUFFER_THRESHOLD = 10;
 export const MAX_MEMORY_BUFFER_THRESHOLD = 200;

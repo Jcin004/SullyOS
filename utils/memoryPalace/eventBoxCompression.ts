@@ -18,7 +18,6 @@
 import type { EventBox, MemoryNode, EmbeddingConfig, MemoryRoom, RemoteVectorConfig } from './types';
 import {
     EVENT_BOX_COMPRESSION_THRESHOLD,
-    EVENT_BOX_SEAL_THRESHOLD,
     EVENT_BOX_SUMMARY_TARGET_MIN_CHARS,
     EVENT_BOX_SUMMARY_TARGET_MAX_CHARS,
     EVENT_BOX_SUMMARY_HARD_MAX_CHARS,
@@ -31,6 +30,7 @@ import { safeFetchJson, extractContent, extractJson } from '../safeApi';
 import { enforceSummaryLengthBudget } from './summaryLengthBudget';
 import { buildSARMemoryBoundaryInstruction } from '../messageFormat';
 import { hasSummaryReasoningLeak } from '../summaryReasoning';
+import { getMemoryExperienceTime } from './memoryDate';
 export { hasSummaryReasoningLeak } from '../summaryReasoning';
 
 const VALID_ROOMS: MemoryRoom[] = [
@@ -142,7 +142,7 @@ function recoverCompressionFields(raw: string): Partial<CompressionLLMResult> | 
 // ─── 压缩 LLM 调用 ─────────────────────────────────────
 
 async function callCompressionLLM(
-    box: EventBox,
+    box: Pick<EventBox, 'charId' | 'name' | 'tags'>,
     oldSummaryContent: string | null,
     liveNodes: MemoryNode[],
     llmConfig: LightLLMConfig,
@@ -156,8 +156,9 @@ async function callCompressionLLM(
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
 
-    const livesText = liveNodes
-        .map(n => `[${formatDate(n.createdAt)}｜重要性${n.importance}｜${n.mood}] ${n.content}`)
+    const livesText = [...liveNodes]
+        .sort((a, b) => getMemoryExperienceTime(a) - getMemoryExperienceTime(b))
+        .map(n => `[${formatDate(getMemoryExperienceTime(n))}｜重要性${n.importance}｜${n.mood}] ${n.content}`)
         .join('\n\n');
 
     const oldSummaryBlock = oldSummaryContent
@@ -166,7 +167,7 @@ async function callCompressionLLM(
     const sarMemoryBoundary = buildSARMemoryBoundaryInstruction(`${oldSummaryContent || ''}\n${livesText}`);
 
     const systemPrompt = `你是 ${charName}。下面这些记忆都属于一件事：「${box.name}」。
-请把它们整合成一段连贯的、第一人称（「我」）的回忆。
+回想这件事，把大家的言行记清楚，以自己的第一人称整理成连贯的回忆。
 
 **要求（严格遵守）**：
 1. **第一人称**（用「我」），从 ${charName} 的视角写。${userLabel} 用名字直接称呼。
@@ -217,7 +218,7 @@ ${sarMemoryBoundary ? `\n${sarMemoryBoundary}` : ''}
                     stream: false,
                 }),
             },
-            2, 120_000, { appName: '记忆宫殿', purpose: '事件压缩' }
+            2, 120_000, { appId: 'memorypalace', appName: '记忆宫殿', charId: box.charId, charName, purpose: '事件压缩' }
         );
 
         if (['length', 'max_tokens', 'content_filter'].includes(data?.choices?.[0]?.finish_reason)) {
@@ -251,7 +252,7 @@ ${sarMemoryBoundary ? `\n${sarMemoryBoundary}` : ''}
             console.warn(`🗜️ [Compression] LLM summary ${content.length} 字，尝试精简一次；不达标时保留完整正文`);
             content = await enforceSummaryLengthBudget(
                 content,
-                (t) => recompressSummary(t, EVENT_BOX_SUMMARY_TARGET_MAX_CHARS, llmConfig, charName),
+                (t) => recompressSummary(t, EVENT_BOX_SUMMARY_TARGET_MAX_CHARS, llmConfig, charName, box.charId),
                 EVENT_BOX_SUMMARY_HARD_MAX_CHARS,
             );
         }
@@ -287,6 +288,7 @@ async function recompressSummary(
     targetMaxChars: number,
     llmConfig: LightLLMConfig,
     charName: string,
+    charId: string,
 ): Promise<string | null> {
     const systemPrompt = `你是 ${charName}。下面这段第一人称回忆写得太长了。请在**不丢关键信息**（具体人物、地点、事件、转折、情绪）的前提下，把它压缩到 ${targetMaxChars} 字以内。
 要求：保持第一人称（「我」）、连贯通顺；只删语气填充和重复铺陈，不删事实；引用一律用「」《》或单引号，不要用半角双引号。
@@ -311,7 +313,7 @@ async function recompressSummary(
                     stream: false,
                 }),
             },
-            2, 90_000, { appName: '记忆宫殿', purpose: '事件压缩-二次压缩' }
+            2, 90_000, { appId: 'memorypalace', appName: '记忆宫殿', charId, charName, purpose: '事件压缩-二次压缩' }
         );
         if (['length', 'max_tokens', 'content_filter'].includes(data?.choices?.[0]?.finish_reason)) return null;
         const reply = extractContent(data).trim();
@@ -325,6 +327,13 @@ async function recompressSummary(
 }
 
 // ─── 单 box 压缩主流程 ──────────────────────────────────
+
+function getLatestExperienceTime(nodes: MemoryNode[], previous?: number): number | undefined {
+    return nodes.reduce<number | undefined>((latest, node) => {
+        const time = getMemoryExperienceTime(node);
+        return latest === undefined ? time : Math.max(latest, time);
+    }, previous);
+}
 
 async function compressEventBox(
     box: EventBox,
@@ -343,10 +352,15 @@ async function compressEventBox(
     liveNodes.sort((a, b) => a.createdAt - b.createdAt);
 
     // 2. 加载旧 summary 内容（如有）
-    let oldSummaryContent: string | null = null;
-    if (box.summaryNodeId) {
-        const old = await MemoryNodeDB.getById(box.summaryNodeId);
-        if (old) oldSummaryContent = old.content;
+    const previous = box.summaryNodeId ? await MemoryNodeDB.getById(box.summaryNodeId) : undefined;
+    const oldSummaryContent = previous && !previous.archived ? previous.content : null;
+    let previousExperienceTime = oldSummaryContent ? previous?.experiencedAt ?? undefined : undefined;
+    if (oldSummaryContent && previousExperienceTime === undefined) {
+        const archived = await Promise.all(box.archivedMemoryIds.map(id => MemoryNodeDB.getById(id)));
+        previousExperienceTime = getLatestExperienceTime(archived.filter((node): node is MemoryNode =>
+            Boolean(node && node.charId === box.charId && !node.isBoxSummary
+                && (!node.eventBoxId || node.eventBoxId === box.id)),
+        ));
     }
 
     console.log(`🗜️ [Compression] 开始压缩 ${box.id} "${box.name}"（${liveNodes.length} 条活节点，第 ${box.compressionCount + 1} 次压缩）`);
@@ -358,73 +372,35 @@ async function compressEventBox(
         return false;
     }
 
-    // 4. 创建或更新 summary 节点
+    // Commit the summary and its exact input snapshot together.
     const now = Date.now();
-    let summaryNode: MemoryNode;
-    if (box.summaryNodeId) {
-        const existing = await MemoryNodeDB.getById(box.summaryNodeId);
-        if (existing) {
-            existing.content = result.content;
-            existing.room = result.room;
-            existing.importance = result.importance;
-            existing.mood = result.mood;
-            existing.tags = result.tags;
-            existing.lastAccessedAt = now;
-            existing.embedded = false;  // 重新向量化
-            existing.eventBoxId = box.id;
-            existing.isBoxSummary = true;
-            existing.archived = false;
-            existing.origin = 'system';
-            summaryNode = existing;
-        } else {
-            // summaryNodeId 指向的节点丢失，新建
-            summaryNode = createSummaryNode(box, result, now);
-            box.summaryNodeId = summaryNode.id;
-        }
-    } else {
-        summaryNode = createSummaryNode(box, result, now);
-        box.summaryNodeId = summaryNode.id;
-    }
-    // 先生成向量再保存新摘要；限流/失败时保留旧摘要和全部活节点。
+    const summaryNode: MemoryNode = previous ? {
+        ...previous,
+        content: result.content,
+        room: result.room,
+        importance: result.importance,
+        mood: result.mood,
+        tags: result.tags,
+        lastAccessedAt: now,
+        embedded: false,
+        eventBoxId: box.id,
+        isBoxSummary: true,
+        archived: false,
+        origin: 'system',
+    } : createSummaryNode(box, result, now);
+    summaryNode.experiencedAt = getLatestExperienceTime(liveNodes, previousExperienceTime);
     const remoteCfg = getRemoteVectorConfig();
-    const vectorized = await vectorizeAndStore([summaryNode], embeddingConfig, remoteCfg, { skipDedup: true });
+    const vectorized = await vectorizeAndStore([summaryNode], embeddingConfig, remoteCfg, {
+        skipDedup: true,
+        commit: async entries => {
+            if (entries.length !== 1) throw new Error('整合回忆向量不完整，原内容已保留');
+            await EventBoxDB.commitRegeneration(box, liveNodes, entries[0], result.name, now);
+        },
+    });
     if (vectorized.stored !== 1) throw new Error('摘要向量化未完成，事件盒仍保留原始记忆');
-
-    // 6. 标记活节点 archived（本地）
-    const liveIds = box.liveMemoryIds.slice();
-    for (const id of liveIds) {
-        const n = await MemoryNodeDB.getById(id);
-        if (n && !n.archived) {
-            n.archived = true;
-            await MemoryNodeDB.save(n);  // syncNodeMetadataToRemote 会同步 archived=true
-        }
-    }
-    // 远程批量加速（与上面 per-node sync 重复但幂等）
     if (remoteCfg) {
-        await bulkSetArchived(remoteCfg, liveIds, true).catch(() => {});
+        await bulkSetArchived(remoteCfg, liveNodes.map(node => node.id), true).catch(() => {});
     }
-
-    // 7. 更新 box 状态
-    for (const id of liveIds) {
-        if (!box.archivedMemoryIds.includes(id)) box.archivedMemoryIds.push(id);
-    }
-    box.liveMemoryIds = [];
-    box.compressionCount += 1;
-    box.lastCompressedAt = now;
-    box.updatedAt = now;
-    box.name = result.name;
-    box.tags = result.tags;
-
-    // 8. 封盒检查：事件总数（archived + live）达到阈值 → sealed，新的相关记忆另开新盒
-    const totalEvents = box.archivedMemoryIds.length + box.liveMemoryIds.length;
-    if (totalEvents >= EVENT_BOX_SEAL_THRESHOLD && !box.sealed) {
-        box.sealed = true;
-        console.log(`🔒 [Compression] ${box.id} 事件数 ${totalEvents} 达阈值 ${EVENT_BOX_SEAL_THRESHOLD}，封盒`);
-    }
-
-    await EventBoxDB.save(box);
-
-    console.log(`✅ [Compression] ${box.id} → summary ${result.content.length}字 "${result.content.slice(0, 30)}…"，已归档 ${liveIds.length} 条${box.sealed ? '，已封盒' : ''}`);
 
     // 9. 门牌增量合并：盒子的结论落到有门牌的房间时，顺手沉淀进该房间的门牌。
     //    封盒的沉淀物就是语义事实——这是"情景→语义"固化的即时触发点。
@@ -522,7 +498,7 @@ async function regenerateEventBoxSummaryUnlocked(
     let result: CompressionLLMResult | null = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
         const candidate = await callCompressionLLM(
-            box,
+            { charId: box.charId, name: '未命名事件', tags: [] },
             null, // 关键：绝不把旧 summary 当原料
             sourceNodes,
             llmConfig,
@@ -561,6 +537,7 @@ async function regenerateEventBoxSummaryUnlocked(
             origin: 'system',
         }
         : createSummaryNode(box, result, now);
+    summaryNode.experiencedAt = getLatestExperienceTime(sourceNodes);
 
     // Embedding 成功后，在同一事务写总结、向量、归档标记和成员列表。
     // 不预存 summaryNode，任何一步失败都保留原内容。

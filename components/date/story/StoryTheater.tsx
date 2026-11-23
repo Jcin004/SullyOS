@@ -19,6 +19,8 @@ import {
 } from '../../../utils/storyTheater';
 import StoryMaskBox from './StoryMaskBox';
 import StoryPresetMaker from './StoryPresetMaker';
+import type { StoryPresetClipboard } from '../../../utils/storyPresetClipboard';
+import StoryPresetConverter from './StoryPresetConverter';
 import { archiveStoryManually } from '../../../utils/storyTheaterArchive';
 import StoryTheaterEditor from './StoryTheaterEditor';
 import StoryTheaterSession from './StoryTheaterSession';
@@ -28,22 +30,26 @@ import { StoryAppearanceButton, StoryTheaterThemeProvider } from './StoryTheater
 import { deleteStoryTheaterData } from '../../../utils/storyTheaterDeletion';
 import { getStoryFolder, loadStoryLibrary, moveStoryInLibrary, saveStoryLibrary, type StoryLibrary } from '../../../utils/storyTheaterLibrary';
 import StoryLibraryDialog, { type StoryLibraryAction } from './StoryLibraryDialog';
+const RealRelationshipNetwork = React.lazy(() => import('./RealRelationshipNetwork'));
 
 interface Props {
     onSwitchCompanion?: () => void;
     onClose: () => void;
 }
 
-type View = 'list' | 'editor' | 'session' | 'preset' | 'masks' | 'vectors' | 'archives';
+type View = 'list' | 'editor' | 'session' | 'preset' | 'convert-preset' | 'masks' | 'vectors' | 'archives' | 'relationships';
 
 const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) => {
     const { characters, userProfile, addToast, remoteVectorConfig, apiConfig } = useOS();
     const [view, setView] = useState<View>('list');
+    const [relationshipReturn, setRelationshipReturn] = useState<'list' | 'session'>('list');
+    const openRelationships = (from: 'list' | 'session') => { setRelationshipReturn(from); setView('relationships'); };
     const [entries, setEntries] = useState<StoryTheaterEntry[]>([]);
     const [customPresets, setCustomPresets] = useState<StoryTheaterPreset[]>([]);
     const [masks, setMasks] = useState<StoryTheaterMask[]>([]);
     const [activeEntry, setActiveEntry] = useState<StoryTheaterEntry | null>(null);
     const [editingPreset, setEditingPreset] = useState<StoryTheaterPreset | null>(null);
+    const [presetClipboard, setPresetClipboard] = useState<StoryPresetClipboard | null>(null);
     const [maskLocked, setMaskLocked] = useState(false);
     const [deletingEntry, setDeletingEntry] = useState<StoryTheaterEntry | null>(null);
     const [deletingStory, setDeletingStory] = useState(false);
@@ -195,10 +201,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                 : current.characterIds;
             const remainingActors = characters.filter(char => characterIds.includes(char.id) || (selection.type === 'character' && selection.id === char.id));
             const validBookIds = new Set(dedupeTheaterWorldbooks(remainingActors).map(book => book.id));
-            const characterContextLimits = { ...current.characterContextLimits };
-            if (selection.type === 'character') {
-                if (characterContextLimits[selection.id] === undefined) characterContextLimits[selection.id] = 100;
-            }
             return {
                 ...current,
                 mask: selection,
@@ -208,7 +210,6 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
                     ...(selection.type === 'character' && (current.mask?.type !== 'character' || current.mask.id !== selection.id)
                         ? (characters.find(char => char.id === selection.id)?.mountedWorldbooks || []).map(book => book.id) : []),
                 ])),
-                characterContextLimits,
                 updatedAt: Date.now(),
             };
         });
@@ -222,6 +223,8 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
 
     if (view === 'preset' && editingPreset) return <StoryPresetMaker key={editingPreset.id}
         preset={editingPreset}
+        clipboard={presetClipboard}
+        onCopy={setPresetClipboard}
         onBack={() => setView(activeEntry ? 'editor' : 'list')}
         onSave={savePreset}
         onOpenCopy={copyPreset}
@@ -261,13 +264,18 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
         onOpenMaskBox={draft => { if (maskLocked || draft.writesToCharacterMemory) return; setActiveEntry(draft); setView('masks'); }}
     />;
 
+    if (view === 'convert-preset') return <StoryPresetConverter onBack={() => setView('list')} onImport={async preset => {
+        await savePreset(preset);
+        setView('list');
+    }} />;
+    if (view === 'relationships') return <React.Suspense fallback={<div className='grid h-full place-items-center text-sm text-slate-500'>正在打开关系网…</div>}><RealRelationshipNetwork onBack={() => setView(relationshipReturn)} /></React.Suspense>;
     if (view === 'vectors' && activeEntry) return <StoryVectorMemoryPanel entry={activeEntry} onBack={() => setView('session')} />;
     if (view === 'archives' && activeEntry) return <StoryArchivePanel entry={activeEntry} masks={masks} onBack={() => setView('session')} onUpdated={next => {setActiveEntry(next);setEntries(current => current.map(item => item.id === next.id ? next : item));}} />;
 
     if (view === 'session' && activeEntry) {
         const preset = presets.find(item => item.id === activeEntry.presetId) || BUILTIN_NIGHT_SCREENING_PRESET;
         const hasVectorArchive = (!activeEntry.writesToCharacterMemory && activeEntry.archiveStrategy === 'vector') || activeEntry.archives.some(archive => archive.strategy === 'vector');
-        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onEntryChange={persistEntryInSession} />;
+        return <StoryTheaterSession entry={activeEntry} preset={preset} masks={masks} onBack={() => { setActiveEntry(null); setView('list'); }} onEdit={() => void openEntryEditor(activeEntry)} onOpenArchives={() => setView('archives')} onOpenVectorMemory={hasVectorArchive ? () => setView('vectors') : undefined} onOpenRelationships={activeEntry.writesToCharacterMemory ? () => openRelationships('session') : undefined} onEntryChange={persistEntryInSession} />;
     }
 
     return <div className='h-full w-full flex flex-col bg-stone-100 text-slate-800'>
@@ -275,7 +283,8 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
             <div className='h-16 px-4 flex items-center gap-3'>
                 <button onClick={() => currentFolder ? openFolder(currentFolder.parentId) : onClose()} aria-label={currentFolder ? '返回上一级' : '返回桌面'} className='w-9 h-9 rounded-full grid place-items-center'><ArrowLeft size={20} /></button>
                 <h1 className='font-semibold'>{onSwitchCompanion ? '见面' : '剧情'}</h1>
-                <StoryAppearanceButton className='ml-auto bg-white border border-slate-200' />
+                <button onClick={() => openRelationships('list')} aria-label='真实世界人物关系网' className='ml-auto grid h-11 w-11 place-items-center rounded-full bg-violet-100 text-violet-700'><UsersThree size={21} /></button>
+                <StoryAppearanceButton className='bg-white border border-slate-200' />
                 <button onClick={startStory} aria-label='新建剧情' className='w-10 h-10 rounded-full bg-slate-900 text-white grid place-items-center'><Plus size={19} /></button>
             </div>
             {onSwitchCompanion && <div className='mx-5 mb-4 grid grid-cols-2 p-1 rounded-xl bg-slate-200'>
@@ -332,7 +341,7 @@ const StoryTheaterContent: React.FC<Props> = ({ onSwitchCompanion, onClose }) =>
 
                 {!currentFolder && <section className='mt-6 pt-6 border-t border-slate-200'>
                     <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.22em] uppercase font-bold text-violet-500'>Native presets</div><h2 className='mt-1 text-lg font-semibold'>糯米机预设制作器</h2></div><div className='flex gap-2'><button onClick={() => importInput.current?.click()} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><UploadSimple size={17} /></button><button onClick={() => { setEditingPreset(createBlankStoryPreset()); setView('preset'); }} className='w-10 h-10 rounded-full bg-white border border-slate-200 grid place-items-center'><Plus size={17} /></button></div></div>
-                    <p className='mt-2 text-[10px] leading-5 text-slate-500'>仅支持导入与导出糯米机专属剧情预设文件，不支持其他应用的预设格式。</p>
+                    <button type='button' onClick={() => setView('convert-preset')} className='mt-3 min-h-10 rounded-xl border border-violet-200 bg-violet-50 px-3 text-xs font-semibold text-violet-700'>转换酒馆预设</button>
                     <input ref={importInput} type='file' accept='.json,.png,application/json,image/png' className='hidden' onChange={async event => { const file = event.target.files?.[0]; event.currentTarget.value = ''; if (file) await importPreset(file); }} />
                     <div className='mt-4 divide-y divide-slate-200'>{presets.map(preset => <div key={preset.id} className='flex items-center gap-2'><button onClick={() => { setEditingPreset(preset); setView('preset'); }} className='min-w-0 flex-1 py-3 flex items-center gap-3 text-left'><span className={`w-2 h-2 rounded-full ${preset.builtIn ? 'bg-amber-400' : 'bg-violet-500'}`} /><span className='min-w-0 flex-1 text-xs font-semibold truncate'>{preset.name}</span><span className='text-[9px] text-slate-400'>{preset.builtIn ? '内置只读' : `${preset.document.prompts.length} 条`}</span></button><button onClick={() => { void downloadStoryPreset(preset); }} className='w-9 h-9 shrink-0 rounded-full grid place-items-center text-slate-400' title={`导出 ${preset.name}`}><DownloadSimple size={15} /></button></div>)}</div>
                 </section>}

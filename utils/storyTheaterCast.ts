@@ -1,18 +1,49 @@
 import type { Message, StoryCastLimits } from '../types';
 
+export type StoryReportStatus = 'unreported' | 'invalid' | 'empty' | 'reported';
+type StoryStoredReportStatus = StoryReportStatus | 'manual' | 'legacy';
+export interface StoryCandidate { id: string; name: string }
+
+/** Old saves collapsed missing, invalid and empty reports; do not infer an explicit []. */
+export function storyReportStatusFromMessage(message: Message | undefined, kind: 'cast' | 'interaction'): StoryStoredReportStatus {
+    const status = message?.metadata?.[kind === 'cast' ? 'theaterCastStatus' : 'theaterInteractionStatus'];
+    if (['unreported', 'invalid', 'empty', 'reported', ...(kind === 'cast' ? ['manual'] : [])].includes(status)) return status;
+    const stored = message?.metadata?.[kind === 'cast' ? 'theaterCastIds' : 'theaterInteractionGroups'];
+    return Array.isArray(stored) || (kind === 'cast' && storyCastIdsFromMessage(message).length > 0) ? 'legacy' : 'unreported';
+}
+
+export function storyReportStatusLabel(message: Message | undefined, kind: 'cast' | 'interaction'): string {
+    const status = storyReportStatusFromMessage(message, kind);
+    if (kind === 'cast') return {
+        unreported: '模型未报告出演名单，可手动更正', invalid: '出演名单格式错误或姓名无法唯一匹配，可手动更正',
+        empty: '模型明确报告无人出演（[]）', reported: '模型已报告出演名单', manual: '出演名单已手动更正',
+        legacy: '历史出演名单（未保存报告状态）',
+    }[status];
+    if (status === 'reported' && !storyActualInteractionGroupsFromMessage(message).length) {
+        return '原报告已有交流，当前出演名单内无有效交流组';
+    }
+    return {
+        unreported: '模型未报告实际交流', invalid: '实际交流格式错误或成员无法确认',
+        empty: '模型明确报告无直接交流（[]）', reported: '模型已报告实际交流',
+        legacy: '历史交流记录（未保存报告状态）', manual: '',
+    }[status];
+}
+
+export function storyReportSummary(message: Message): string {
+    return `${storyReportStatusLabel(message, 'cast')}；${storyReportStatusLabel(message, 'interaction')}`;
+}
+
 export function normalizeStoryCastLimits(value?: Partial<StoryCastLimits>, poolSize = Number.MAX_SAFE_INTEGER): StoryCastLimits {
     return {
         minGroups: value?.minGroups ?? 1,
         maxGroups: value?.maxGroups ?? Math.max(1, Math.min(12, maximumTendencyGroups(poolSize))),
-        minPeople: value?.minPeople ?? (poolSize > 1 ? 2 : 1),
-        maxPeople: value?.maxPeople ?? Math.max(1, poolSize),
     };
 }
 
 export function validStoryCastLimits(limits: StoryCastLimits): boolean {
-    const { minGroups, maxGroups, minPeople, maxPeople } = limits;
-    return [minGroups, maxGroups, minPeople, maxPeople].every(value => Number.isSafeInteger(value) && value > 0)
-        && minGroups <= maxGroups && minPeople <= maxPeople;
+    const { minGroups, maxGroups } = limits;
+    return [minGroups, maxGroups].every(value => Number.isSafeInteger(value) && value > 0)
+        && minGroups <= maxGroups;
 }
 
 function maximumInteractionGroups(size: number): number {
@@ -20,13 +51,17 @@ function maximumInteractionGroups(size: number): number {
     return size > 52 ? Number.MAX_SAFE_INTEGER : 2 ** size - 1;
 }
 
-function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
+interface StorySamplingLimits extends StoryCastLimits {
+    minActors: number;
+    maxActors: number;
+}
+
+function effectiveStoryCastLimits(poolSize: number, limits: StoryCastLimits): StorySamplingLimits | undefined {
     if (!validStoryCastLimits(limits) || poolSize < 1) return undefined;
-    const maxPeople = Math.min(poolSize, limits.maxPeople);
-    let minPeople = Math.max(limits.minPeople, 1);
-    while (minPeople <= maxPeople && maximumInteractionGroups(minPeople) < limits.minGroups) minPeople++;
-    if (minPeople > maxPeople) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups: Math.min(limits.maxGroups, maximumInteractionGroups(maxPeople)) };
+    let minActors = Math.min(2, poolSize);
+    while (minActors <= poolSize && maximumInteractionGroups(minActors) < limits.minGroups) minActors++;
+    if (minActors > poolSize) return undefined;
+    return { ...limits, minActors, maxActors: poolSize, maxGroups: Math.min(limits.maxGroups, maximumInteractionGroups(poolSize)) };
 }
 
 const groupKey = (group: readonly string[]) => JSON.stringify([...group].sort());
@@ -70,37 +105,53 @@ const cleanInteractionGroups = (value: unknown, allowed: ReadonlySet<string>, mi
 
 /** 新版直接保存出演名单；旧消息从旧分组或记忆镜像中恢复。 */
 export const storyCastIdsFromMessage = (message?: Message): string[] => {
-    const stored = uniqueIds(message?.metadata?.theaterCastIds);
-    if (stored.length) return stored;
+    const stored = message?.metadata?.theaterCastIds;
+    if (Array.isArray(stored)) {
+        const ids = uniqueIds(stored);
+        const candidates = message?.metadata?.theaterCandidateIds;
+        return Array.isArray(candidates) && ids.some(id => !candidates.includes(id)) ? [] : ids;
+    }
     const legacy = storyCastFromMessage(message);
     if (legacy?.length) return storyCastIds(legacy);
     return uniqueIds(Object.keys((message?.metadata?.theaterMirrorIds || {}) as Record<string, unknown>));
 };
 
+export const storyTurnActorIds = (message?: Message): string[] => {
+    if (message?.role !== 'assistant' || message.type !== 'text' || message.metadata?.source !== 'story_theater'
+        || message.metadata.theaterOutOfStory) return [];
+    return [...new Set([...uniqueIds(message.metadata.theaterCandidateIds), ...storyCastIdsFromMessage(message)])];
+};
+
 export const storyInteractionTendenciesFromMessage = (message?: Message): string[][] => {
     const castIds = storyCastIdsFromMessage(message);
-    const allowed = new Set(castIds);
+    const candidateIds = uniqueIds(message?.metadata?.theaterCandidateIds);
     const stored = message?.metadata?.theaterInteractionTendencies;
-    if (Array.isArray(stored)) return cleanInteractionGroups(stored, allowed);
+    if (Array.isArray(stored)) return cleanInteractionGroups(stored, new Set(candidateIds.length ? candidateIds : castIds));
     // 旧消息中的分组用于重写时还原原计划，不计作已发生的实际互动。
-    return cleanInteractionGroups(storyCastFromMessage(message), allowed);
+    return cleanInteractionGroups(storyCastFromMessage(message), new Set(castIds));
+};
+
+const confirmedGroups = (value: unknown, castIds: readonly string[]): string[][] => {
+    const allowed = new Set(castIds);
+    return Array.isArray(value) ? cleanInteractionGroups(value.filter(group => Array.isArray(group)
+        && group.every(id => typeof id === 'string' && allowed.has(id))), allowed, 2) : [];
 };
 
 export const storyActualInteractionGroupsFromMessage = (message?: Message): string[][] => {
-    const castIds = storyCastIdsFromMessage(message);
-    const candidateIds = uniqueIds(message?.metadata?.theaterCandidateIds);
-    return cleanInteractionGroups(message?.metadata?.theaterInteractionGroups, new Set(candidateIds.length ? candidateIds : castIds), 2);
+    if (message?.metadata?.theaterOutOfStory) return [];
+    return confirmedGroups(message?.metadata?.theaterInteractionGroups, storyCastIdsFromMessage(message));
 };
 
 export const storyInteractionHistoryFromMessage = (message?: Message): StoryInteractionHistoryEntry | undefined => {
-    if (!message || message.role !== 'assistant') return undefined;
+    if (!message || message.role !== 'assistant' || message.metadata?.theaterOutOfStory) return undefined;
     const castIds = storyCastIdsFromMessage(message);
-    if (!castIds.length) return undefined;
+    const tendencies = storyInteractionTendenciesFromMessage(message);
+    if (!castIds.length && !tendencies.length) return undefined;
     const allowed = new Set(castIds);
     const hasActualInteractionField = Array.isArray(message.metadata?.theaterInteractionGroups);
     return {
         castIds,
-        tendencies: cleanInteractionGroups(message.metadata?.theaterInteractionTendencies, allowed),
+        tendencies: Array.isArray(message.metadata?.theaterInteractionTendencies) ? tendencies : [],
         actual: storyActualInteractionGroupsFromMessage(message),
         legacyTendencies: hasActualInteractionField ? [] : cleanInteractionGroups(storyCastFromMessage(message), allowed, 2),
     };
@@ -129,7 +180,7 @@ export function drawStoryCastGroups(ids: readonly string[], limits: StoryCastLim
     let bestScore = -1;
 
     for (let sample = 0; sample < 24; sample++) {
-        const size = pick(range.minPeople, range.maxPeople);
+        const size = pick(range.minActors, range.maxActors);
         if (maximumInteractionGroups(size) < range.minGroups) continue;
         const count = pick(range.minGroups, Math.min(range.maxGroups, maximumInteractionGroups(size)));
         const selected = candidates.map(id => ({ id, rank: -Math.log(Math.max(1e-12, 1 - random())) * (1 + (people.get(id) ?? 0)) }))
@@ -219,15 +270,14 @@ function maximumTendencyGroups(size: number): number {
     return size + choose2 + choose3 + choose4;
 }
 
-function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): StoryCastLimits | undefined {
+function effectiveInteractionLimits(poolSize: number, limits: StoryCastLimits): StorySamplingLimits | undefined {
     if (!validStoryCastLimits(limits) || poolSize < 1) return undefined;
-    const maxPeople = Math.min(poolSize, limits.maxPeople);
-    let minPeople = Math.max(1, limits.minPeople);
-    while (minPeople <= maxPeople && maximumTendencyGroups(minPeople) < limits.minGroups) minPeople++;
-    if (minPeople > maxPeople) return undefined;
-    const maxGroups = Math.min(limits.maxGroups, maximumTendencyGroups(maxPeople));
+    let minActors = Math.min(2, poolSize);
+    while (minActors <= poolSize && maximumTendencyGroups(minActors) < limits.minGroups) minActors++;
+    if (minActors > poolSize) return undefined;
+    const maxGroups = Math.min(limits.maxGroups, maximumTendencyGroups(poolSize));
     if (limits.minGroups > maxGroups) return undefined;
-    return { ...limits, minPeople, maxPeople, maxGroups };
+    return { ...limits, minActors, maxActors: poolSize, maxGroups };
 }
 
 export function canDrawStoryInteractionPlan(poolSize: number, limits: StoryCastLimits): boolean {
@@ -258,35 +308,8 @@ function weightedChoice<T>(items: readonly T[], weightOf: (item: T) => number, r
     return items[items.length - 1];
 }
 
-export function collectUnrealizedStoryTendencies(history: readonly StoryInteractionHistoryEntry[], limit = 8): string[][] {
-    const recent = history.slice(-8);
-    const latestActual = new Map<string, number>();
-    const missedEvents = new Map<string, { pair: string[]; index: number; score: number }[]>();
-    recent.forEach((turn, index) => {
-        const decay = (index + 1) / Math.max(1, recent.length);
-        const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
-        for (const key of actual) latestActual.set(key, index);
-        for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
-            const key = pairKey(a, b);
-            if (actual.has(key)) continue;
-            const events = missedEvents.get(key) ?? [];
-            events.push({ pair: [a, b], index, score: decay });
-            missedEvents.set(key, events);
-        }
-    });
-    return [...missedEvents.entries()]
-        .map(([key, events]) => ({
-            pair: events[events.length - 1].pair,
-            score: events.filter(event => event.index > (latestActual.get(key) ?? -1)).reduce((sum, event) => sum + event.score, 0),
-        }))
-        .filter(item => item.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(0, limit))
-        .map(item => item.pair);
-}
-
 /**
- * Select the cast and then schedule attention tendencies. Actual exchanges lower a pair's
+ * Sample actors for attention tendencies. Actual exchanges lower a pair's
  * future weight; tendencies that were not realized receive a temporary exploration boost.
  */
 export function drawStoryInteractionPlan(
@@ -294,6 +317,7 @@ export function drawStoryInteractionPlan(
     limits: StoryCastLimits,
     history: readonly StoryInteractionHistoryEntry[],
     random = Math.random,
+    primaryActorId?: string,
 ): StoryInteractionPlan {
     const candidates = [...new Set(ids)];
     const range = effectiveInteractionLimits(candidates.length, limits);
@@ -301,34 +325,23 @@ export function drawStoryInteractionPlan(
     const appearances = new Map<string, number>();
     const actualPairs = new Map<string, number>();
     const legacyPairs = new Map<string, number>();
-    const missedPairs = new Map<string, number>();
-    const latestActual = new Map<string, number>();
-    const latestMissed = new Map<string, number>();
     history.slice(-8).forEach((turn, index, recent) => {
         const decay = (index + 1) / Math.max(1, recent.length);
         for (const id of turn.castIds) appearances.set(id, (appearances.get(id) ?? 0) + decay);
         const actual = new Set(turn.actual.flatMap(groupPairs).map(([a, b]) => pairKey(a, b)));
         for (const key of actual) {
             actualPairs.set(key, (actualPairs.get(key) ?? 0) + decay);
-            latestActual.set(key, index);
         }
         for (const [a, b] of (turn.legacyTendencies ?? []).flatMap(groupPairs)) {
             const key = pairKey(a, b);
             legacyPairs.set(key, (legacyPairs.get(key) ?? 0) + decay);
         }
-        for (const [a, b] of turn.tendencies.flatMap(groupPairs)) {
-            const key = pairKey(a, b);
-            if (!actual.has(key)) {
-                missedPairs.set(key, (missedPairs.get(key) ?? 0) + decay);
-                latestMissed.set(key, index);
-            }
-        }
     });
 
     const pickInt = (min: number, max: number) => min + Math.floor(Math.min(0.999999999, Math.max(0, random())) * (max - min + 1));
-    const size = pickInt(range.minPeople, range.maxPeople);
+    const size = pickInt(range.minActors, range.maxActors);
     const castIds = candidates.map(id => {
-        const weight = 1 / (1 + (appearances.get(id) ?? 0) * 0.75);
+        const weight = id === primaryActorId ? 1 : 1 / (1 + (appearances.get(id) ?? 0) * 0.75);
         const rank = -Math.log(Math.max(1e-12, random())) / weight;
         return { id, rank };
     }).sort((a, b) => a.rank - b.rank).slice(0, size).map(item => item.id);
@@ -345,10 +358,7 @@ export function drawStoryInteractionPlan(
         const key = pairKey(a, b);
         const actual = actualPairs.get(key) ?? 0;
         const legacy = legacyPairs.get(key) ?? 0;
-        const lastMissed = latestMissed.get(key) ?? -1;
-        const lastActual = latestActual.get(key) ?? -1;
-        const missed = lastMissed > lastActual ? missedPairs.get(key) ?? 0 : 0;
-        return Math.max(0.12, (1 + Math.min(3, missed) * 0.9) / (1 + actual * 0.9 + legacy * 0.3));
+        return Math.max(0.12, 1 / (1 + actual * 0.9 + legacy * 0.3));
     };
     const selected: string[][] = [];
     const remaining = [...options];
@@ -427,16 +437,35 @@ function readAxis(value: unknown): StoryPrivateAxis | undefined {
     return legacy.length ? legacy.join('；') : undefined;
 }
 
-export function storyPrivateAxesFromMessage(reply: Message, rowsById: ReadonlyMap<number, Message>): StoryPrivateAxes {
+export function storyPrivateAxesFromMessage(reply: Message): StoryPrivateAxes {
     if (!reply.metadata?.theaterPrivateAxes || reply.metadata.theaterOutOfStory) return {};
-    const inputId = reply.metadata?.theaterInputId;
-    const input = rowsById.get(inputId);
-    if (inputId > 0 && (!input || input.metadata?.theaterInputRevision !== reply.metadata?.theaterPrivateAxesInputRevision)) return {};
+    // A later edit of the input must not erase an already-generated private axis.
     const axes = reply.metadata?.theaterPrivateAxes;
-    return Object.fromEntries(storyCastIdsFromMessage(reply).flatMap(id => {
+    const allowed = new Set([...storyTurnActorIds(reply), ...storyCastIdsFromMessage(reply)]);
+    return Object.fromEntries([...allowed].flatMap(id => {
         const axis = readAxis(axes?.[id]);
         return axis ? [[id, axis]] : [];
     }));
+}
+
+/** An explicitly cleared axis supersedes earlier entries, just like a nonempty edit. */
+export function latestStoryPrivateAxes(history: readonly Message[], actorIds: readonly string[]): Map<string, StoryPrivateAxis> {
+    const axes = new Map<string, StoryPrivateAxis>();
+    const remaining = new Set(actorIds);
+    for (const message of [...history].reverse()) {
+        if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
+        const values = storyPrivateAxesFromMessage(message);
+        for (const id of remaining) {
+            if (Object.hasOwn(values, id)) {
+                axes.set(id, values[id]);
+                remaining.delete(id);
+            } else if (message.metadata?.theaterPrivateAxes?.[id] === '' && storyTurnActorIds(message).includes(id)) {
+                remaining.delete(id);
+            }
+        }
+        if (!remaining.size) break;
+    }
+    return axes;
 }
 
 export function parseOutOfStoryReply(text: string): string | undefined {
@@ -471,7 +500,7 @@ function readJsonArrayAt(text: string, start: number): { value: unknown; end: nu
         }
     }
 }
-function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>): { groups: string[][]; fragment: string } | undefined {
+function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>): { groups: string[][]; fragment: string; value: unknown } | undefined {
     const header = /<scene_header\b[^>]*>/i.exec(text);
     if (!header) return;
     let start = header.index + header[0].length;
@@ -479,7 +508,7 @@ function readLegacySceneHeaderGroups(text: string, allowed: ReadonlySet<string>)
     const parsed = readJsonArrayAt(text, start);
     if (!parsed) return;
     const groups = sanitizeStoryCastGroups(parsed.value, allowed);
-    return groups.length ? { groups, fragment: text.slice(start, parsed.end) } : undefined;
+    return { groups, fragment: text.slice(start, parsed.end), value: parsed.value };
 }
 export function parseStoryCastReply(text: string, candidateIds: readonly string[], limits: StoryCastLimits, fixedCast?: string[][]): { groups: string[][]; axes: StoryPrivateAxes; body: string } {
     void limits;
@@ -509,46 +538,103 @@ export function parseStoryCastReply(text: string, candidateIds: readonly string[
     return { groups, axes, body };
 }
 
-export function parseStoryTheaterReply(text: string, candidateIds: readonly string[], axisIds: readonly string[] = candidateIds): {
+/** Names and old IDs share one exact lookup. Collisions across the two namespaces are ambiguous too. */
+export function storyCandidateResolver(candidates: readonly (string | StoryCandidate)[]): (value: unknown) => string {
+    const lookup = new Map<string, Set<string>>();
+    for (const candidate of candidates) {
+        const { id, name } = typeof candidate === 'string' ? { id: candidate, name: '' } : candidate;
+        for (const key of [id, name]) {
+            if (!key) continue;
+            const matches = lookup.get(key) ?? new Set<string>();
+            matches.add(id);
+            lookup.set(key, matches);
+        }
+    }
+    return value => {
+        const matches = typeof value === 'string' ? lookup.get(value) : undefined;
+        if (matches?.size !== 1) throw new Error('角色姓名或 ID 无法唯一匹配');
+        return [...matches][0];
+    };
+}
+
+function readStoryReport(response: string, tag: 'turn_cast' | 'interaction_result'): { status: StoryReportStatus; value?: unknown } {
+    const tags = [...response.matchAll(new RegExp(`<\\/?${tag}\\b`, 'gi'))];
+    if (!tags.length) return { status: 'unreported' };
+    const matches = [...response.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}\\s*>`, 'gi'))];
+    if (tags.length !== 2 || matches.length !== 1) return { status: 'invalid' };
+    try { return { status: 'reported', value: JSON.parse(unwrapFence(matches[0][1])) }; }
+    catch { return { status: 'invalid' }; }
+}
+
+function resolveStoryCast(value: unknown, resolve: (value: unknown) => string): string[] {
+    if (!Array.isArray(value)) throw new Error('出演名单必须是数组');
+    // Historic two-dimensional ID rosters are still accepted, including overlapping groups.
+    const members = value.length && value.every(Array.isArray)
+        ? value.flatMap(group => {
+            if (!group.length) throw new Error('出演分组为空');
+            return group;
+        }) : value;
+    return [...new Set(members.map(resolve))];
+}
+
+export function parseStoryTheaterReply(text: string, candidateActors: readonly (string | StoryCandidate)[]): {
+    castIds: string[];
+    castStatus: StoryReportStatus;
     interactions: string[][];
+    interactionStatus: StoryReportStatus;
     axes: StoryPrivateAxes;
     body: string;
 } {
     const response = unwrapProtocolBlock(unwrapFence(String(text || '').replace(/^\uFEFF/, '')));
-    const allowed = new Set(candidateIds);
-    const interactions: string[][] = [];
-    const seen = new Set<string>();
-    for (const match of response.matchAll(/<interaction_result\b[^>]*>([\s\S]*?)<\/interaction_result\s*>/gi)) {
+    const candidates = new Set(candidateActors.map(actor => typeof actor === 'string' ? actor : actor.id));
+    const resolve = storyCandidateResolver(candidateActors);
+    const castReport = readStoryReport(response, 'turn_cast');
+    let castIds: string[] = [];
+    const legacy = !castTag.test(response) ? readLegacySceneHeaderGroups(response, candidates) : undefined;
+    let castStatus = castReport.status;
+    if (castStatus === 'reported' || legacy) {
         try {
-            const groups = cleanInteractionGroups(JSON.parse(unwrapFence(match[1])), allowed, 2);
-            for (const group of groups) {
-                const key = groupKey(group);
-                if (!seen.has(key)) { seen.add(key); interactions.push(group); }
-            }
-        } catch { /* 互动记录无效时不影响正文与私轴。 */ }
+            castIds = resolveStoryCast(legacy ? legacy.value : castReport.value, resolve);
+            castStatus = castIds.length ? 'reported' : 'empty';
+        } catch { castStatus = 'invalid'; }
+    }
+    let interactions: string[][] = [];
+    const interactionReport = readStoryReport(response, 'interaction_result');
+    let interactionStatus = interactionReport.status;
+    if (interactionStatus === 'reported') {
+        try {
+            const raw = interactionReport.value;
+            if (!Array.isArray(raw)) throw new Error('交流记录必须是二维数组');
+            const groups = raw.map(group => {
+                if (!Array.isArray(group) || group.length < 2) throw new Error('交流组至少有两人');
+                const ids = group.map(resolve);
+                if (new Set(ids).size !== ids.length || ids.some(id => !castIds.includes(id))) throw new Error('交流成员无效');
+                return ids;
+            });
+            interactions = confirmedGroups(groups, castIds);
+            interactionStatus = raw.length ? 'reported' : 'empty';
+        } catch { interactionStatus = 'invalid'; }
     }
     const axes: StoryPrivateAxes = {};
     for (const match of response.matchAll(/<private_axes\b[^>]*>([\s\S]*?)<\/private_axes\s*>/gi)) {
         try {
             const raw = JSON.parse(unwrapFence(match[1])) as unknown;
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-            for (const id of axisIds) {
+            for (const id of castIds) {
                 const axis = readAxis((raw as Record<string, unknown>)[id]);
                 if (axis && !axes[id]) axes[id] = axis;
             }
         } catch { /* 私轴为可选数据。 */ }
     }
-    let body = response
-        .replace(/<turn_cast\b[^>]*>[\s\S]*?<\/turn_cast\s*>/gi, '')
-        .replace(/<interaction_result\b[^>]*>[\s\S]*?<\/interaction_result\s*>/gi, '')
-        .replace(/<interaction_result\b[^>]*>[\s\S]*$/i, '')
-        .replace(/<private_axes\b[^>]*>[\s\S]*?<\/private_axes\s*>/gi, '')
-        .replace(/<private_axes\b[^>]*>[\s\S]*$/i, '')
+    const body = (legacy ? response.replace(legacy.fragment, '') : response)
+        .replace(/<(turn_cast|interaction_result|private_axes)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+        .replace(/<(?:turn_cast|interaction_result|private_axes)\b[\s\S]*?(?=<(?:scene_header|story_text)\b|$)/gi, '')
+        .replace(/<\/(?:turn_cast|interaction_result|private_axes)\b[^<>]*(?:>|(?=<)|$)/gi, '')
         .trim();
-    return { interactions, axes, body };
+    return { castIds, castStatus, interactions, interactionStatus, axes, body };
 }
 
-export function assertStoryRerollBody(text: string): string {
-    if (castTag.test(text) || outOfStoryTag.test(text) || axesTag.test(text) || interactionResultTag.test(text)) throw new Error('本轮只需返回正文。原记录已保留。');
+export function assertStoryRerollBody(text: string, allowRelationshipCast = false): string {
+    if ((!allowRelationshipCast && castTag.test(text)) || outOfStoryTag.test(text) || axesTag.test(text) || interactionResultTag.test(text)) throw new Error('本轮只需返回正文。原记录已保留。');
     return text;
 }

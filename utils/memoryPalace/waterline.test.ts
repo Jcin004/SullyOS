@@ -29,15 +29,19 @@ describe('角色级记忆水位档位', () => {
             bufferThreshold: 999,
         })).toEqual({
             preset: 'custom',
-            hotZoneSize: 20,
+            hotZoneSize: 9,
             bufferThreshold: 200,
         });
     });
 
-    it('创建自定义配置时保存的是归一化后的稳定数值', () => {
-        expect(makeCustomMemoryPalaceWaterline(88.9, 33.4)).toEqual({
+    it.each([
+        [88.9, 88],
+        [0, 0],
+        [-10, 0],
+    ])('自定义原文保留量 %s 保存为 %s 条', (value, expected) => {
+        expect(makeCustomMemoryPalaceWaterline(value, 33.4)).toEqual({
             preset: 'custom',
-            hotZoneSize: 88,
+            hotZoneSize: expected,
             bufferThreshold: 33,
         });
     });

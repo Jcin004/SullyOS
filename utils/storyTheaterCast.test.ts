@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, collectUnrealizedStoryTendencies, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage } from './storyTheaterCast';
+import { assertStoryRerollBody, buildStoryTheaterPromptValues, canDrawStoryCast, canDrawStoryInteractionPlan, drawStoryCastGroups, drawStoryInteractionPlan, normalizeStoryCastLimits, parseOutOfStoryReply, parseStoryCastReply, parseStoryTheaterReply, storyActualInteractionGroupsFromMessage, storyCastIdsFromMessage, storyInteractionHistoryFromMessage, storyReportStatusFromMessage } from './storyTheaterCast';
 
 const axis = '修表的零件还没找齐，明天继续找工具。';
 const axes = (ids: string[]) => `<private_axes>${JSON.stringify(Object.fromEntries(ids.map(id => [id, axis])))}</private_axes>`;
@@ -8,9 +8,103 @@ function seededRandom(seed: number) {
     return () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
 }
 
+describe('姓名报告与历史兼容', () => {
+    const candidates = [{ id: 'a', name: '林青' }, { id: 'b', name: '陈远' }, { id: 'c', name: '沈默' }];
+    const body = '<story_text>林青向陈远道谢，沈默独自在楼上修表。</story_text>';
+    const cast = '<turn_cast>["林青","陈远","沈默"]</turn_cast>';
+    const parse = (reports: string, pool = candidates) => parseStoryTheaterReply(body + reports + axes(['a', 'b', 'c']), pool);
+
+    it.each([
+        ['["林青","陈远","沈默"]', '[["林青","陈远"]]'],
+        ['["a","b","c"]', '[["a","b"]]'],
+        ['[["a","b"],["b","c"]]', '[["a","陈远"]]'],
+        ['["林青","b","沈默"]', '[["林青","b"],["b","林青"]]'],
+    ])('姓名、历史 ID、二维旧名单和混合格式均保存为 ID：%s', (roster, groups) => {
+        expect(parse(`<turn_cast>${roster}</turn_cast><interaction_result>${groups}</interaction_result>`)).toEqual({
+            body, castIds: ['a', 'b', 'c'], castStatus: 'reported', interactions: [['a', 'b']], interactionStatus: 'reported',
+            axes: { a: axis, b: axis, c: axis },
+        });
+    });
+
+    it.each([
+        '["林"]', '["小林"]', '["林青 "]', '["未知角色"]', '["林青","未知角色"]',
+        '["林青",null]', '["林青",["陈远"]]', '{}', '[[]]',
+    ])('任何成员无法精确确认时整份名单无效，不从私轴或互动推断：%s', roster => {
+        expect(parse(`<turn_cast>${roster}</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>`))
+            .toEqual({ body, castIds: [], castStatus: 'invalid', interactions: [], interactionStatus: 'invalid', axes: {} });
+    });
+
+    it('重名不猜测，明确 ID 可辨认；姓名与其他角色 ID 冲突也不猜测', () => {
+        const sameName = [...candidates, { id: 'd', name: '林青' }];
+        expect(parse('<turn_cast>["林青","陈远"]</turn_cast>', sameName)).toMatchObject({ castIds: [], castStatus: 'invalid' });
+        expect(parse('<turn_cast>["a","b"]</turn_cast>', sameName)).toMatchObject({ castIds: ['a', 'b'], castStatus: 'reported' });
+        expect(parse('<turn_cast>["a"]</turn_cast>', [...candidates, { id: 'other', name: 'a' }]))
+            .toMatchObject({ castIds: [], castStatus: 'invalid' });
+        expect(parse('<turn_cast>["a","b"]</turn_cast><interaction_result>[["林青","陈远"]]</interaction_result>', sameName))
+            .toMatchObject({ castIds: ['a', 'b'], interactions: [], interactionStatus: 'invalid' });
+    });
+
+    it.each(['[["林青","外人"]]', '[["林青","林青"]]', '[["林青","a"]]', '[["林青"]]', '[[]]', '["林青","陈远"]', '{}', 'null', '不是 JSON'])
+    ('互动报告不接收无效分组或未确认成员：%s', report => {
+        expect(parse(cast + `<interaction_result>${report}</interaction_result>`))
+            .toMatchObject({ body, castIds: ['a', 'b', 'c'], castStatus: 'reported', interactions: [], interactionStatus: 'invalid', axes: { a: axis } });
+    });
+
+    it('未报告、格式错误和明确 [] 分开，不因省略互动丢失正文或出演', () => {
+        expect(parse('')).toEqual({ body, castIds: [], castStatus: 'unreported', interactions: [], interactionStatus: 'unreported', axes: {} });
+        expect(parse('<turn_cast>[]</turn_cast><interaction_result>[]</interaction_result>'))
+            .toEqual({ body, castIds: [], castStatus: 'empty', interactions: [], interactionStatus: 'empty', axes: {} });
+        expect(parse(cast)).toMatchObject({ castStatus: 'reported', interactionStatus: 'unreported', axes: { a: axis } });
+        expect(parse(cast + '<interaction_result>[]</interaction_result>')).toMatchObject({ castStatus: 'reported', interactionStatus: 'empty' });
+    });
+
+    it.each(['<turn_cast>["林青"]', '<turn_cast', '</turn_cast>', '<turn_cast>["林青"]</turn_cast><turn_cast>[]</turn_cast>',
+        '<turn_cast>["林青"]</turn_cast><turn_cast', '<turn_cast>["林青"]</turn_cast></turn_cast>'])
+    ('截断、重复或孤立标签均为错误：%s', report => {
+        expect(parse(report)).toMatchObject({ body, castIds: [], castStatus: 'invalid', axes: {} });
+    });
+
+    it.each(['<interaction_result>', '<interaction_result', '</interaction_result>',
+        '<interaction_result>[]</interaction_result><interaction_result',
+        '<interaction_result>[]</interaction_result><interaction_result>[]</interaction_result>'])
+    ('互动标签损坏时保留出演、正文与私轴：%s', report => {
+        expect(parse(cast + report)).toMatchObject({ castIds: ['a', 'b', 'c'], castStatus: 'reported', interactionStatus: 'invalid', axes: { a: axis } });
+    });
+
+    it('围栏与旧 scene_header 名单可读；旧数据的空数组不冒充明确的无交流报告', () => {
+        const fenced = '```json\n["林青","陈远"]\n```';
+        expect(parse(`<turn_cast>${fenced}</turn_cast>`)).toMatchObject({ castIds: ['a', 'b'], castStatus: 'reported' });
+        expect(parseStoryTheaterReply('<scene_header>[["a","unknown"]]<time>午后</time></scene_header>' + body, candidates))
+            .toMatchObject({ castIds: [], castStatus: 'invalid' });
+        const old = { metadata: { theaterCastIds: [], theaterInteractionGroups: [] } } as any;
+        expect(storyReportStatusFromMessage(old, 'cast')).toBe('legacy');
+        expect(storyReportStatusFromMessage(old, 'interaction')).toBe('legacy');
+        expect(old.metadata).toEqual({ theaterCastIds: [], theaterInteractionGroups: [] });
+        expect(storyReportStatusFromMessage({ metadata: { theaterCastGroups: [['a']] } } as any, 'cast')).toBe('legacy');
+    });
+});
+
 describe('剧场选角协议', () => {
     const ids = ['a', 'b', 'c', 'd'];
-    const limits = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 2, minPeople: 1, maxPeople: 2 });
+    const limits = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 2 });
+
+    it('旧人数字段不参与范围、校验或随机结果，归一化只返回组数', () => {
+        const obsolete = { minGroups: 1, maxGroups: 3, minPeople: 99, maxPeople: 0 };
+        const current = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 3 }, 4);
+        expect(normalizeStoryCastLimits(obsolete, 4)).toEqual(current);
+        expect(canDrawStoryInteractionPlan(4, normalizeStoryCastLimits(obsolete, 4))).toBe(true);
+        expect(drawStoryInteractionPlan(ids, normalizeStoryCastLimits(obsolete, 4), [], seededRandom(7)))
+            .toEqual(drawStoryInteractionPlan(ids, current, [], seededRandom(7)));
+    });
+
+    it.each(['', '<interaction_result>[]</interaction_result>', '<interaction_result>无效</interaction_result>'])(
+        '省略、为空或损坏的事后记录仍保留独处正文、出演和私轴：%s', record => {
+            const body = '<story_text>她独自坐在窗边修表。</story_text>';
+            expect(parseStoryTheaterReply(body + '<turn_cast>["a"]</turn_cast>' + record + axes(['a']), ids))
+                .toEqual({ body, castIds: ['a'], castStatus: 'reported', interactions: [],
+                    interactionStatus: !record ? 'unreported' : record.includes('[]') ? 'empty' : 'invalid', axes: { a: axis } });
+        },
+    );
 
     it('单独识别场外正文并拒绝空回复、混合模式和跨模式重写', () => {
         const discussion = '<out_of_story>  我们可以讨论一下设定。\n你想从哪里开始？ </out_of_story>';
@@ -25,7 +119,7 @@ describe('剧场选角协议', () => {
     });
 
     it('随机建议可变化，降低近期熟面孔和固定搭档的权重', () => {
-        const pairLimits = normalizeStoryCastLimits({ maxGroups: 1, minPeople: 2, maxPeople: 2 });
+        const pairLimits = normalizeStoryCastLimits({ maxGroups: 1 });
         const recent = Array.from({ length: 6 }, () => [['a', 'b']]);
         const sample = (history: string[][][]) => Array.from({ length: 120 }, (_, i) =>
             drawStoryCastGroups(ids, pairLimits, history, seededRandom(7121 * (i + 1)))[0].sort().join(''));
@@ -39,24 +133,24 @@ describe('剧场选角协议', () => {
     it('完整保留正文协议并剥离名单，人数和组数允许不取上限', () => {
         expect(parseStoryCastReply(`<turn_cast>[["c"]]</turn_cast>\n${axes(['c'])}<story_text>她在修表。</story_text>`, ids, limits))
             .toEqual({ groups: [['c']], axes: { c: axis }, body: '<story_text>她在修表。</story_text>' });
-        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2, minPeople: 2, maxPeople: 2 }))).toBe(true); // 两名单人思考组也可以独立成立
+        expect(canDrawStoryCast(2, normalizeStoryCastLimits({ minGroups: 2}))).toBe(true); // 两名单人思考组也可以独立成立
     });
 
     it('允许超过五位演员和四个分组，整轮上限以候选池为准', () => {
         const pool = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
-        const range = normalizeStoryCastLimits({ minGroups: 5, maxGroups: 8, minPeople: 6, maxPeople: 12 });
+        const range = normalizeStoryCastLimits({ minGroups: 5, maxGroups: 8 });
         const actors = pool.map(id => ({ id, name: id }));
         for (let seed = 1; seed <= 12; seed++) {
             const groups = drawStoryCastGroups(pool, range, [], seededRandom(seed));
             expect(groups.length).toBeGreaterThanOrEqual(5);
             const cast = [...new Set(groups.flat())];
-            expect(cast.length).toBeGreaterThanOrEqual(6);
+            expect(cast.length).toBeGreaterThanOrEqual(3);
             expect(cast.length).toBeLessThanOrEqual(7);
             expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(groups)}</turn_cast>${axes(cast)}正文`, pool, range).groups).toEqual(groups);
             const promptValues = buildStoryTheaterPromptValues({ actors, candidateActors: actors, limits: range, proposals: groups, modeState: '剧情续写' });
             expect(promptValues.theater_cast_data).toContain('"id":"a"');
             expect(promptValues.theater_candidate_data).toContain('"id":"a"');
-            expect(promptValues.theater_interaction_tendencies).toContain('"id":"a"');
+            for (const id of cast) expect(promptValues.theater_interaction_tendencies).toContain(`"id":"${id}"`);
         }
         const singleGroup = [pool];
         expect(parseStoryCastReply(`<turn_cast>${JSON.stringify(singleGroup)}</turn_cast>${axes(pool)}正文`, pool, normalizeStoryCastLimits(undefined, pool.length)).groups).toEqual(singleGroup);
@@ -64,7 +158,7 @@ describe('剧场选角协议', () => {
 
     it('接受跨组重复、可恢复的代码围栏和重写名单', () => {
         const groups = [['a', 'b'], ['b'], ['a']];
-        const range = normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 2, maxPeople: 2 });
+        const range = normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3 });
         const fence = '```';
         const protocol = `<turn_cast>\n${fence}json\n${JSON.stringify(groups)}\n${fence}\n</turn_cast>\n${axes(['a', 'b'])}`;
         for (const output of [
@@ -82,14 +176,12 @@ describe('剧场选角协议', () => {
     });
 
     it.each([
-        { minPeople: 5, maxPeople: 8 },
-        { minGroups: 4, maxPeople: 2 },
+        { minGroups: 16, maxGroups: 20 },
         { minGroups: 3, maxGroups: 2 },
-        { minPeople: 3, maxPeople: 2 },
-        { minPeople: 0 },
+        { minGroups: 0 },
         { maxGroups: 2.5 },
-        { maxPeople: NaN },
-        { maxPeople: Infinity },
+        { maxGroups: NaN },
+        { maxGroups: Infinity },
     ])('无法用当前候选满足范围时拒绝生成或校验：%j', partial => {
         const range = normalizeStoryCastLimits(partial);
         expect(canDrawStoryCast(ids.length, range)).toBe(false);
@@ -114,7 +206,7 @@ describe('剧场选角协议', () => {
     it('动态数据只提供候选、建议、范围和历史私轴，不再在代码中生成提示词', () => {
         const links = [['a', 'b'], ['a', 'c'], ['a', 'd']];
         const actors = ids.map(id => ({ id, name: id.toUpperCase() }));
-        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 9, minPeople: 1, maxPeople: 4 }, 4);
+        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 9 }, 4);
         const values = buildStoryTheaterPromptValues({
             actors, limits: range, proposals: links, modeState: '剧情续写',
             previousAxes: { a: '仍在找丢失的铅笔盒。' }, prefill: '<scene_header>',
@@ -131,9 +223,11 @@ describe('剧场选角协议', () => {
 
     it('随机建议包含同场多人共同讨论，也支持分组衔接与并行交谈', () => {
         const people = ['a', 'b', 'c', 'd'];
-        const oneGroup = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 4, maxPeople: 4 }, 4);
-        expect(drawStoryCastGroups(people, oneGroup, [], seededRandom(23)).map(group => [...group].sort())).toEqual([people]);
-        const flexible = normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4);
+        const oneGroup = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1 }, 4);
+        const singleGroups = Array.from({ length: 30 }, (_, i) => drawStoryCastGroups(people, oneGroup, [], seededRandom(i * 821 + 71)));
+        expect(singleGroups.every(groups => groups.length === 1)).toBe(true);
+        expect(singleGroups.some(groups => groups[0].length > 2)).toBe(true);
+        const flexible = normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3 }, 4);
         const samples = Array.from({ length: 30 }, (_, i) => drawStoryCastGroups(people, flexible, [], seededRandom(i * 821 + 71)));
         expect(samples.some(groups => groups.some(group => group.length >= 3))).toBe(true);
         expect(samples.some(groups => groups.some(group => group.length === 2))).toBe(true);
@@ -145,7 +239,7 @@ describe('剧场选角协议', () => {
 
     it('随机建议只生成有交流对象的关系，组数不固定，关系可重叠', () => {
         const pool = ['a', 'b', 'c', 'd', 'e'];
-        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 10, minPeople: 2, maxPeople: 5 }, pool.length);
+        const range = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 10 }, pool.length);
         const samples = Array.from({ length: 80 }, (_, i) => drawStoryCastGroups(pool, range, [], seededRandom(1009 + i * 71)));
         expect(new Set(samples.map(groups => groups.length)).size).toBeGreaterThanOrEqual(4);
         expect(samples.some(groups => groups.length >= 5)).toBe(true);
@@ -200,14 +294,14 @@ describe('剧场选角协议', () => {
 
 describe('交流倾向随机调度', () => {
     const people = ['a', 'b', 'c', 'd'];
-    const fixedRoster = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1, minPeople: 4, maxPeople: 4 }, 4);
+    const fixedRoster = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1 }, 4);
     const seed = (index: number) => seededRandom(9127 + index * 193);
 
-    it('在剧情生成前确定出演名单，并允许重叠与多人交流倾向', () => {
+    it('在剧情生成前抽取交流关注角色，允许重叠与多人交流倾向', () => {
         const plans = Array.from({ length: 24 }, (_, index) => drawStoryInteractionPlan(
-            people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(7 + index * 31),
+            people, normalizeStoryCastLimits({ minGroups: 3, maxGroups: 3 }, 4), [], seededRandom(7 + index * 31),
         ));
-        expect(plans.every(plan => plan.castIds.length === 4 && plan.tendencies.length === 3)).toBe(true);
+        expect(plans.every(plan => plan.castIds.length >= 2 && plan.castIds.length <= 4 && plan.tendencies.length === 3)).toBe(true);
         expect(plans.every(plan => plan.tendencies.every(group => group.length >= 1))).toBe(true);
         expect(plans.some(plan => plan.tendencies.some(group => group.length === 1))).toBe(true);
         expect(plans.some(plan => plan.tendencies.some(group => group.length > 2))).toBe(true);
@@ -215,22 +309,34 @@ describe('交流倾向随机调度', () => {
             plan.tendencies.slice(index + 1).some(other => group.some(id => other.includes(id))),
         ))).toBe(true);
         const variablePlans = Array.from({ length: 32 }, (_, index) => drawStoryInteractionPlan(
-            people, normalizeStoryCastLimits({ minGroups: 1, maxGroups: 6, minPeople: 4, maxPeople: 4 }, 4), [], seededRandom(300 + index * 19),
+            people, normalizeStoryCastLimits({ minGroups: 1, maxGroups: 6 }, 4), [], seededRandom(300 + index * 19),
         ));
         expect(new Set(variablePlans.map(plan => plan.tendencies.length)).size).toBeGreaterThan(1);
         expect(canDrawStoryInteractionPlan(1, normalizeStoryCastLimits(undefined, 1))).toBe(true);
-        expect(canDrawStoryInteractionPlan(2, normalizeStoryCastLimits({ minGroups: 2, maxGroups: 4, minPeople: 1, maxPeople: 2 }, 2))).toBe(true);
+        expect(canDrawStoryInteractionPlan(2, normalizeStoryCastLimits({ minGroups: 2, maxGroups: 4 }, 2))).toBe(true);
         expect(drawStoryInteractionPlan(['solo'], normalizeStoryCastLimits(undefined, 1), [], seededRandom(1)))
             .toEqual({ castIds: ['solo'], tendencies: [['solo']] });
         const twoPersonPlan = drawStoryInteractionPlan(
-            ['a', 'b'], normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3, minPeople: 2, maxPeople: 2 }, 2), [], seededRandom(17),
+            ['a', 'b'], normalizeStoryCastLimits({ minGroups: 2, maxGroups: 3 }, 2), [], seededRandom(17),
         );
         expect(twoPersonPlan.castIds).toHaveLength(2);
         expect(twoPersonPlan.tendencies).toHaveLength(2);
         expect(twoPersonPlan.tendencies.every(group => group.length >= 1 && group.length <= 2)).toBe(true);
     });
 
-    it('近期真实互动降低旧搭档权重，未实现倾向会暂时获得探索加成', () => {
+    it('主要角色频繁出演时不被人物出场权重压低，重复搭档仍按实际交流降权', () => {
+        const history = Array.from({ length: 8 }, () => ({ castIds: ['a', 'b'], tendencies: [['a', 'b']], actual: [['a', 'b']] }));
+        const limits = normalizeStoryCastLimits({ minGroups: 1, maxGroups: 1 }, 4);
+        const samples = (primary?: string) => Array.from({ length: 160 }, (_, index) =>
+            drawStoryInteractionPlan(people, limits, history, seed(index), primary));
+        const ordinary = samples();
+        const anchored = samples('a');
+        expect(anchored.filter(plan => plan.castIds.includes('a')).length)
+            .toBeGreaterThan(ordinary.filter(plan => plan.castIds.includes('a')).length);
+        expect(anchored.some(plan => !plan.castIds.includes('a'))).toBe(true);
+    });
+
+    it('近期真实互动降低旧搭档权重，未实现的倾向不改变抽取', () => {
         const actualHistory = Array.from({ length: 8 }, () => ({
             castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']],
         }));
@@ -243,31 +349,46 @@ describe('交流倾向随机调度', () => {
         const actual = sample(actualHistory);
         const missed = sample(missedHistory);
         expect(actual.filter(group => group === 'ab').length).toBeLessThan(baseline.filter(group => group === 'ab').length);
-        expect(missed.filter(group => group === 'ab').length).toBeGreaterThan(baseline.filter(group => group === 'ab').length);
-        expect(collectUnrealizedStoryTendencies(missedHistory)).toEqual([['a', 'b']]);
-        expect(collectUnrealizedStoryTendencies([...missedHistory, { castIds: people, tendencies: [['a', 'b']], actual: [['a', 'b']] }])).toEqual([]);
-        const expired = [...missedHistory, ...Array.from({ length: 8 }, () => ({ castIds: people, tendencies: [], actual: [] }))];
-        expect(collectUnrealizedStoryTendencies(expired)).toEqual([]);
+        expect(missed).toEqual(baseline);
     });
 
-    it('从剧情结果中提取实际互动，过滤旁观者、无效角色和单人组', () => {
+    it('从剧情结果中提取实际互动；有无效成员或单人组时标记整份报告错误', () => {
         const roster = ['a', 'b', 'c'];
-        const generated = '<turn_cast>' + JSON.stringify(roster) + '</turn_cast>'
-            + '<story_text>正文。</story_text>'
-            + '<interaction_result>[["a","b"],["b","c"],["c"],["a","outside"]]</interaction_result>'
+        const generated = '<story_text>正文。</story_text>' + '<turn_cast>' + JSON.stringify(roster) + '</turn_cast>'
+            + '<interaction_result>[["a","b"],["b","c"]]</interaction_result>'
             + axes(roster);
         expect(parseStoryTheaterReply(generated, roster)).toEqual({
-            interactions: [['a', 'b'], ['b', 'c']], axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
+            castIds: roster, castStatus: 'reported', interactions: [['a', 'b'], ['b', 'c']], interactionStatus: 'reported',
+            axes: { a: axis, b: axis, c: axis }, body: '<story_text>正文。</story_text>',
         });
         expect(parseStoryTheaterReply('<story_text>没有交流。</story_text>', roster).interactions).toEqual([]);
         expect(parseStoryTheaterReply('<story_text>正文。</story_text><interaction_result>[["a","b"]]', roster).body).toBe('<story_text>正文。</story_text>');
         const background = parseStoryTheaterReply(
-            '<interaction_result>[["a","d"]]</interaction_result>' + axes(['a', 'b']),
-            ['a', 'b', 'c', 'd'], ['a', 'b'],
+            '她独自修表。<turn_cast>["a"]</turn_cast><interaction_result>[["a","d"]]</interaction_result>' + axes(['a', 'b']),
+            ['a', 'b', 'c', 'd'],
         );
-        expect(background.interactions).toEqual([['a', 'd']]);
-        expect(Object.keys(background.axes)).toEqual(['a', 'b']);
+        const watching = '<story_text>甲向乙点头；丙路过，丁只被提及。</story_text><turn_cast>["a","b","c"]</turn_cast>';
+        const valid = '<interaction_result>[["a","b"],["a","b","d"],["c"],["b","a"]]</interaction_result>';
+        expect(parseStoryTheaterReply(watching + valid, ['a', 'b', 'c', 'd'])).toMatchObject({ interactions: [], interactionStatus: 'invalid' });
+        expect(parseStoryTheaterReply(watching + valid + '<interaction_result>[]</interaction_result>', ['a', 'b', 'c', 'd']).interactions).toEqual([]);
+        expect(background).toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'invalid', axes: { a: axis }, body: '她独自修表。' });
         expect(() => assertStoryRerollBody('<interaction_result>[]</interaction_result>正文')).toThrow('本轮只需返回正文');
+    });
+
+    it('保留旧名单协议，并在名单缺失、无效或截断时保留正文', () => {
+        const body = '<story_text>她一言未发。</story_text>';
+        for (const cast of ['', '<turn_cast>[]</turn_cast>', '<turn_cast>["a","unknown"]</turn_cast>',
+            '<turn_cast>写错了</turn_cast>', '<turn_cast>["a"]']) {
+            expect(parseStoryTheaterReply(body + cast + axes(['a']), ['a']))
+                .toEqual({ castIds: [], castStatus: !cast ? 'unreported' : cast.includes('[]') ? 'empty' : 'invalid',
+                    interactions: [], interactionStatus: 'unreported', axes: {}, body });
+        }
+        expect(parseStoryTheaterReply('<turn_cast>[["a"]]</turn_cast>' + body + axes(['a']), ['a']))
+            .toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'unreported', axes: { a: axis }, body });
+        expect(parseStoryTheaterReply('<turn_cast>[' + body + axes(['a']), ['a']))
+            .toEqual({ castIds: [], castStatus: 'invalid', interactions: [], interactionStatus: 'unreported', axes: {}, body });
+        expect(parseStoryTheaterReply('<scene_header>[["a"]]<time>午后</time></scene_header>' + body, ['a']))
+            .toEqual({ castIds: ['a'], castStatus: 'reported', interactions: [], interactionStatus: 'unreported', axes: {}, body: '<scene_header><time>午后</time></scene_header>' + body });
     });
 
     it('历史数据分别读取出演名单、交流倾向和真实互动', () => {
@@ -276,16 +397,17 @@ describe('交流倾向随机调度', () => {
             metadata: {
                 theaterCastIds: ['a', 'b', 'c'],
                 theaterCandidateIds: ['a', 'b', 'c', 'd'],
-                theaterInteractionTendencies: [['a', 'b'], ['a', 'c']],
+                theaterInteractionTendencies: [['a', 'b'], ['a', 'c'], ['c', 'd']],
                 theaterInteractionGroups: [['a', 'd']],
             },
         } as any;
         expect(storyCastIdsFromMessage(message)).toEqual(['a', 'b', 'c']);
-        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([['a', 'd']]);
+        expect(storyActualInteractionGroupsFromMessage(message)).toEqual([]);
+        expect(message.metadata.theaterInteractionGroups).toEqual([['a', 'd']]);
         expect(storyInteractionHistoryFromMessage(message)).toEqual({
             castIds: ['a', 'b', 'c'],
-            tendencies: [['a', 'b'], ['a', 'c']],
-            actual: [['a', 'd']],
+            tendencies: [['a', 'b'], ['a', 'c'], ['c', 'd']],
+            actual: [],
             legacyTendencies: [],
         });
         const legacy = {

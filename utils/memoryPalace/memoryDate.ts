@@ -1,4 +1,15 @@
+import type { MemoryNode } from './types';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
+type MemoryTimes = Pick<MemoryNode, 'experiencedAt' | 'createdAt'>;
+
+export function getMemoryExperienceTime(node: MemoryTimes): number {
+    return node.experiencedAt ?? node.createdAt;
+}
+
+export function formatMemoryExperienceDate(node: MemoryTimes): string {
+    return new Date(getMemoryExperienceTime(node)).toLocaleDateString('zh-CN');
+}
 
 function localDayNumber(date: Date): number {
     return Math.floor(Date.UTC(
