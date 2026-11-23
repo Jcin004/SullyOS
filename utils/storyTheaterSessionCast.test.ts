@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest';
 import StoryTheaterSession from '../components/date/story/StoryTheaterSession';
 import type { CharacterProfile, StoryTheaterEntry } from '../types';
 import { DB } from './db';
-import { createBlankStoryPreset, createStoryTheaterDraft, parseStoryTheaterPreset, storyTheaterThreadId } from './storyTheater';
+import { createBlankStoryPreset, createStoryTheaterDraft, createStoryTheaterMirrorMessage, parseStoryTheaterPreset, storyTheaterThreadId } from './storyTheater';
 import { convertSillyTavernStoryPreset, readSillyTavernStoryPreset } from './sillyTavernStoryPreset';
 import { STORY_RELATIONSHIP_PROMPT_ID } from './storyTheaterRelationships';
 import * as relationshipRules from './storyTheaterRelationships';
@@ -22,6 +22,82 @@ vi.mock('./memoryPalace/pipeline', async importOriginal => ({
 vi.mock('./memoryPalace/autoArchive', () => ({ processNewMessagesWithAutoArchive: mocks.archive }));
 vi.mock('./memoryPalace', () => ({ incrementDigestRound: () => false, runCognitiveDigestion: vi.fn() }));
 import { retrieveMemories } from './memoryPalace/pipeline';
+
+it.each([
+    { id: 'generated', label: 'AI 生成的私轴', generated: 'AI 原私轴', manual: undefined },
+    { id: 'manual', label: '手动补写的私轴', generated: undefined, manual: '手动私轴' },
+    { id: 'cleared', label: '显式清空的私轴', generated: 'AI 原私轴', manual: '' },
+])('编辑 AI 正文时保留所有元数据，包括 $label', async ({ id, generated, manual }) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    const actor = { id: 'body-edit-actor-' + id, name: '演员' } as CharacterProfile;
+    const entry = { ...createStoryTheaterDraft(), id: 'body-edit-' + id, characterIds: [actor.id], writesToCharacterMemory: true };
+    const preset = createBlankStoryPreset('正文编辑');
+    Object.assign(mocks.state, {
+        characters: [actor], userProfile: { name: '本人' }, theme: {},
+        apiConfig: {}, memoryPalaceConfig: {}, addToast: mocks.toast,
+    });
+    const threadId = storyTheaterThreadId(entry.id);
+    const body = '修改后的剧情正文';
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+        await DB.saveStoryTheater(entry);
+        await DB.commitStoryTheaterTurn({
+            charId: threadId, role: 'assistant', type: 'text', content: '原剧情正文', timestamp: Date.now(),
+            metadata: {
+                source: 'story_theater', theaterId: entry.id, theaterCastIds: [actor.id], theaterPromptTokens: 321,
+                theaterInputRevision: 'existing-reply-revision',
+                ...(generated === undefined ? {} : {
+                    theaterPrivateAxes: { [actor.id]: generated }, theaterPrivateAxesInputRevision: 'existing-input-revision',
+                }),
+            },
+        }, undefined, [actor.id], (actorId, message) => createStoryTheaterMirrorMessage(entry, actorId, message));
+        const [saved] = await DB.getMessagesByCharId(threadId, true);
+        if (manual !== undefined) await DB.updateStoryTheaterPrivateAxis(saved, actor.id, manual);
+        const original = (await DB.getMessageById(saved.id))!;
+        expect(original.metadata.theaterPrivateAxes).toStrictEqual({ [actor.id]: manual ?? generated });
+        const mirrorId = original.metadata.theaterMirrorIds[actor.id];
+        const mirror = (await DB.getMessageById(mirrorId))!;
+        expect(mirror.content).toBe(original.content);
+
+        await act(async () => root.render(createElement(StoryTheaterSession, {
+            entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+        })));
+        const findButton = (label: string) => Array.from(container.querySelectorAll('button'))
+            .find(button => button.textContent?.includes(label))!;
+        await vi.waitFor(async () => {
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+            expect(container.querySelector('article')?.textContent).toContain(original.content);
+        });
+        await act(async () => {
+            container.querySelector('article')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        });
+        await act(async () => findButton('编辑这一层').click());
+        await act(async () => {
+            const textarea = container.querySelector<HTMLTextAreaElement>('.story-keyboard-sheet textarea')!;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, body);
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await act(async () => findButton('保存这一层').click());
+        await vi.waitFor(async () => {
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+            expect(container.querySelector('.story-keyboard-sheet')).toBeNull();
+        });
+
+        expect(await DB.getMessagesByCharId(threadId, true)).toStrictEqual([{ ...original, content: body }]);
+        expect(await DB.getMessageById(mirrorId)).toStrictEqual({ ...mirror, content: body });
+    } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+        vi.unstubAllGlobals();
+    }
+});
+
 
 function convertedPreset() {
     const source = readSillyTavernStoryPreset(JSON.stringify({

@@ -490,7 +490,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             const content = editDraft.trim();
             if (content !== editingMessage.content) {
                 await replaceStoryTheaterReply(editingMessage, content, editingMessage.role === 'assistant'
-                    ? { theaterPrivateAxes: undefined, theaterPrivateAxesInputRevision: undefined, theaterInputRevision: makeStoryTheaterId() }
+                    ? {}
                     : { theaterInputRevision: makeStoryTheaterId(), ...(editingMessage.metadata?.theaterDiscussionInput ? {
                         theaterDiscussionInput: undefined, theaterContinue: undefined,
                     } : {}) });
@@ -1452,7 +1452,7 @@ const StoryTheaterSession: React.FC<Props> = ({ entry, preset, masks, onBack, on
             <div className='story-safe-sheet story-keyboard-sheet flex max-h-full w-full flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-stone-100 px-5 pt-5 shadow-2xl' onClick={event => event.stopPropagation()}>
                 <div className='flex items-center justify-between'><div><div className='text-[9px] tracking-[.18em] font-bold text-violet-500'>编辑楼层</div><h2 className='mt-1 text-base font-semibold'>{editingMessage.role === 'user' ? '修改这次推进' : '修改这段正文'}</h2></div><button disabled={mutatingMessage} onClick={() => setEditingMessage(null)} className='w-9 h-9 rounded-full grid place-items-center text-slate-400 disabled:opacity-30'><X size={17} /></button></div>
                 {editingMessage.role === 'assistant' && <p className='mt-3 text-[9px] leading-4 text-amber-700'>正文中的成对标签用于显示折叠卡片；修改文字时请保留标签完整，删改标签可能导致折叠区变为普通文字。</p>}
-                {!editingMessage.metadata?.theaterOutOfStory && (editingMessage.metadata?.theaterCastGroups || editingMessage.metadata?.theaterPrivateAxes) &&
+                {editingMessage.role !== 'assistant' && !editingMessage.metadata?.theaterOutOfStory && (editingMessage.metadata?.theaterCastGroups || editingMessage.metadata?.theaterPrivateAxes) &&
                     <p className='mt-2 text-xs text-slate-500'>修改原文后，本轮私轴需重新生成才会继续使用。</p>}
                 <textarea autoFocus value={editDraft} onChange={event => setEditDraft(event.target.value)} className='mt-4 w-full min-h-48 max-h-[48vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 text-xs leading-6 outline-none resize-y' />
                 <button disabled={mutatingMessage || !editDraft.trim()} onClick={() => void saveMessageEdit()} className='mt-3 w-full h-12 rounded-2xl bg-slate-900 text-white text-xs font-bold disabled:opacity-30'>{mutatingMessage ? '正在同步…' : '保存这一层'}</button>
