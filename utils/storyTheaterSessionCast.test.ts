@@ -140,8 +140,12 @@ it.each([true, false])('真实=%s：统一上下文、独立解析、单次计�
             .toMatchObject({ FL: { score: 5 }, RI: { score: 3 }, DI: { score: 20 } });
         await send(5); expect((await current()).axes.DI?.score).toBe(20);
         await send(6); expect((await current()).axes).toMatchObject({ FL: { score: 10 }, RI: { score: 3 }, DI: { score: 20 } });
-        const rewrite = () => act(async () => Array.from(container.querySelectorAll('button'))
-            .find(button => button.textContent?.includes('换一种写法'))!.click());
+        const rewriteButton = () => Array.from(container.querySelectorAll('button'))
+            .find(button => button.textContent?.includes('换一种写法'));
+        const rewrite = async () => {
+            await vi.waitFor(async () => { await flush(); expect(rewriteButton()?.disabled).toBe(false); });
+            await act(async () => rewriteButton()!.click());
+        };
         await rewrite();
         await vi.waitFor(async () => { await flush(); expect(fetch).toHaveBeenCalledTimes(7); expect((await current()).axes.DI?.score).toBe(14); });
         await rewrite();
@@ -880,6 +884,129 @@ it('楼层里可纠正出演、补写未出演候选人的私轴，并在生成�
     } finally {
         await act(async () => root.unmount());
         container.remove();
+        if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+        vi.unstubAllGlobals();
+    }
+});
+
+it.each([true, false])('真实=%s：同一轮本地查关系、场外回答并续写', async isReal => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const actors = [{ id: 'mixed-a-' + isReal, name: '小岑' }, { id: 'mixed-b-' + isReal, name: '小沈' }]
+        .map(actor => ({ ...actor, avatar: '', systemPrompt: '人物卡', memoryPalaceEnabled: true })) as CharacterProfile[];
+    Object.assign(mocks.state, { characters: actors, userProfile: { name: '本人' }, theme: {},
+        apiConfig: { baseUrl: 'https://example.invalid/v1', model: 'mock', apiKey: 'mock' }, addToast: mocks.toast,
+        memoryPalaceConfig: { embedding: { baseUrl: 'https://example.invalid/v1', apiKey: 'mock' } } });
+    const preset = createBlankStoryPreset('同轮讨论');
+    preset.document.prompts.push({
+        id: STORY_RELATIONSHIP_PROMPT_ID, name: '关系', enabled: true, role: 'system', content: 'FL/RI/DI',
+    });
+    const entry = { ...createStoryTheaterDraft(), id: 'mixed-story-' + isReal, title: '旧信剧场',
+        characterIds: actors.map(actor => actor.id), writesToCharacterMemory: isReal, carryCharacterMemory: true,
+        archiveMode: 'manual' as const, castLimits: { minGroups: 1, maxGroups: 1 } };
+    const thread = storyTheaterThreadId(entry.id);
+    const rows = () => DB.getMessagesByCharId(thread, true);
+    const cast = '<turn_cast>' + JSON.stringify(entry.characterIds) + '</turn_cast>';
+    const relationship = (score: number) => '<relationship_panel>' + JSON.stringify({ relationships: [{
+        fromId: actors[0].id, toId: actors[1].id, axes: { FL: { score, evidence: '约定兑现的账本依据' } },
+    }] }) + '</relationship_panel>';
+    const question = isReal ? '小岑是从什么时候开始信任小沈的？' : '他们怎么突然熟起来了？';
+    const mixed = ['（脱离剧情）', question, '继续剧情）'].join('\n');
+    const answer = '场外答案：源自归还旧信。';
+    const continuation = '<story_text>续写正文：两人把信收好。</story_text>' + cast;
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const content of [
+        '<story_text>第一段正文。</story_text>' + cast + relationship(11),
+        '<story_text>上一段正文：旧信归还。</story_text>' + cast + relationship(23),
+        continuation,
+        '<out_of_story>' + answer + '</out_of_story>',
+        '<out_of_story>' + answer + '</out_of_story>' + continuation,
+        '<story_text>两人接着出门。</story_text>' + cast,
+        '<out_of_story>可以把台词缩短。</out_of_story><story_text>两人走上街。</story_text>' + cast,
+    ]) fetch.mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content } }] })));
+    vi.stubGlobal('fetch', fetch);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const sendButton = () => container.querySelector<HTMLButtonElement>('button.story-send-button')!;
+    const send = async (text: string, callCount: number) => {
+        await act(async () => {
+            const input = container.querySelector('textarea')!;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await act(async () => { sendButton().click(); await new Promise(resolve => setTimeout(resolve, 15)); });
+        await vi.waitFor(async () => {
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+            expect(fetch).toHaveBeenCalledTimes(callCount);
+            expect(sendButton().querySelector('.animate-spin')).toBeNull();
+        });
+    };
+    const prompt = (call: number) => (JSON.parse(String(fetch.mock.calls[call - 1][1]?.body)).messages as { content: string }[])
+        .map(message => message.content).join('\n');
+
+    try {
+        await DB.saveStoryTheater(entry);
+        await act(async () => root.render(createElement(StoryTheaterSession, {
+            entry, preset, masks: [], onBack: () => {}, onEdit: () => {}, onEntryChange: () => {},
+        })));
+        await send('递出信封。', 1);
+        await send('看见旧信归还。', 2);
+        const before = await rows();
+        expect(before).toHaveLength(4);
+        const recalls = vi.mocked(retrieveMemories).mock.calls.length;
+        const archives = mocks.archive.mock.calls.length;
+
+        await send(mixed, 3);
+        const pending = await rows();
+        expect(pending).toHaveLength(5);
+        expect(pending.slice(0, -1)).toEqual(before);
+        expect(pending.at(-1)).toMatchObject({ role: 'user', content: '（继续）', metadata: { theaterDiscussionInput: mixed } });
+        expect(prompt(3)).toContain('上一段正文：旧信归还');
+        expect(prompt(3)).toContain('楼层 ' + before.at(-1)!.id);
+        expect(prompt(3)).toContain('FL 11 → 23');
+        expect(prompt(3)).toContain('约定兑现的账本依据');
+        expect(prompt(3)).toContain(question);
+
+        await send('', 4);
+        expect(await rows()).toEqual(pending);
+        await send('', 5);
+        const completed = await rows();
+        expect(completed).toHaveLength(6);
+        expect(completed.at(-2)?.id).toBe(pending.at(-1)?.id);
+        expect(completed.at(-1)).toMatchObject({
+            content: expect.stringContaining('续写正文：两人把信收好'),
+            metadata: { theaterDiscussionReply: answer, theaterCastIds: entry.characterIds },
+        });
+        expect(completed.at(-1)?.content).not.toContain(answer);
+        expect(container.textContent).toContain(answer);
+        expect(container.textContent!.indexOf(answer)).toBeLessThan(container.textContent!.indexOf('续写正文：两人把信收好'));
+        expect(vi.mocked(retrieveMemories)).toHaveBeenCalledTimes(recalls);
+        expect(mocks.archive).toHaveBeenCalledTimes(archives);
+        if (isReal) {
+            const mirror = (await DB.getMessagesByCharId(actors[0].id, true)).slice(-2);
+            expect(mirror.map(row => row.content)).toEqual(['（继续）', expect.stringContaining('续写正文：两人把信收好')]);
+            expect(JSON.stringify(mirror)).not.toContain(answer);
+            expect(JSON.stringify(mirror)).not.toContain(question);
+        }
+
+        await send('（脱离剧情）\n（继续剧情）', 6);
+        expect(prompt(6)).toContain('续写正文：两人把信收好');
+        expect(prompt(6)).not.toContain(question);
+        expect(prompt(6)).not.toContain(answer);
+        expect(prompt(6)).not.toContain('约定兑现的账本依据');
+        expect(await rows()).toHaveLength(8);
+
+        await send('（脱离剧情）\n小岑和小沈的台词怎么写得更显熟络？\n（继续剧情）', 7);
+        expect(prompt(7)).not.toContain('relationshipHistory');
+        expect(container.textContent).toContain('可以把台词缩短。');
+    } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        consoleError.mockRestore();
         if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
         else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
         vi.unstubAllGlobals();

@@ -42,6 +42,16 @@ describe('story summary final channel', () => {
         expect(() => parseStoryArchiveSummary(completion('Paragraph 1: 31 chars\nStill too long'))).toThrow('推理过程');
         expect(parseStoryArchiveSummary(completion('他说「Let’s count together」，两人一起数星星。'))).toContain('数星星');
     });
+    it('passes the character attribution to the API call log', async () => {
+        const meta = { charId: 'archive-actor-id', charName: '归档用角色名' };
+        await expect(generateStoryArchiveSummary(entry.title, messages, api, meta)).resolves.toBe('两人在车站等雨停，一起走回家。');
+        const [, request] = fetchMock.mock.calls[0];
+        expect(request.__sullyMeta).toEqual({ ...meta, appId: 'date', appName: '见面', purpose: '剧情事件盒总结' });
+        expect(request.body).not.toContain(meta.charId);
+        expect(request.body).not.toContain(meta.charName);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('does not retry automatically and rejects upstream errors', async () => {
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: '服务不可用' } }), { status: 503 }));
         await expect(generateStoryArchiveSummary(entry.title, messages, api)).rejects.toThrow('服务不可用');

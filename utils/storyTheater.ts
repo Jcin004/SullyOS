@@ -165,6 +165,8 @@ export const formatStoryTheaterExport = (
 
     for (const message of [...messages].sort((a, b) => a.id - b.id)) {
         const speaker = message.role === 'user' ? userLabel : message.role === 'assistant' ? '剧场正文' : '系统';
+        const discussion = message.role === 'user' ? message.metadata?.theaterDiscussionInput : message.metadata?.theaterDiscussionReply;
+        if (typeof discussion === 'string' && discussion) lines.push('', `场外 · ${message.role === 'user' ? userLabel : 'AI'}`, discussion);
         lines.push('', `[${formatStoryExportTime(message.timestamp)}] ${speaker}`, message.content?.trim() || '（无内容）');
     }
     return `\uFEFF${lines.join('\n')}`;
@@ -1795,7 +1797,8 @@ export const buildStoryHistory = (messages: Message[]): StoryApiMessage[] => mes
 export const getPendingStoryRetryInput = (messages: Message[]): string => {
     const latest = messages[messages.length - 1];
     if (!latest || latest.role !== 'user' || latest.metadata?.theaterArchived) return '';
-    return String(latest.content || '').trim();
+    const discussion = latest.metadata?.theaterDiscussionInput;
+    return (typeof discussion === 'string' ? discussion : String(latest.content || '')).trim();
 };
 
 export const estimateStoryTokens = (text: string): number => {

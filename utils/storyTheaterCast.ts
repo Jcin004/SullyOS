@@ -468,6 +468,25 @@ export function latestStoryPrivateAxes(history: readonly Message[], actorIds: re
     return axes;
 }
 
+export function readStoryDiscussionContinuation(text: string): string | undefined {
+    const match = /^[（(]脱离剧情[）)][ \t]*\r?\n([\s\S]*)$/u.exec(text.trim());
+    if (!match) return undefined;
+    const lines = match[1].trim().split(/\r?\n/);
+    if (!/^[（(]?继续剧情[）)]$/u.test(lines.at(-1) ?? '')) return undefined;
+    return lines.slice(0, -1).join('\n').trim();
+}
+
+export function parseStoryDiscussionContinuationReply(text: string): { discussion: string; story: string } {
+    const match = /^(<out_of_story>[\s\S]*?<\/out_of_story\s*>)([\s\S]*)$/i.exec(unwrapFence(text));
+    const story = match?.[2].trim();
+    const discussion = match && parseOutOfStoryReply(match[1]);
+    if (!discussion || !story || outOfStoryTag.test(story)
+        || /<\/?(?:scene_header|story_text)\b/i.test(discussion)) {
+        throw new Error('本轮需要先回答场外问题，再续写剧情。已保留输入，可重试。');
+    }
+    return { discussion, story };
+}
+
 export function parseOutOfStoryReply(text: string): string | undefined {
     if (!outOfStoryTag.test(text)) return undefined;
     const body = /^<out_of_story>([\s\S]*?)<\/out_of_story\s*>$/i.exec(unwrapFence(text))?.[1].trim();

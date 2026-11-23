@@ -350,11 +350,19 @@ export function parseStoryRelationshipContent(content: string, report?: Relation
 }
 
 /** Replay central originals in commit order. Callers select the world and reroll boundary first. */
-export function getStoryRelationshipBaseline(messages: readonly Message[], actors: readonly Actor[]): StoryRelationshipPanel {
+export function getStoryRelationshipBaseline(
+    messages: readonly Message[], actors: readonly Actor[],
+    onUpdate?: (message: Message, update: StoryRelationshipUpdate, before: Relationship, after: Relationship) => void,
+): StoryRelationshipPanel {
     const relationships = actors.flatMap(from => actors.filter(to => to.id !== from.id).map(to => ({
         fromId: from.id, toId: to.id, fromName: from.name, toName: to.name, axes: {},
     } as Relationship)));
     const byPair = new Map(relationships.map(row => [pairKey(row.fromId, row.toId), row]));
+    const apply = (message: Message, update: StoryRelationshipUpdate, before: Relationship) => {
+        const after = applyStoryRelationshipUpdate(update, before).next;
+        byPair.set(pairKey(before.fromId, before.toId), after);
+        onUpdate?.(message, update, before, after);
+    };
     const state_notes: NonNullable<StoryRelationshipPanel['state_notes']> = {};
     for (const message of [...messages].sort((a, b) => a.id - b.id)) {
         if (message.role !== 'assistant' || message.metadata?.theaterOutOfStory) continue;
@@ -366,7 +374,7 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
                 const { fromId, toId } = update.direction;
                 const key = pairKey(fromId, toId);
                 const row = byPair.get(key);
-                if (row) byPair.set(key, applyStoryRelationshipUpdate(update, row).next);
+                if (row) apply(message, update, row);
             }
             continue;
         }
@@ -385,12 +393,12 @@ export function getStoryRelationshipBaseline(messages: readonly Message[], actor
                 const key = pairKey(previous.fromId, previous.toId);
                 const row = byPair.get(key);
                 if (!row || !allowed(row.fromId) || !allowed(row.toId)) continue;
-                byPair.set(key, applyStoryRelationshipUpdate({
+                apply(message, {
                     mode, direction: {
                         ...previous, fromName: row.fromName, toName: row.toName,
                         relation_fragments: previous.relation_fragments?.length ? previous.relation_fragments : undefined,
                     },
-                }, row).next);
+                }, row);
             }
         } else {
             for (const actor of actors) {
