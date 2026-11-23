@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CharacterProfile, UserProfile } from '../../types';
 import { EventBoxDB, MemoryNodeDB } from './db';
+import * as safeApi from '../safeApi';
 import {
     buildMemoryRepairCoreContext,
+    diagnoseRecallIssue,
     filterEditableMemoryNodes,
+    formatRepairBoxDateRange,
     formatRepairMemoryDate,
     getMemoryGuideCopy,
     loadRecallRepairSnapshot,
@@ -47,11 +50,17 @@ describe('本轮召回记忆修补', () => {
 
     it('命中事件盒任一节点后，展开摘要、活节点和归档节点供原地修改', async () => {
         const charId = 'repair_box_complete';
-        const summary = node('repair_summary', charId, '错误的盒摘要', { isBoxSummary: true });
-        const live = node('repair_live', charId, '本轮实际经过的活节点', { eventBoxId: 'repair_box' });
+        const summary = node('repair_summary', charId, '错误的盒摘要', {
+            isBoxSummary: true, createdAt: new Date(2026, 10, 23, 12).getTime(),
+        });
+        const live = node('repair_live', charId, '本轮实际经过的活节点', {
+            eventBoxId: 'repair_box', createdAt: 100, experiencedAt: new Date(2026, 3, 11, 12).getTime(),
+        });
         const archived = node('repair_archived', charId, '已经归档但仍可修补', {
             eventBoxId: 'repair_box',
             archived: true,
+            createdAt: 200,
+            experiencedAt: new Date(2026, 3, 10, 12).getTime(),
         });
         const standalone = node('repair_standalone', charId, '散落的独立记忆');
         await MemoryNodeDB.saveMany([summary, live, archived, standalone]);
@@ -77,10 +86,23 @@ describe('本轮召回记忆修补', () => {
         expect(snapshot.boxes).toHaveLength(1);
         expect(snapshot.boxes[0].nodes.map(item => [item.node.id, item.kind])).toEqual([
             [summary.id, 'summary'],
-            [live.id, 'live'],
             [archived.id, 'archived'],
+            [live.id, 'live'],
         ]);
         expect(snapshot.boxes[0].recalledNodeIds).toEqual([live.id]);
+        expect(formatRepairBoxDateRange(snapshot.boxes[0].nodes, new Date(2026, 3, 12, 12).getTime()))
+            .toBe('2026年4月10日（距今约2天） — 2026年4月11日（距今约1天）');
+
+        const request = vi.spyOn(safeApi, 'safeFetchJson').mockResolvedValue({
+            choices: [{ message: { content: '{"reply":"看看旧片段"}' } }],
+        });
+        await diagnoseRecallIssue({
+            char: { id: charId, name: '阿宁' } as CharacterProfile, user: { name: '小满' } as UserProfile,
+            apiConfig: { baseUrl: 'https://repair.invalid', apiKey: 'test', model: 'test' },
+            snapshot, userConcern: '想核对经历日期',
+        });
+        const prompt = JSON.parse(String(request.mock.calls[0][1]?.body)).messages[1].content;
+        expect(prompt).toMatch(/id=repair_archived\n[^\n]+\n日期=2026年4月10日/);
     });
 
     it('修补现场使用真实记忆日期，不把中午占位伪装成精确时分', () => {
@@ -140,7 +162,8 @@ describe('本轮召回记忆修补', () => {
         const nodes = [
             node('beach', 'search_char', '去年在海边一起过了生日', {
                 tags: ['旅行', '礼物'],
-                createdAt: new Date(2026, 6, 3, 12, 0, 0).getTime(),
+                createdAt: new Date(2026, 10, 23, 12).getTime(),
+                experiencedAt: new Date(2026, 6, 3, 12).getTime(),
             }),
             node('archived', 'search_char', '旧车站告别', {
                 archived: true,

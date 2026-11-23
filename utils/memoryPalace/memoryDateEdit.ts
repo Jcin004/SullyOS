@@ -10,6 +10,7 @@
 import type { MemoryFragment } from '../../types';
 import { getDailyMemoryDate } from '../dailyMemoryDate';
 import { MemoryNodeDB } from './db';
+import { getMemoryExperienceTime } from './memoryDate';
 import type { MemoryNode, RemoteVectorConfig } from './types';
 
 export interface PartialDateDraft {
@@ -146,17 +147,21 @@ export function applyPartialDatePatchToNode(
     node: MemoryNode,
     patch: PartialDatePatch,
 ): MemoryNode {
-    const nextCreatedAt = applyPartialDatePatchToTimestamp(node.createdAt, patch);
-    if (nextCreatedAt === node.createdAt) return node;
+    const time = getMemoryExperienceTime(node);
+    const adjusted = applyPartialDatePatchToTimestamp(time, patch);
+    if (adjusted === time) return node;
+
+    const dailyArchiveDate = formatLocalDateKey(adjusted) ?? undefined;
+    if (node.experiencedAt != null) return { ...node, experiencedAt: adjusted, dailyArchiveDate };
 
     // 尚未被检索命中过的记忆（例如刚从外部导入的记录）lastAccessedAt 等于初始 createdAt；
     // 改回真实历史日期时同步调整 lastAccessedAt，让时近性衰减与真实日期一致。
     const syncLastAccessed = (node.accessCount || 0) === 0 || node.lastAccessedAt === node.createdAt;
     return {
         ...node,
-        createdAt: nextCreatedAt,
-        dailyArchiveDate: formatLocalDateKey(nextCreatedAt) ?? undefined,
-        lastAccessedAt: syncLastAccessed ? nextCreatedAt : node.lastAccessedAt,
+        createdAt: adjusted,
+        dailyArchiveDate,
+        lastAccessedAt: syncLastAccessed ? adjusted : node.lastAccessedAt,
     };
 }
 
@@ -169,7 +174,7 @@ export function getSharedDatePlaceholders(nodes: MemoryNode[]): { year: string; 
     const months = new Set<number>();
     const days = new Set<number>();
     for (const node of nodes) {
-        const d = new Date(node.createdAt);
+        const d = new Date(getMemoryExperienceTime(node));
         if (Number.isNaN(d.getTime())) continue;
         years.add(d.getFullYear());
         months.add(d.getMonth() + 1);
@@ -221,10 +226,7 @@ export async function batchUpdateMemoryDates(
 
     // 先在内存中完成全部节点的日期校验与计算，确保任一节点日期非法时整批不写入。
     const updatedNodes = existingNodes.map(node => applyPartialDatePatchToNode(node, patch));
-    const actuallyChanged = updatedNodes.filter((node, i) => (
-        node.createdAt !== existingNodes[i].createdAt
-        || node.lastAccessedAt !== existingNodes[i].lastAccessedAt
-    ));
+    const actuallyChanged = updatedNodes.filter((node, i) => node !== existingNodes[i]);
 
     if (actuallyChanged.length > 0) {
         await MemoryNodeDB.saveMany(actuallyChanged);

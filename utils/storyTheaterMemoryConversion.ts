@@ -100,7 +100,7 @@ export async function convertStoryArchiveToMemory(options:{
   const extracted=await extractMemoriesFromBuffer(messages,char.id,char.name,{...llm,deferPlateMaintenance:true},context,options.userName,[],[]);
   if(!extracted.memories.length||extracted.memories.some(node=>typeof node.content!=='string'||!node.content.trim()))throw new Error('没有提取出可用记忆，本事件盒未标记为已转化，可稍后重试');
   const timestamp=storyMemoryDate(date);
-  const nodes=extracted.memories.map((node):MemoryNode=>({...node,charId:char.id,content:`【剧情《${entry.title}》的经历】${node.content}`,createdAt:timestamp,dailyArchiveDate:date,lastAccessedAt:Date.now(),pinnedUntil:null,relativeTimeAnchor:undefined,origin:'system'}));
+  const nodes=extracted.memories.map((node):MemoryNode=>({...node,charId:char.id,content:`【剧情《${entry.title}》的经历】${node.content}`,createdAt:timestamp,experiencedAt:timestamp,dailyArchiveDate:date,lastAccessedAt:Date.now(),pinnedUntil:null,relativeTimeAnchor:undefined,origin:'system'}));
   let result:Awaited<ReturnType<typeof commitStoryMemoryConversion>>|undefined;
   if(char.memoryPalaceEnabled){
    options.onProgress?.('正在写入记忆宫殿并关联神经链接…');

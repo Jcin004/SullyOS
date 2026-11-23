@@ -33,9 +33,10 @@ describe('story box → character memory',()=>{
   expect(extractMemoriesFromBuffer).not.toHaveBeenCalled();
  });
  it('atomically writes palace nodes, vectors, linked neural memories and receipt without moving chat watermarks',async()=>{
+  vi.mocked(extractMemoriesFromBuffer).mockResolvedValueOnce({memories:[{...node(),experiencedAt:storyMemoryDate('2024-07-08')}],crossTimeLinks:[],eventBoxHints:[],unpinIds:[],corrections:[]});
   const result=await call();
   const saved=await MemoryNodeDB.getById(node().id),actor=await DB.getCharacter(char.id);
-  expect(saved).toMatchObject({embedded:true,charId:char.id,origin:'system'});
+  expect(saved).toMatchObject({embedded:true,charId:char.id,origin:'system',experiencedAt:storyMemoryDate('2025-02-03')});
   expect(saved!.content).toContain('剧情《雨夜车站》的经历');expect(getLocalDateKey(new Date(saved!.createdAt))).toBe('2025-02-03');
   expect(await MemoryVectorDB.getByMemoryId(node().id)).toBeDefined();
   expect(actor!.memories).toHaveLength(2);expect(actor!.memories[1]).toMatchObject({palaceMemoryId:node().id,date:'2025-02-03',summary:saved!.content});

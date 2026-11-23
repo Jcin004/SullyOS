@@ -10,7 +10,8 @@ import type {
     RemoteVectorConfig,
 } from './types';
 import { updateStoredMemoryNode } from './vectorStore';
-import { formatMemoryDateWithDistance } from './memoryDate';
+import { formatMemoryDateWithDistance, getMemoryExperienceTime } from './memoryDate';
+import { getLocalDateKey } from '../localDate';
 
 export type RepairNodeKind = 'summary' | 'live' | 'archived' | 'standalone';
 
@@ -67,17 +68,16 @@ function isLooseSubsequence(needle: string, haystack: string): boolean {
 }
 
 function searchableMemoryText(node: MemoryNode): string {
-    const date = new Date(node.createdAt);
-    const numericDate = Number.isNaN(date.getTime())
-        ? ''
-        : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const experienceTime = getMemoryExperienceTime(node);
+    const date = new Date(experienceTime);
+    const numericDate = Number.isNaN(date.getTime()) ? '' : getLocalDateKey(date);
     return [
         node.content,
         node.tags.join(' '),
         node.mood,
         node.room,
         numericDate,
-        formatRepairMemoryDate(node.createdAt),
+        formatRepairMemoryDate(experienceTime),
     ].join(' ');
 }
 
@@ -120,7 +120,7 @@ export function filterEditableMemoryNodes(
         .sort((a, b) =>
             b.score - a.score
             || b.node.importance - a.node.importance
-            || b.node.createdAt - a.node.createdAt
+            || getMemoryExperienceTime(b.node) - getMemoryExperienceTime(a.node)
         )
         .slice(0, limit)
         .map(({ node }) => ({
@@ -141,8 +141,19 @@ export async function searchEditableMemories(
 }
 
 /** MemoryNode 当前只可靠保存到“日”；12:00 常是日期占位，不能伪装成精确时分。 */
-export function formatRepairMemoryDate(createdAt: number, now: number = Date.now()): string {
-    return formatMemoryDateWithDistance(createdAt, now);
+export function formatRepairMemoryDate(time: number, now: number = Date.now()): string {
+    return formatMemoryDateWithDistance(time, now);
+}
+
+export function formatRepairBoxDateRange(nodes: readonly RepairNode[], now: number = Date.now()): string {
+    const originalTimes = nodes.filter(item => item.kind !== 'summary')
+        .map(item => getMemoryExperienceTime(item.node)).filter(Number.isFinite);
+    const times = originalTimes.length ? originalTimes : nodes.map(item => getMemoryExperienceTime(item.node)).filter(Number.isFinite);
+    if (!times.length) return '日期不详';
+    times.sort((a, b) => a - b);
+    const first = formatRepairMemoryDate(times[0], now);
+    const last = formatRepairMemoryDate(times[times.length - 1], now);
+    return first === last ? first : `${first} — ${last}`;
 }
 
 /**
@@ -210,7 +221,7 @@ export async function loadRecallRepairSnapshot(
         nodes.sort((a, b) => {
             if (a.kind === 'summary') return b.kind === 'summary' ? 0 : -1;
             if (b.kind === 'summary') return 1;
-            return a.node.createdAt - b.node.createdAt;
+            return getMemoryExperienceTime(a.node) - getMemoryExperienceTime(b.node);
         });
         boxes.push({
             box,
@@ -253,7 +264,7 @@ function snapshotCandidates(snapshot: RecallRepairSnapshot): Array<{
     const candidates = snapshot.standalone.map(item => ({
         id: item.node.id,
         scope: '独立记忆（本轮召回）',
-        date: formatRepairMemoryDate(item.node.createdAt),
+        date: formatRepairMemoryDate(getMemoryExperienceTime(item.node)),
         content: item.node.content,
     }));
     snapshot.boxes.forEach(group => {
@@ -264,7 +275,7 @@ function snapshotCandidates(snapshot: RecallRepairSnapshot): Array<{
             candidates.push({
                 id: item.node.id,
                 scope: `事件盒「${group.box.name}」/${item.kind === 'summary' ? '盒摘要' : item.kind === 'archived' ? '归档子节点' : '活跃子节点'}${stateLabel}`,
-                date: formatRepairMemoryDate(item.node.createdAt),
+                date: formatRepairMemoryDate(getMemoryExperienceTime(item.node)),
                 content: item.node.content,
             });
         });

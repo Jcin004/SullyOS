@@ -30,6 +30,7 @@ import { safeFetchJson, extractContent, extractJson } from '../safeApi';
 import { enforceSummaryLengthBudget } from './summaryLengthBudget';
 import { buildSARMemoryBoundaryInstruction } from '../messageFormat';
 import { hasSummaryReasoningLeak } from '../summaryReasoning';
+import { getMemoryExperienceTime } from './memoryDate';
 export { hasSummaryReasoningLeak } from '../summaryReasoning';
 
 const VALID_ROOMS: MemoryRoom[] = [
@@ -155,8 +156,9 @@ async function callCompressionLLM(
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
 
-    const livesText = liveNodes
-        .map(n => `[${formatDate(n.createdAt)}｜重要性${n.importance}｜${n.mood}] ${n.content}`)
+    const livesText = [...liveNodes]
+        .sort((a, b) => getMemoryExperienceTime(a) - getMemoryExperienceTime(b))
+        .map(n => `[${formatDate(getMemoryExperienceTime(n))}｜重要性${n.importance}｜${n.mood}] ${n.content}`)
         .join('\n\n');
 
     const oldSummaryBlock = oldSummaryContent
@@ -326,6 +328,13 @@ async function recompressSummary(
 
 // ─── 单 box 压缩主流程 ──────────────────────────────────
 
+function getLatestExperienceTime(nodes: MemoryNode[], previous?: number): number | undefined {
+    return nodes.reduce<number | undefined>((latest, node) => {
+        const time = getMemoryExperienceTime(node);
+        return latest === undefined ? time : Math.max(latest, time);
+    }, previous);
+}
+
 async function compressEventBox(
     box: EventBox,
     llmConfig: LightLLMConfig,
@@ -345,6 +354,14 @@ async function compressEventBox(
     // 2. 加载旧 summary 内容（如有）
     const previous = box.summaryNodeId ? await MemoryNodeDB.getById(box.summaryNodeId) : undefined;
     const oldSummaryContent = previous && !previous.archived ? previous.content : null;
+    let previousExperienceTime = oldSummaryContent ? previous?.experiencedAt ?? undefined : undefined;
+    if (oldSummaryContent && previousExperienceTime === undefined) {
+        const archived = await Promise.all(box.archivedMemoryIds.map(id => MemoryNodeDB.getById(id)));
+        previousExperienceTime = getLatestExperienceTime(archived.filter((node): node is MemoryNode =>
+            Boolean(node && node.charId === box.charId && !node.isBoxSummary
+                && (!node.eventBoxId || node.eventBoxId === box.id)),
+        ));
+    }
 
     console.log(`🗜️ [Compression] 开始压缩 ${box.id} "${box.name}"（${liveNodes.length} 条活节点，第 ${box.compressionCount + 1} 次压缩）`);
 
@@ -371,6 +388,7 @@ async function compressEventBox(
         archived: false,
         origin: 'system',
     } : createSummaryNode(box, result, now);
+    summaryNode.experiencedAt = getLatestExperienceTime(liveNodes, previousExperienceTime);
     const remoteCfg = getRemoteVectorConfig();
     const vectorized = await vectorizeAndStore([summaryNode], embeddingConfig, remoteCfg, {
         skipDedup: true,
@@ -519,6 +537,7 @@ async function regenerateEventBoxSummaryUnlocked(
             origin: 'system',
         }
         : createSummaryNode(box, result, now);
+    summaryNode.experiencedAt = getLatestExperienceTime(sourceNodes);
 
     // Embedding 成功后，在同一事务写总结、向量、归档标记和成员列表。
     // 不预存 summaryNode，任何一步失败都保留原内容。

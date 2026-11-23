@@ -103,6 +103,21 @@ describe('memoryDateEdit partial year/month/day replacement', () => {
         expect(updatedAccessed.lastAccessedAt).toBe(accessedLater);
     });
 
+    it('persists a partial edit to the displayed experience date and syncs the linked archive date', async () => {
+        const createdAt = new Date(2026, 10, 23, 18).getTime();
+        const experiencedAt = new Date(2026, 3, 10, 12).getTime();
+        const memory = makeNode('edit-experience-date', '剧情记忆', createdAt, {
+            charId: 'date-edit-experience-actor', experiencedAt,
+        });
+        await MemoryNodeDB.saveMany([memory]);
+        const patch = parsePartialDateDraft({ year: '2025', month: '', day: '' });
+        await batchUpdateMemoryDates([memory.id], patch);
+        expect(await MemoryNodeDB.getById(memory.id)).toMatchObject({
+            createdAt, lastAccessedAt: createdAt,
+            experiencedAt: new Date(2025, 3, 10, 12).getTime(), dailyArchiveDate: '2025-04-10',
+        });
+    });
+
     it('rejects invalid inputs and rolls back whole batch if any selected node produces a non-existent calendar date', async () => {
         expect(() => parsePartialDateDraft({ year: '25', month: '', day: '' })).toThrow('4 位数字');
         expect(() => parsePartialDateDraft({ year: '', month: '2', day: '30' })).toThrow('2 月没有 30 日');

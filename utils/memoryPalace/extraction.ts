@@ -247,10 +247,11 @@ function parseMemoryNodesFromBuffer(
             if (linkDates && relativeTimeEnabled() && hasRelativeTime(memory.content)
                 && typeof item.relativeTimeSource === 'string' && /^M\d+$/.test(item.relativeTimeSource)) {
                 const source = messages[Number(item.relativeTimeSource.slice(1))];
-                if (source && Number.isFinite(source.timestamp) && source.timestamp > 0
+                const sourceTime = source && messageExperienceTime(source);
+                if (source && sourceTime !== undefined
                     && hasMatchingRelativeSource(memory.content, formatExtractionMessage(source, '', ''))) {
                     memory.relativeTimeAnchor = {
-                        dateKey: getLocalDateKey(new Date(source.timestamp)), source: 'message', messageId: source.id,
+                        dateKey: getLocalDateKey(new Date(sourceTime)), source: 'message', messageId: source.id,
                     };
                 }
             }
@@ -514,7 +515,7 @@ export async function extractMemoriesFromBuffer(
 ${buildRulesBlock(charName, userLabel, includeEntities)}${theaterMemoryRule}${relatedToRule}${unpinRule}${sarMemoryBoundary ? `\n\n${sarMemoryBoundary}` : ''}${linkDates ? `
 
 ## 相对时间来源
-content 保留原消息的相对时间措辞，不要自行添加日期括号。含“昨天、前天、几天前、上周、上个月、去年”等措辞时，额外输出 relativeTimeSource 字段，值为说出该措辞的原消息编号（例如 "M0"）。系统将以该消息的发送日补注，不使用 date 事件日。不同说话日期的相对时间应拆成不同记忆。没有可靠来源、跨时区语义不明或无法使用同一个参照日时，省略该字段，禁止猜测。` : ''}
+content 保留原消息的相对时间措辞，不要自行添加日期括号。含“昨天、前天、几天前、上周、上个月、去年”等措辞时，额外输出 relativeTimeSource 字段，值为说出该措辞的原消息编号（例如 "M0"）。普通消息以发送日为参照，剧场记录以该消息的剧情日期为参照。不同参照日的相对时间应拆成不同记忆。没有可靠来源、跨时区语义不明或无法使用同一个参照日时，省略该字段，禁止猜测。` : ''}
 
 ## 输出格式
 

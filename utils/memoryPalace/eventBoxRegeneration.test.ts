@@ -160,6 +160,11 @@ describe('regenerateEventBoxSummary', () => {
     });
 
     it('用全部 archived + live 原文重做，覆盖同一 summary 并强制重新向量化', async () => {
+        const lastExperience = new Date(2026, 3, 11, 12).getTime();
+        await MemoryNodeDB.saveMany([
+            memory('archived-1', '第一条归档原始记忆', { experiencedAt: lastExperience }),
+            memory('live-1', '第二条活跃原始记忆', { experiencedAt: new Date(2026, 3, 10, 12).getTime() }),
+        ]);
         mocks.responses.push(completion('这是重新整合后的干净回忆。'));
 
         const result = await regenerateEventBoxSummary(
@@ -175,12 +180,13 @@ describe('regenerateEventBoxSummary', () => {
             id: 'summary-1',
             content: '这是重新整合后的干净回忆。',
             embedded: true,
+            createdAt: 200,
+            experiencedAt: lastExperience,
         });
 
         const requestBody = JSON.parse(mocks.safeFetchJson.mock.calls[0][1].body);
         const sourcePrompt = requestBody.messages[1].content as string;
-        expect(sourcePrompt).toContain('第一条归档原始记忆');
-        expect(sourcePrompt).toContain('第二条活跃原始记忆');
+        expect(sourcePrompt).toMatch(/\[2026-04-10[^\n]*第二条活跃原始记忆[\s\S]*\[2026-04-11[^\n]*第一条归档原始记忆/);
         expect(sourcePrompt).not.toContain('旧坏总结');
         expect(requestBody.messages[0].content).not.toContain('旧盒名');
 
@@ -330,7 +336,32 @@ describe('regenerateEventBoxSummary', () => {
     });
 });
 
-describe('automatic compression rate-limit safety', () => {
+describe('automatic compression', () => {
+    it.each([false, true])('补录较早经历时，摘要仍用已覆盖的最后一天（旧摘要有日期：%s）', async (datedSummary) => {
+        const lastExperience = new Date(2026, 3, 11, 12).getTime();
+        const laterCreatedAt = new Date(2026, 10, 23, 12).getTime();
+        const liveNodes = [4, 5, 6, 7].map(day => memory(`early-${day}`, `补录经历 ${day}`, {
+            createdAt: laterCreatedAt, experiencedAt: new Date(2026, 3, day, 12).getTime(),
+        }));
+        const oldSummary = (await MemoryNodeDB.getById('summary-1'))!;
+        await MemoryNodeDB.saveMany([
+            { ...oldSummary, createdAt: laterCreatedAt, experiencedAt: datedSummary ? lastExperience : undefined },
+            memory('archived-1', '后来的原始经历', {
+                experiencedAt: datedSummary ? new Date(2026, 3, 8, 12).getTime() : lastExperience,
+            }),
+            ...liveNodes,
+        ]);
+        await EventBoxDB.save({ ...box(), sealed: false, liveMemoryIds: liveNodes.map(node => node.id) });
+        mocks.responses.push(completion('合并过去的新回忆。'));
+
+        expect(await maybeCompressEventBoxes(['box-1'], llmConfig, embeddingConfig, '角色甲')).toEqual({
+            compressed: 1, skipped: 0,
+        });
+        expect(await MemoryNodeDB.getById('summary-1')).toMatchObject({
+            createdAt: laterCreatedAt, experiencedAt: lastExperience,
+        });
+    });
+
     it('discards an in-flight compression when a source in the old summary is deleted', async () => {
         const current = { ...box(), liveMemoryIds: ['live-1', 'live-2', 'live-3', 'live-4'] };
         await EventBoxDB.save(current);

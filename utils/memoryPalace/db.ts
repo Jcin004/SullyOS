@@ -737,7 +737,8 @@ export const EventBoxDB = {
                     }
                     const current = reads.map(read => read.result as MemoryNode | undefined);
                     const contentKey = (node: MemoryNode) => JSON.stringify([
-                        node.charId, node.eventBoxId, node.content, node.room, node.createdAt, node.importance, node.mood, node.tags,
+                        node.charId, node.eventBoxId, node.content, node.room, node.createdAt, node.experiencedAt,
+                        node.importance, node.mood, node.tags,
                     ]);
                     if (!sources.length || current.some((node, i) => !node || node.isBoxSummary
                         || !members.has(node.id) || contentKey(node) !== contentKey(sources[i]))) {

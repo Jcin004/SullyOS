@@ -3,6 +3,8 @@ import { ContextBuilder } from '../utils/context';
 import MemoryMaintenancePanel from '../components/chat/MemoryMaintenancePanel';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
 import { MemoryTimeText } from '../components/MemoryTimeText';
+import { formatMemoryExperienceDate, getMemoryExperienceTime } from '../utils/memoryPalace/memoryDate';
+import { searchMemoryByKeywords } from '../utils/memoryPalace/keywordSearch';
 import { relativeTimeEdit } from '../utils/memoryPalace/relativeTime';
 import { MemoryContentEditor } from '../components/MemoryContentEditor';
 import { DB } from '../utils/db';
@@ -1484,7 +1486,7 @@ export default function MemoryPalaceApp() {
         if (!char) return;
         trackEvent('打开记忆宫殿房间', { room });
         const nodes = await MemoryNodeDB.getByRoom(char.id, room);
-        nodes.sort((a: MemoryNode, b: MemoryNode) => b.createdAt - a.createdAt);
+        nodes.sort((a, b) => getMemoryExperienceTime(b) - getMemoryExperienceTime(a));
         scrollPositionsRef.current.room = 0;
         resetSelectionState(false);
         setRoomNodes(nodes);
@@ -1569,7 +1571,7 @@ export default function MemoryPalaceApp() {
             return prev
                 .map(n => updatedMap.get(n.id) || n)
                 .filter(n => n.room === selectedRoom)
-                .sort((a, b) => b.createdAt - a.createdAt);
+                .sort((a, b) => getMemoryExperienceTime(b) - getMemoryExperienceTime(a));
         });
         setBoxMembers(prev => {
             let changed = false;
@@ -1634,6 +1636,7 @@ export default function MemoryPalaceApp() {
                 room: editRoom,
                 tags: editTags.split(/[,，]/).map(t => t.trim()).filter(Boolean),
                 createdAt: dateAdjusted.createdAt,
+                experiencedAt: dateAdjusted.experiencedAt,
                 dailyArchiveDate: dateAdjusted.dailyArchiveDate,
                 lastAccessedAt: dateAdjusted.lastAccessedAt,
                 },
@@ -1654,7 +1657,7 @@ export default function MemoryPalaceApp() {
             );
             if (selectedRoom) {
                 const nodes = await MemoryNodeDB.getByRoom(char.id, selectedRoom);
-                nodes.sort((a: MemoryNode, b: MemoryNode) => b.createdAt - a.createdAt);
+                nodes.sort((a, b) => getMemoryExperienceTime(b) - getMemoryExperienceTime(a));
                 setRoomNodes(nodes);
             }
             loadStats();
@@ -2265,7 +2268,7 @@ export default function MemoryPalaceApp() {
             }
             if (selectedRoom) {
                 const nodes = await MemoryNodeDB.getByRoom(char.id, selectedRoom);
-                nodes.sort((a: MemoryNode, b: MemoryNode) => b.createdAt - a.createdAt);
+                nodes.sort((a, b) => getMemoryExperienceTime(b) - getMemoryExperienceTime(a));
                 setRoomNodes(nodes);
             }
             if (deletedIds.size > 0) {
@@ -2294,7 +2297,7 @@ export default function MemoryPalaceApp() {
                 setGlobalSearchResults(prev => prev.filter(n => n.id !== nodeId));
             } else if (prevView === 'room' && selectedRoom && char) {
                 const nodes = await MemoryNodeDB.getByRoom(char.id, selectedRoom);
-                nodes.sort((a: MemoryNode, b: MemoryNode) => b.createdAt - a.createdAt);
+                nodes.sort((a, b) => getMemoryExperienceTime(b) - getMemoryExperienceTime(a));
                 setRoomNodes(nodes);
             } else if (prevView === 'all' && char) {
                 const nodes = await MemoryNodeDB.getByCharId(char.id);
@@ -5265,18 +5268,10 @@ create table if not exists memory_vectors (
                                 if (q.trim().length < 2) { setGlobalSearchResults([]); return; }
                                 globalSearchTimerRef.current = setTimeout(async () => {
                                     const allNodes = await MemoryNodeDB.getByCharId(char!.id);
-                                    const keywords = q.trim().toLowerCase().split(/\s+/);
-                                    const filtered = allNodes
-                                        .filter(n => {
-                                            const text = (n.content + ' ' + n.tags.join(' ') + ' ' + n.mood).toLowerCase();
-                                            return keywords.every(kw => text.includes(kw));
-                                        })
-                                        .sort((a, b) => b.importance - a.importance)
-                                        .slice(0, 20);
-                                    setGlobalSearchResults(filtered);
+                                    setGlobalSearchResults(searchMemoryByKeywords(allNodes, q));
                                 }, 300);
                             }}
-                            placeholder="搜索记忆（关键词、标签、情绪...）"
+                            placeholder="搜索记忆（关键词、标签、日期…）"
                             style={{
                                 width: '100%', padding: '10px 14px 10px 34px', borderRadius: 12,
                                 border: '1px solid #e5e7eb', background: '#f9fafb',
@@ -5405,11 +5400,11 @@ create table if not exists memory_vectors (
                                         <MemoryTimeText node={node} enabled={memoryPalaceConfig.relativeTimeAnnotations === true} maxLength={100} />
                                     </div>
                                     <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                                        <span>{formatMemoryExperienceDate(node)}</span>
                                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                             <RoomIcon room={node.room} size={12} style={{ color: ROOM_COLORS[node.room] }} />
                                             {getRoomLabel(node.room, userProfile?.name)}
                                         </span>
-                                        <span>{new Date(node.createdAt).toLocaleDateString('zh-CN')}</span>
                                         <span style={{ color }}>{'★'.repeat(Math.min(node.importance, 5))}</span>
                                         <span>{node.mood}</span>
                                     </div>
@@ -5717,7 +5712,7 @@ create table if not exists memory_vectors (
     if (view === 'all') {
         const sorted = [...allNodes].sort((a, b) => {
             const dir = allSortDir === 'desc' ? -1 : 1;
-            if (allSortBy === 'time') return dir * (a.createdAt - b.createdAt);
+            if (allSortBy === 'time') return dir * (getMemoryExperienceTime(a) - getMemoryExperienceTime(b));
             return dir * (a.importance - b.importance);
         });
 
@@ -5809,13 +5804,13 @@ create table if not exists memory_vectors (
                             )}
                             <div style={{ fontSize: 13, lineHeight: 1.5 }}><MemoryTimeText node={node} enabled={memoryPalaceConfig.relativeTimeAnnotations === true} /></div>
                             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                                <span>{formatMemoryExperienceDate(node)}</span>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                     <RoomIcon room={node.room} size={12} style={{ color: ROOM_COLORS[node.room] }} />
                                     {getRoomLabel(node.room, userProfile?.name)}
                                 </span>
                                 <span>重要性: {node.importance}</span>
                                 <span>{node.mood}</span>
-                                <span>{new Date(node.createdAt).toLocaleDateString('zh-CN')}</span>
                                 <span>访问 {node.accessCount} 次</span>
                             </div>
                             {node.tags.length > 0 && (
@@ -6073,7 +6068,7 @@ create table if not exists memory_vectors (
                                                         </div>
                                                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                                             <RoomIcon room={n.room} size={11} style={{ color: ROOM_COLORS[n.room] }} />
-                                                            <span>{getRoomLabel(n.room, userProfile?.name)} · {new Date(n.createdAt).toLocaleDateString('zh-CN')}</span>
+                                                            <span>{formatMemoryExperienceDate(n)} · {getRoomLabel(n.room, userProfile?.name)}</span>
                                                         </div>
                                                     </div>
                                                 ))}
@@ -6102,7 +6097,7 @@ create table if not exists memory_vectors (
                                                         </div>
                                                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                                             <RoomIcon room={n.room} size={11} style={{ color: ROOM_COLORS[n.room] }} />
-                                                            <span>{getRoomLabel(n.room, userProfile?.name)} · {new Date(n.createdAt).toLocaleDateString('zh-CN')}</span>
+                                                            <span>{formatMemoryExperienceDate(n)} · {getRoomLabel(n.room, userProfile?.name)}</span>
                                                         </div>
                                                         <button
                                                             onClick={(e) => { e.stopPropagation(); handleReviveArchived(box, n); }}
@@ -6201,9 +6196,9 @@ create table if not exists memory_vectors (
                             )}
                             <div style={{ fontSize: 13, lineHeight: 1.5 }}><MemoryTimeText node={node} enabled={memoryPalaceConfig.relativeTimeAnnotations === true} /></div>
                             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, display: 'flex', gap: 8 }}>
+                                <span>{formatMemoryExperienceDate(node)}</span>
                                 <span>重要性: {node.importance}</span>
                                 <span>{node.mood}</span>
-                                <span>{new Date(node.createdAt).toLocaleDateString('zh-CN')}</span>
                                 <span>访问 {node.accessCount} 次</span>
                             </div>
                             {node.tags.length > 0 && (
@@ -6452,7 +6447,7 @@ create table if not exists memory_vectors (
                                                         </div>
                                                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                                             <RoomIcon room={node.room} size={11} style={{ color: ROOM_COLORS[node.room] }} />
-                                                            <span>{getRoomLabel(node.room, userProfile?.name)} · {new Date(node.createdAt).toLocaleDateString('zh-CN')}</span>
+                                                            <span>{formatMemoryExperienceDate(node)} · {getRoomLabel(node.room, userProfile?.name)}</span>
                                                         </div>
                                                     </div>
                                                     <button
@@ -6541,7 +6536,7 @@ create table if not exists memory_vectors (
                                                 </div>
                                                 <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                                     <RoomIcon room={linkedNode.room} size={11} style={{ color: ROOM_COLORS[linkedNode.room] }} />
-                                                    <span>{getRoomLabel(linkedNode.room, userProfile?.name)} · {new Date(linkedNode.createdAt).toLocaleDateString('zh-CN')}</span>
+                                                    <span>{formatMemoryExperienceDate(linkedNode)} · {getRoomLabel(linkedNode.room, userProfile?.name)}</span>
                                                 </div>
                                             </div>
                                             <button
